@@ -22,13 +22,13 @@ Bootstrap the Go project and get the data layer working.
 
 Basic entity management before we can create campaigns.
 
-- [ ] `cold-cli account add <email>` — validate email format, check gws auth for account, INSERT
-- [ ] `cold-cli account list` — list accounts with status, support `--json`
-- [ ] `internal/csv.go` — CSV parser with UTF-8 BOM stripping, header normalization
-- [ ] `internal/template.go` — extract `{{placeholders}}` from strings, `strings.ReplaceAll` rendering
-- [ ] `cold-cli lead pause <email>` — set campaign_leads.status = 'paused', cancel pending scheduled_sends
-- [ ] `cold-cli lead blacklist <email|domain>` — set leads.global_status = 'blacklisted', cancel pending sends across all campaigns
-- [ ] Tests: duplicate account rejection, email validation, CSV parsing (BOM, missing columns, empty values), template placeholder extraction, template rendering, blacklist by email vs domain
+- [x] `cold-cli account add <email>` — validate email format, check gws auth for account, INSERT
+- [x] `cold-cli account list` — list accounts with status, support `--json`
+- [x] `internal/csv.go` — CSV parser with UTF-8 BOM stripping, header normalization
+- [x] `internal/template.go` — extract `{{placeholders}}` from strings, `strings.ReplaceAll` rendering
+- [x] `cold-cli lead pause <email>` — set campaign_leads.status = 'paused', cancel pending scheduled_sends
+- [x] `cold-cli lead blacklist <email|domain>` — set leads.global_status = 'blacklisted', cancel pending sends across all campaigns
+- [x] Tests: duplicate account rejection, email validation, CSV parsing (BOM, missing columns, empty values), template placeholder extraction, template rendering, blacklist by email vs domain
 
 ## Phase 3: Campaign Create + Scheduler
 

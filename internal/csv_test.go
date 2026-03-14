@@ -1,0 +1,146 @@
+package internal
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestParseLeadsCSV_Basic(t *testing.T) {
+	csv := "email,first_name,company\njohn@acme.com,John,Acme Inc\njane@foo.com,Jane,Foo Corp\n"
+	records, headers, err := ParseLeadsCSVFromReader(strings.NewReader(csv))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(records))
+	}
+	if len(headers) != 3 {
+		t.Fatalf("expected 3 headers, got %d", len(headers))
+	}
+
+	if records[0].Fields["email"] != "john@acme.com" {
+		t.Errorf("expected john@acme.com, got %s", records[0].Fields["email"])
+	}
+	if records[0].Fields["first_name"] != "John" {
+		t.Errorf("expected John, got %s", records[0].Fields["first_name"])
+	}
+	if records[1].Fields["company"] != "Foo Corp" {
+		t.Errorf("expected Foo Corp, got %s", records[1].Fields["company"])
+	}
+}
+
+func TestParseLeadsCSV_BOMStripping(t *testing.T) {
+	// UTF-8 BOM + CSV content
+	bom := string(utf8BOM)
+	csv := bom + "email,first_name\njohn@acme.com,John\n"
+	records, _, err := ParseLeadsCSVFromReader(strings.NewReader(csv))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	if records[0].Fields["email"] != "john@acme.com" {
+		t.Errorf("expected john@acme.com, got %s", records[0].Fields["email"])
+	}
+}
+
+func TestParseLeadsCSV_HeaderNormalization(t *testing.T) {
+	csv := "Email,First Name,COMPANY\njohn@acme.com,John,Acme\n"
+	_, headers, err := ParseLeadsCSVFromReader(strings.NewReader(csv))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := []string{"email", "first_name", "company"}
+	for i, h := range headers {
+		if h != expected[i] {
+			t.Errorf("header %d: expected %q, got %q", i, expected[i], h)
+		}
+	}
+}
+
+func TestParseLeadsCSV_MissingEmailColumn(t *testing.T) {
+	csv := "first_name,company\nJohn,Acme\n"
+	_, _, err := ParseLeadsCSVFromReader(strings.NewReader(csv))
+	if err == nil {
+		t.Fatal("expected error for missing email column")
+	}
+	if !strings.Contains(err.Error(), "email") {
+		t.Errorf("error should mention email column: %v", err)
+	}
+}
+
+func TestParseLeadsCSV_EmptyEmail(t *testing.T) {
+	csv := "email,first_name\n,John\n"
+	_, _, err := ParseLeadsCSVFromReader(strings.NewReader(csv))
+	if err == nil {
+		t.Fatal("expected error for empty email")
+	}
+	if !strings.Contains(err.Error(), "empty email") {
+		t.Errorf("error should mention empty email: %v", err)
+	}
+}
+
+func TestParseLeadsCSV_InvalidEmail(t *testing.T) {
+	csv := "email,first_name\nnot-an-email,John\n"
+	_, _, err := ParseLeadsCSVFromReader(strings.NewReader(csv))
+	if err == nil {
+		t.Fatal("expected error for invalid email")
+	}
+	if !strings.Contains(err.Error(), "invalid email") {
+		t.Errorf("error should mention invalid email: %v", err)
+	}
+}
+
+func TestParseLeadsCSV_NoDataRows(t *testing.T) {
+	csv := "email,first_name\n"
+	_, _, err := ParseLeadsCSVFromReader(strings.NewReader(csv))
+	if err == nil {
+		t.Fatal("expected error for no data rows")
+	}
+	if !strings.Contains(err.Error(), "no data rows") {
+		t.Errorf("error should mention no data rows: %v", err)
+	}
+}
+
+func TestParseLeadsCSV_ColumnMismatch(t *testing.T) {
+	csv := "email,first_name,company\njohn@acme.com,John\n"
+	_, _, err := ParseLeadsCSVFromReader(strings.NewReader(csv))
+	if err == nil {
+		t.Fatal("expected error for column count mismatch")
+	}
+}
+
+func TestParseLeadsCSV_TrimWhitespace(t *testing.T) {
+	csv := "email,first_name\n  john@acme.com , John  \n"
+	records, _, err := ParseLeadsCSVFromReader(strings.NewReader(csv))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if records[0].Fields["email"] != "john@acme.com" {
+		t.Errorf("expected trimmed email, got %q", records[0].Fields["email"])
+	}
+	if records[0].Fields["first_name"] != "John" {
+		t.Errorf("expected trimmed first_name, got %q", records[0].Fields["first_name"])
+	}
+}
+
+func TestExtractDomain(t *testing.T) {
+	tests := []struct {
+		email  string
+		domain string
+	}{
+		{"john@acme.com", "acme.com"},
+		{"JANE@Foo.COM", "foo.com"},
+		{"invalid", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := ExtractDomain(tt.email)
+		if got != tt.domain {
+			t.Errorf("ExtractDomain(%q) = %q, want %q", tt.email, got, tt.domain)
+		}
+	}
+}
