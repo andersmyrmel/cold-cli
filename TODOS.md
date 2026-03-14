@@ -10,13 +10,13 @@ See ARCHITECTURE.md for full design. See CLAUDE.md for coding conventions.
 
 Bootstrap the Go project and get the data layer working.
 
-- [ ] `go mod init`, add dependencies: cobra, modernc.org/sqlite, gopkg.in/yaml.v3
-- [ ] `cmd/cold-cli/main.go` — Cobra root command with `--json` global flag
-- [ ] `internal/db.go` — SQLite setup (`~/.cold-cli/data.db`), schema migration with all 7 tables + indexes (see ARCHITECTURE.md)
-- [ ] `internal/models.go` — Go structs for all tables
-- [ ] `internal/config.go` — YAML config loading (`~/.cold-cli/config.yml`)
-- [ ] `cold-cli init` command — create `~/.cold-cli/` dir, database, config template, gws health check (verify binary exists + can auth)
-- [ ] Tests: DB creation, schema correctness, idempotent re-init, gws check failure handling
+- [x] `go mod init`, add dependencies: cobra, modernc.org/sqlite, gopkg.in/yaml.v3
+- [x] `cmd/cold-cli/main.go` — Cobra root command with `--json` global flag
+- [x] `internal/db.go` — SQLite setup (`~/.cold-cli/data.db`), schema migration with all 7 tables + indexes (see ARCHITECTURE.md)
+- [x] `internal/models.go` — Go structs for all tables
+- [x] `internal/config.go` — YAML config loading (`~/.cold-cli/config.yml`)
+- [x] `cold-cli init` command — create `~/.cold-cli/` dir, database, config template, gws health check (verify binary exists + can auth)
+- [x] Tests: DB creation, schema correctness, idempotent re-init, gws check failure handling
 
 ## Phase 2: Accounts + Leads
 
