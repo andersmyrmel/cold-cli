@@ -860,6 +860,199 @@ var tickCmd = &cobra.Command{
 	},
 }
 
+// --- stats command ---
+
+var statsCmd = &cobra.Command{
+	Use:   "stats [campaign]",
+	Short: "Show send/reply/bounce statistics",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		perLeads, _ := cmd.Flags().GetBool("leads")
+
+		// If a specific campaign is given
+		if len(args) == 1 {
+			name := args[0]
+
+			var campaignID int64
+			err := db.QueryRow("SELECT id FROM campaigns WHERE name = ?", name).Scan(&campaignID)
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("campaign %q not found", name)
+			}
+			if err != nil {
+				return fmt.Errorf("looking up campaign: %w", err)
+			}
+
+			if perLeads {
+				return showLeadStats(db, campaignID, name)
+			}
+			return showCampaignStepStats(db, campaignID, name)
+		}
+
+		// All campaigns summary
+		return showAllCampaignStats(db)
+	},
+}
+
+func showAllCampaignStats(db *sql.DB) error {
+	rows, err := db.Query(`
+		SELECT c.name, c.status,
+			COALESCE(SUM(CASE WHEN e.type = 'sent' THEN 1 ELSE 0 END), 0) as sent,
+			COALESCE(SUM(CASE WHEN e.type = 'reply' THEN 1 ELSE 0 END), 0) as replies,
+			COALESCE(SUM(CASE WHEN e.type = 'bounce' THEN 1 ELSE 0 END), 0) as bounces
+		FROM campaigns c
+		LEFT JOIN events e ON c.id = e.campaign_id
+		GROUP BY c.id, c.name, c.status
+		ORDER BY c.created_at DESC`)
+	if err != nil {
+		return fmt.Errorf("querying stats: %w", err)
+	}
+	defer rows.Close()
+
+	type campaignStats struct {
+		Name    string `json:"name"`
+		Status  string `json:"status"`
+		Sent    int    `json:"sent"`
+		Replies int    `json:"replies"`
+		Bounces int    `json:"bounces"`
+	}
+
+	var stats []campaignStats
+	for rows.Next() {
+		var s campaignStats
+		rows.Scan(&s.Name, &s.Status, &s.Sent, &s.Replies, &s.Bounces)
+		stats = append(stats, s)
+	}
+
+	if jsonOutput {
+		return printJSON(stats)
+	}
+
+	if len(stats) == 0 {
+		fmt.Println("No campaigns. Create one with: cold-cli campaign create")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "CAMPAIGN\tSTATUS\tSENT\tREPLIES\tBOUNCES")
+	for _, s := range stats {
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\n", s.Name, s.Status, s.Sent, s.Replies, s.Bounces)
+	}
+	return w.Flush()
+}
+
+func showCampaignStepStats(db *sql.DB, campaignID int64, name string) error {
+	rows, err := db.Query(`
+		SELECT e.step_number,
+			SUM(CASE WHEN e.type = 'sent' THEN 1 ELSE 0 END) as sent,
+			SUM(CASE WHEN e.type = 'reply' THEN 1 ELSE 0 END) as replies,
+			SUM(CASE WHEN e.type = 'bounce' THEN 1 ELSE 0 END) as bounces
+		FROM events e
+		WHERE e.campaign_id = ?
+		GROUP BY e.step_number
+		ORDER BY e.step_number`, campaignID)
+	if err != nil {
+		return fmt.Errorf("querying step stats: %w", err)
+	}
+	defer rows.Close()
+
+	type stepStats struct {
+		Step    int `json:"step"`
+		Sent    int `json:"sent"`
+		Replies int `json:"replies"`
+		Bounces int `json:"bounces"`
+	}
+
+	var stats []stepStats
+	for rows.Next() {
+		var s stepStats
+		rows.Scan(&s.Step, &s.Sent, &s.Replies, &s.Bounces)
+		stats = append(stats, s)
+	}
+
+	if jsonOutput {
+		return printJSON(map[string]any{
+			"campaign": name,
+			"steps":    stats,
+		})
+	}
+
+	if len(stats) == 0 {
+		fmt.Printf("Campaign %q has no events yet.\n", name)
+		return nil
+	}
+
+	fmt.Printf("Campaign: %s\n\n", name)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "STEP\tSENT\tREPLIES\tBOUNCES")
+	for _, s := range stats {
+		fmt.Fprintf(w, "%d\t%d\t%d\t%d\n", s.Step, s.Sent, s.Replies, s.Bounces)
+	}
+	return w.Flush()
+}
+
+func showLeadStats(db *sql.DB, campaignID int64, name string) error {
+	rows, err := db.Query(`
+		SELECT l.email, cl.status,
+			(SELECT COUNT(*) FROM events e WHERE e.lead_id = l.id AND e.campaign_id = ? AND e.type = 'sent') as steps_sent,
+			(SELECT MAX(e.timestamp) FROM events e WHERE e.lead_id = l.id AND e.campaign_id = ? AND e.type = 'reply') as reply_at
+		FROM campaign_leads cl
+		JOIN leads l ON cl.lead_id = l.id
+		WHERE cl.campaign_id = ?
+		ORDER BY l.email`, campaignID, campaignID, campaignID)
+	if err != nil {
+		return fmt.Errorf("querying lead stats: %w", err)
+	}
+	defer rows.Close()
+
+	type leadStats struct {
+		Email     string  `json:"email"`
+		Status    string  `json:"status"`
+		StepsSent int     `json:"steps_sent"`
+		ReplyAt   *string `json:"reply_at,omitempty"`
+	}
+
+	var stats []leadStats
+	for rows.Next() {
+		var s leadStats
+		var replyAt sql.NullString
+		rows.Scan(&s.Email, &s.Status, &s.StepsSent, &replyAt)
+		if replyAt.Valid {
+			s.ReplyAt = &replyAt.String
+		}
+		stats = append(stats, s)
+	}
+
+	if jsonOutput {
+		return printJSON(map[string]any{
+			"campaign": name,
+			"leads":    stats,
+		})
+	}
+
+	if len(stats) == 0 {
+		fmt.Printf("Campaign %q has no leads.\n", name)
+		return nil
+	}
+
+	fmt.Printf("Campaign: %s\n\n", name)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "EMAIL\tSTATUS\tSTEPS SENT\tREPLY AT")
+	for _, s := range stats {
+		replyAt := "-"
+		if s.ReplyAt != nil {
+			replyAt = *s.ReplyAt
+		}
+		fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", s.Email, s.Status, s.StepsSent, replyAt)
+	}
+	return w.Flush()
+}
+
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 
@@ -875,7 +1068,9 @@ func init() {
 
 	tickCmd.Flags().Bool("dry-run", false, "show what would be sent without actually sending")
 
-	rootCmd.AddCommand(initCmd, accountCmd, leadCmd, campaignCmd, tickCmd)
+	statsCmd.Flags().Bool("leads", false, "show per-lead breakdown")
+
+	rootCmd.AddCommand(initCmd, accountCmd, leadCmd, campaignCmd, tickCmd, statsCmd)
 }
 
 func main() {

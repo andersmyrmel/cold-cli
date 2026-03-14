@@ -101,10 +101,10 @@ The core runtime — poll, detect, send.
 
 Reporting and final CLI polish.
 
-- [ ] `cold-cli stats [campaign]` — aggregate events by campaign/step/type (sent/replied/bounced), support `--json`
-- [ ] `cold-cli stats <name> --leads` — per-lead breakdown (status, steps completed, reply date)
-- [ ] `--json` flag working on all commands
-- [ ] Error messages: consistent format, actionable guidance (e.g., "run cold-cli init first", "account not found, run cold-cli account list")
+- [x] `cold-cli stats [campaign]` — aggregate events by campaign/step/type (sent/replied/bounced), support `--json`
+- [x] `cold-cli stats <name> --leads` — per-lead breakdown (status, steps completed, reply date)
+- [x] `--json` flag working on all commands
+- [x] Error messages: consistent format, actionable guidance (e.g., "run cold-cli init first", "account not found, run cold-cli account list")
 - [ ] Tests: stats aggregation accuracy, empty state handling, JSON output format validation
 
 ---
