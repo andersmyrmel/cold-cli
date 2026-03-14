@@ -34,19 +34,19 @@ Basic entity management before we can create campaigns.
 
 The eager scheduling engine — the core differentiator.
 
-- [ ] `internal/scheduler.go` — sequence YAML parsing, schedule computation:
+- [x] `internal/scheduler.go` — sequence YAML parsing, schedule computation:
   - Round-robin account assignment (all steps for one lead → same account)
   - A/B variant assignment (`variant_index` on scheduled_sends)
   - `send_at` computation: step delays, send window clamping, send day skipping (weekends), jitter
-- [ ] Template validation at creation: extract all `{{placeholders}}` from sequence, verify every lead has values
-- [ ] CSV schema validation: `email` always required, other required columns driven by sequence placeholders
-- [ ] `cold-cli campaign create --name --sequence --leads --accounts` — parse YAML + CSV, validate, compute schedule, INSERT campaign + campaign_leads + campaign_accounts + scheduled_sends, status = 'draft'
-- [ ] `cold-cli campaign preview <name>` — SELECT scheduled_sends ORDER BY send_at, format as table or `--json`
-- [ ] `cold-cli campaign activate <name>` — UPDATE status → 'active' (only from 'draft')
-- [ ] `cold-cli campaign pause <name>` — UPDATE status → 'paused'
-- [ ] `cold-cli campaign resume <name>` — UPDATE status → 'active' (only from 'paused')
-- [ ] `cold-cli campaign status <name>` — show campaign details + counts by scheduled_send status
-- [ ] Tests: schedule computation (verify send_at values respect windows/days/jitter/delays), round-robin assignment, variant assignment, template validation (missing fields error), YAML parse errors, CSV parse errors, campaign state transitions (draft→active, active→paused, paused→active, reject invalid transitions)
+- [x] Template validation at creation: extract all `{{placeholders}}` from sequence, verify every lead has values
+- [x] CSV schema validation: `email` always required, other required columns driven by sequence placeholders
+- [x] `cold-cli campaign create --name --sequence --leads --accounts` — parse YAML + CSV, validate, compute schedule, INSERT campaign + campaign_leads + campaign_accounts + scheduled_sends, status = 'draft'
+- [x] `cold-cli campaign preview <name>` — SELECT scheduled_sends ORDER BY send_at, format as table or `--json`
+- [x] `cold-cli campaign activate <name>` — UPDATE status → 'active' (only from 'draft')
+- [x] `cold-cli campaign pause <name>` — UPDATE status → 'paused'
+- [x] `cold-cli campaign resume <name>` — UPDATE status → 'active' (only from 'paused')
+- [x] `cold-cli campaign status <name>` — show campaign details + counts by scheduled_send status
+- [x] Tests: schedule computation (verify send_at values respect windows/days/jitter/delays), round-robin assignment, variant assignment, template validation (missing fields error), YAML parse errors, CSV parse errors, campaign state transitions (draft→active, active→paused, paused→active, reject invalid transitions)
 
 ## Phase 4: gws Integration Layer
 
