@@ -118,6 +118,10 @@ func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (int, error) 
 }
 
 // ProcessBounces checks inbox messages for bounce NDRs.
+// Uses two strategies:
+//  1. Thread matching — if the NDR shares a thread_id with a sent email, we know the lead
+//  2. Snippet/header parsing — fallback: extract bounced email from NDR text
+//
 // Returns the number of new bounces detected.
 func ProcessBounces(db *sql.DB, gws GWSClient, accounts []Account) (int, error) {
 	bouncesFound := 0
@@ -132,24 +136,14 @@ func ProcessBounces(db *sql.DB, gws GWSClient, accounts []Account) (int, error) 
 		}
 
 		for _, msg := range messages {
-			// Extract bounced email from the NDR
-			bouncedEmail := extractBouncedEmail(msg.Snippet, msg.Subject)
-			if bouncedEmail == "" {
+			leadID, found := resolveBounceToLead(db, msg)
+			if !found {
 				continue
 			}
 
-			// Find the lead
-			var leadID int64
-			var globalStatus string
-			err := db.QueryRow("SELECT id, global_status FROM leads WHERE email = ?", bouncedEmail).Scan(&leadID, &globalStatus)
-			if err == sql.ErrNoRows {
-				continue // Not one of our leads
-			}
-			if err != nil {
-				return bouncesFound, fmt.Errorf("looking up lead %s: %w", bouncedEmail, err)
-			}
-
 			// Dedup: skip if already bounced
+			var globalStatus string
+			db.QueryRow("SELECT global_status FROM leads WHERE id = ?", leadID).Scan(&globalStatus)
 			if globalStatus == "bounced" {
 				continue
 			}
@@ -170,7 +164,49 @@ func ProcessBounces(db *sql.DB, gws GWSClient, accounts []Account) (int, error) 
 	return bouncesFound, nil
 }
 
-// extractBouncedEmail attempts to extract the bounced email address from an NDR.
+// resolveBounceToLead identifies which lead a bounce NDR belongs to.
+// Strategy 1: thread matching — NDR is in the same Gmail thread as our sent email.
+// Strategy 2: X-Failed-Recipients header (if available).
+// Strategy 3: snippet/subject text parsing (fallback).
+func resolveBounceToLead(db *sql.DB, msg GWSMessage) (leadID int64, found bool) {
+	// Strategy 1: Thread matching
+	// Gmail puts the NDR in the same thread as the original email.
+	// If we sent an email in this thread, we know exactly which lead bounced.
+	if msg.ThreadID != "" {
+		var id int64
+		err := db.QueryRow(`
+			SELECT e.lead_id FROM events e
+			WHERE e.thread_id = ? AND e.type = 'sent'
+			LIMIT 1`, msg.ThreadID).Scan(&id)
+		if err == nil {
+			return id, true
+		}
+	}
+
+	// Strategy 2: X-Failed-Recipients header
+	if failedRecip, ok := msg.Headers["X-Failed-Recipients"]; ok && failedRecip != "" {
+		email := strings.ToLower(strings.TrimSpace(failedRecip))
+		var id int64
+		err := db.QueryRow("SELECT id FROM leads WHERE email = ?", email).Scan(&id)
+		if err == nil {
+			return id, true
+		}
+	}
+
+	// Strategy 3: Snippet/subject text parsing (fallback)
+	bouncedEmail := extractBouncedEmail(msg.Snippet, msg.Subject)
+	if bouncedEmail != "" {
+		var id int64
+		err := db.QueryRow("SELECT id FROM leads WHERE email = ?", bouncedEmail).Scan(&id)
+		if err == nil {
+			return id, true
+		}
+	}
+
+	return 0, false
+}
+
+// extractBouncedEmail attempts to extract a bounced email address from NDR text.
 func extractBouncedEmail(snippet, subject string) string {
 	combined := snippet + " " + subject
 
@@ -196,7 +232,6 @@ func isLikelyBouncedEmail(s string) bool {
 	if !strings.Contains(parts[1], ".") {
 		return false
 	}
-	// Filter out mailer-daemon and postmaster addresses (these are senders, not bounced recipients)
 	local := strings.ToLower(parts[0])
 	if local == "mailer-daemon" || local == "postmaster" {
 		return false

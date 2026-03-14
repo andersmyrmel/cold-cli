@@ -192,6 +192,207 @@ func TestProcessReplies_LeadInMultipleCampaigns(t *testing.T) {
 	}
 }
 
+func TestBounce_ThreadMatching(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	// We sent an email to john@acme.com in thread "thread-abc"
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (1, 1, 1, 'sent', 1, '<sent-to-john@gmail.com>', 'thread-abc')`)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 2, '2099-01-01', 'pending')`)
+
+	// NDR arrives in the same thread — no bounced email in snippet
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{
+				ID:       "ndr-1",
+				ThreadID: "thread-abc",
+				From:     "MAILER-DAEMON@googlemail.com",
+				Subject:  "Delivery Status Notification",
+				Snippet:  "Message not delivered. You're sending this from a different address or alias.",
+				Headers:  map[string]string{},
+			},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	bounces, err := ProcessBounces(db, mock, accounts)
+	if err != nil {
+		t.Fatalf("ProcessBounces error: %v", err)
+	}
+	if bounces != 1 {
+		t.Errorf("expected 1 bounce via thread matching, got %d", bounces)
+	}
+
+	// Lead should be bounced
+	var status string
+	db.QueryRow("SELECT global_status FROM leads WHERE id = 1").Scan(&status)
+	if status != "bounced" {
+		t.Errorf("expected global_status 'bounced', got %q", status)
+	}
+
+	// Pending send should be skipped
+	var ssStatus string
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE id = 1").Scan(&ssStatus)
+	if ssStatus != "skipped" {
+		t.Errorf("expected scheduled_send 'skipped', got %q", ssStatus)
+	}
+}
+
+func TestBounce_XFailedRecipientsHeader(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	// NDR with X-Failed-Recipients header, no thread match
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{
+				ID:       "ndr-2",
+				ThreadID: "some-other-thread",
+				From:     "MAILER-DAEMON@migadu.com",
+				Subject:  "Undelivered Mail Returned to Sender",
+				Snippet:  "This is the mail system at host mta0.migadu.com. I'm sorry to have to inform you...",
+				Headers: map[string]string{
+					"X-Failed-Recipients": "john@acme.com",
+				},
+			},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	bounces, _ := ProcessBounces(db, mock, accounts)
+	if bounces != 1 {
+		t.Errorf("expected 1 bounce via X-Failed-Recipients, got %d", bounces)
+	}
+
+	var status string
+	db.QueryRow("SELECT global_status FROM leads WHERE id = 1").Scan(&status)
+	if status != "bounced" {
+		t.Errorf("expected 'bounced', got %q", status)
+	}
+}
+
+func TestBounce_SnippetFallback(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	// NDR with no thread match, no X-Failed-Recipients, but email in snippet
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{
+				ID:       "ndr-3",
+				ThreadID: "unrelated-thread",
+				From:     "mailer-daemon@googlemail.com",
+				Subject:  "Address not found",
+				Snippet:  "Your message wasn't delivered to john@acme.com because the address couldn't be found.",
+				Headers:  map[string]string{},
+			},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	bounces, _ := ProcessBounces(db, mock, accounts)
+	if bounces != 1 {
+		t.Errorf("expected 1 bounce via snippet fallback, got %d", bounces)
+	}
+}
+
+func TestBounce_NoMatchSkipped(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	// NDR that doesn't match any strategy
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{
+				ID:       "ndr-4",
+				ThreadID: "unknown-thread",
+				From:     "MAILER-DAEMON@google.com",
+				Subject:  "Delivery Status Notification",
+				Snippet:  "An error occurred. Please contact support.",
+				Headers:  map[string]string{},
+			},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	bounces, _ := ProcessBounces(db, mock, accounts)
+	if bounces != 0 {
+		t.Errorf("expected 0 bounces (no match), got %d", bounces)
+	}
+
+	// Lead should still be active
+	var status string
+	db.QueryRow("SELECT global_status FROM leads WHERE id = 1").Scan(&status)
+	if status != "active" {
+		t.Errorf("expected 'active', got %q", status)
+	}
+}
+
+func TestBounce_RealWorldExamples(t *testing.T) {
+	// Simulate the three real NDR examples from the user
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email) VALUES ('sender@x.com')")
+	db.Exec("INSERT INTO campaigns (name, status, sequence_file) VALUES ('camp1', 'active', 'seq.yml')")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('paul@shopifreaks.com', 'Paul', 'shopifreaks.com')")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('jill@modernretail.co', 'Jill', 'modernretail.co')")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('info@nygolfcenter.com', 'Golf Center', 'nygolfcenter.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 2, 'active')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 3, 'active')")
+
+	// Sent events with thread IDs
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (1, 1, 1, 'sent', 1, '<to-paul>', 'thread-paul')`)
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (1, 2, 1, 'sent', 1, '<to-jill>', 'thread-jill')`)
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (1, 3, 1, 'sent', 1, '<to-golf>', 'thread-golf')`)
+
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			// Example 1: ProductLair outgoing limit — same thread, no email in snippet
+			{
+				ID: "ndr-paul", ThreadID: "thread-paul",
+				From: "mailer-daemon@googlemail.com", Subject: "Delivery Status Notification",
+				Snippet: "Message not delivered. You're sending this from a different address or alias using the 'Send mail as' feature.",
+				Headers: map[string]string{},
+			},
+			// Example 2: Modern Retail address not found — same thread + email in snippet
+			{
+				ID: "ndr-jill", ThreadID: "thread-jill",
+				From: "mailer-daemon@googlemail.com", Subject: "Address not found",
+				Snippet: "Your message wasn't delivered to jill@modernretail.co because the address couldn't be found",
+				Headers: map[string]string{},
+			},
+			// Example 3: Migadu bounce — different thread, email buried in body (not in snippet)
+			{
+				ID: "ndr-golf", ThreadID: "thread-golf",
+				From: "MAILER-DAEMON@migadu.com", Subject: "Undelivered Mail Returned to Sender",
+				Snippet: "This is the mail system at host mta0.migadu.com. I'm sorry to have to inform you that your message could not be delivered",
+				Headers: map[string]string{},
+			},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	bounces, err := ProcessBounces(db, mock, accounts)
+	if err != nil {
+		t.Fatalf("ProcessBounces error: %v", err)
+	}
+
+	// All 3 should be caught via thread matching
+	if bounces != 3 {
+		t.Errorf("expected 3 bounces from real-world examples, got %d", bounces)
+	}
+
+	// Verify all leads are bounced
+	for _, email := range []string{"paul@shopifreaks.com", "jill@modernretail.co", "info@nygolfcenter.com"} {
+		var status string
+		db.QueryRow("SELECT global_status FROM leads WHERE email = ?", email).Scan(&status)
+		if status != "bounced" {
+			t.Errorf("lead %s: expected 'bounced', got %q", email, status)
+		}
+	}
+}
+
 // setupReplyTestDB creates minimal test data for reply/bounce tests.
 func setupReplyTestDB(t *testing.T) *sql.DB {
 	t.Helper()
