@@ -46,9 +46,9 @@ func BuildRawMessage(p EmailParams) string {
 	}
 
 	msg.WriteString("MIME-Version: 1.0\r\n")
-	msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+	msg.WriteString("Content-Type: text/html; charset=utf-8\r\n")
 	msg.WriteString("\r\n")
-	msg.WriteString(p.Body)
+	msg.WriteString(plainTextToHTML(p.Body))
 
 	return base64.URLEncoding.EncodeToString([]byte(msg.String()))
 }
@@ -99,6 +99,25 @@ func BuildEmailForSend(
 		Subject:   subject,
 		Body:      body,
 	}
+}
+
+// plainTextToHTML converts plain text body to minimal HTML.
+// Double newlines become <br><br> (paragraphs), single newlines become <br>.
+// No CSS, styles, or formatting — looks like a normal hand-typed email.
+func plainTextToHTML(text string) string {
+	// Normalize line endings
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.TrimSpace(text)
+
+	// Escape HTML entities
+	text = strings.ReplaceAll(text, "&", "&amp;")
+	text = strings.ReplaceAll(text, "<", "&lt;")
+	text = strings.ReplaceAll(text, ">", "&gt;")
+
+	// Convert newlines to <br>
+	text = strings.ReplaceAll(text, "\n", "<br>")
+
+	return "<div>" + text + "</div>"
 }
 
 // encodeSubject MIME-encodes a subject line if it contains non-ASCII characters.

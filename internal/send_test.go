@@ -30,8 +30,8 @@ func TestBuildRawMessage_Step1(t *testing.T) {
 		{"From header", "From: Anders <anders@example.com>"},
 		{"To header", "To: john@acme.com"},
 		{"Subject header", "Subject: Quick question about Acme"},
-		{"Content-Type", "Content-Type: text/plain; charset=utf-8"},
-		{"Body", "Hi John, wanted to chat about Acme."},
+		{"Content-Type", "Content-Type: text/html; charset=utf-8"},
+		{"Body", "<div>Hi John, wanted to chat about Acme.</div>"},
 	}
 
 	for _, c := range checks {
