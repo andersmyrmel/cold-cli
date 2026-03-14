@@ -67,19 +67,19 @@ The subprocess wrapper — abstracted behind an interface for testability.
 
 The core runtime — poll, detect, send.
 
-- [ ] `internal/reply.go` — reply detection:
+- [x] `internal/reply.go` — reply detection:
   - Parse In-Reply-To header from inbox messages
   - Match against events.message_id
   - UPDATE campaign_leads.status = 'replied'
   - UPDATE scheduled_sends.status = 'skipped' (remaining sends for that lead+campaign)
   - If stop_on_domain_reply: find same-domain leads, skip their pending sends
-- [ ] `internal/reply.go` — bounce detection:
+- [x] `internal/reply.go` — bounce detection:
   - Identify NDRs (from MAILER-DAEMON, postmaster, etc.)
   - Extract bounced email address
   - UPDATE leads.global_status = 'bounced'
   - UPDATE campaign_leads.status = 'bounced'
   - UPDATE scheduled_sends.status = 'skipped'
-- [ ] `internal/tick.go` — tick engine:
+- [x] `internal/tick.go` — tick engine:
   - Acquire flock on `~/.cold-cli/tick.lock` (exit 0 if locked)
   - Poll replies (gws ListMessages with `after:last_poll_at` filter)
   - Poll bounces
@@ -93,9 +93,9 @@ The core runtime — poll, detect, send.
   - Sleep 90-140 sec random gap between sends
   - Update last_poll_at
   - Print summary (sent/failed/skipped counts)
-- [ ] `cold-cli tick` command (calls tick engine)
-- [ ] `cold-cli tick --dry-run` — run everything except actual gws sends, print what would happen
-- [ ] Tests: full tick cycle (mock gws, real SQLite), reply detection (header matching, lead status update, sends cancelled), domain reply cascade, bounce detection (NDR parsing), daily limit enforcement (hit limit mid-tick), send window enforcement, lock contention (second tick exits), step 1 backfill, failed send isolation, dry-run output
+- [x] `cold-cli tick` command (calls tick engine)
+- [x] `cold-cli tick --dry-run` — run everything except actual gws sends, print what would happen
+- [x] Tests: full tick cycle (mock gws, real SQLite), reply detection (header matching, lead status update, sends cancelled), domain reply cascade, bounce detection (NDR parsing), daily limit enforcement (hit limit mid-tick), send window enforcement, lock contention (second tick exits), step 1 backfill, failed send isolation, dry-run output
 
 ## Phase 6: Stats + Polish
 

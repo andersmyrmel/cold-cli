@@ -812,6 +812,54 @@ var campaignStatusCmd = &cobra.Command{
 	},
 }
 
+// --- tick command ---
+
+var tickCmd = &cobra.Command{
+	Use:   "tick",
+	Short: "Run one tick cycle: poll replies/bounces, send due emails",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+		// Acquire lock (skip for dry-run)
+		if !dryRun {
+			if err := internal.EnsureDataDir(); err != nil {
+				return err
+			}
+			lockFile, err := internal.AcquireTickLock()
+			if err != nil {
+				if jsonOutput {
+					return printJSON(map[string]any{"status": "locked", "message": "tick already running"})
+				}
+				fmt.Println("tick already running")
+				return nil
+			}
+			defer lockFile.Close()
+		}
+
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		result, err := internal.Tick(internal.TickConfig{
+			DB:     db,
+			GWS:    internal.NewGWSCLI(),
+			DryRun: dryRun,
+		})
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		fmt.Println(internal.FormatTickResult(result))
+		return nil
+	},
+}
+
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 
@@ -825,7 +873,9 @@ func init() {
 	campaignCreateCmd.Flags().String("accounts", "", "comma-separated account emails")
 	campaignCmd.AddCommand(campaignCreateCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd)
 
-	rootCmd.AddCommand(initCmd, accountCmd, leadCmd, campaignCmd)
+	tickCmd.Flags().Bool("dry-run", false, "show what would be sent without actually sending")
+
+	rootCmd.AddCommand(initCmd, accountCmd, leadCmd, campaignCmd, tickCmd)
 }
 
 func main() {

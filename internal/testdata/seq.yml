@@ -1,0 +1,14 @@
+name: Test Sequence
+defaults:
+  from_name: "Test Sender"
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello {{first_name}} at {{company}}"
+  - step: 2
+    delay: 3
+    body: "Following up {{first_name}}..."
+  - step: 3
+    delay: 5
+    body: "Last note {{first_name}}"
