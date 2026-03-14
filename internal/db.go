@@ -96,7 +96,11 @@ CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(domain);
 `
 
 // DataDir returns the cold-cli data directory path.
+// Respects COLD_CLI_DATA_DIR env var for testing.
 func DataDir() string {
+	if dir := os.Getenv("COLD_CLI_DATA_DIR"); dir != "" {
+		return dir
+	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".cold-cli")
 }
