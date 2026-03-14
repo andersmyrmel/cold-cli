@@ -1,0 +1,5 @@
+*.db
+config.yaml
+tick.lock
+.cold-cli/
+.claude/skills/
