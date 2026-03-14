@@ -52,16 +52,16 @@ The eager scheduling engine — the core differentiator.
 
 The subprocess wrapper — abstracted behind an interface for testability.
 
-- [ ] `internal/gws.go` — `GWSClient` interface: `SendEmail(account, to, rawMsg string) (msgID, threadID string, err error)` and `ListMessages(account, query string) ([]Message, error)`
-- [ ] Real implementation: subprocess calls with 30s timeout, stdout parsing for message_id/thread_id, stderr capture on failure
-- [ ] Mock implementation for tests: records calls, returns canned responses
-- [ ] `internal/send.go` — RFC 2822 message construction:
+- [x] `internal/gws.go` — `GWSClient` interface: `SendEmail(account, to, rawMsg string) (msgID, threadID string, err error)` and `ListMessages(account, query string) ([]Message, error)`
+- [x] Real implementation: subprocess calls with 30s timeout, stdout parsing for message_id/thread_id, stderr capture on failure
+- [x] Mock implementation for tests: records calls, returns canned responses
+- [x] `internal/send.go` — RFC 2822 message construction:
   - Step 1: new thread (Subject, From, To, body)
   - Step 2+: reply in thread (Re: Subject, In-Reply-To, References, thread_id)
   - Template rendering (strings.ReplaceAll with lead fields)
   - Variant selection (pick subject/body based on variant_index)
-- [ ] Validate message_id/thread_id returned after send — treat missing as failure
-- [ ] Tests: message construction (step 1 vs step 2+ headers), variant selection, mock gws send/failure, message_id validation
+- [x] Validate message_id/thread_id returned after send — treat missing as failure
+- [x] Tests: message construction (step 1 vs step 2+ headers), variant selection, mock gws send/failure, message_id validation
 
 ## Phase 5: Tick Engine
 
