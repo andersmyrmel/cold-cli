@@ -205,6 +205,30 @@ func TestMockGWS_SendEmail(t *testing.T) {
 	}
 }
 
+func TestPlainTextToHTML(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"Hello", "<div>Hello</div>"},
+		{"Line 1\nLine 2", "<div>Line 1<br>Line 2</div>"},
+		{"Para 1\n\nPara 2", "<div>Para 1<br><br>Para 2</div>"},
+		{"Hi\n\nMiddle\n\nBye", "<div>Hi<br><br>Middle<br><br>Bye</div>"},
+		{"", "<div></div>"},
+		{"Has <html> & \"quotes\"", "<div>Has &lt;html&gt; &amp; \"quotes\"</div>"},
+		{"\n\nLeading whitespace\n\n", "<div>Leading whitespace</div>"},       // trimmed
+		{"Windows\r\nLine\r\nEndings", "<div>Windows<br>Line<br>Endings</div>"}, // CRLF
+		{"Sign off\nAnders\nCompany", "<div>Sign off<br>Anders<br>Company</div>"},
+	}
+
+	for _, tt := range tests {
+		got := plainTextToHTML(tt.input)
+		if got != tt.expected {
+			t.Errorf("plainTextToHTML(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
 func TestMockGWS_SendError(t *testing.T) {
 	mock := &MockGWS{
 		SendError: fmt.Errorf("auth expired"),

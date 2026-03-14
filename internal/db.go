@@ -88,6 +88,11 @@ CREATE TABLE IF NOT EXISTS events (
 	metadata TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE TABLE IF NOT EXISTS kv (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sends_pending ON scheduled_sends(status, send_at) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_events_account_day ON events(account_id, type, timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_message_id ON events(message_id);

@@ -64,6 +64,9 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 	}
 	result.BouncesDetected = bounces
 
+	// Update last_poll_at so next tick only checks new messages
+	SetLastPollAt(cfg.DB, now)
+
 	// 3. Preload daily send counts per account
 	dailyCounts, err := preloadDailyCounts(cfg.DB, now)
 	if err != nil {
