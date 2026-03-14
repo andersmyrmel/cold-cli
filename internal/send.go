@@ -3,6 +3,7 @@ package internal
 import (
 	"encoding/base64"
 	"fmt"
+	"mime"
 	"strings"
 )
 
@@ -32,7 +33,7 @@ func BuildRawMessage(p EmailParams) string {
 	}
 
 	msg.WriteString(fmt.Sprintf("To: %s\r\n", p.ToEmail))
-	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", p.Subject))
+	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", encodeSubject(p.Subject)))
 
 	// Threading headers for follow-ups
 	if p.InReplyTo != "" {
@@ -98,6 +99,16 @@ func BuildEmailForSend(
 		Subject:   subject,
 		Body:      body,
 	}
+}
+
+// encodeSubject MIME-encodes a subject line if it contains non-ASCII characters.
+func encodeSubject(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] > 127 {
+			return mime.QEncoding.Encode("utf-8", s)
+		}
+	}
+	return s
 }
 
 // PrepareFollowUp adds threading headers to an EmailParams for step 2+.

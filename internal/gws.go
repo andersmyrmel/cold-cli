@@ -68,16 +68,16 @@ func NewGWSCLI() *GWSCLI {
 
 // SendEmail sends an email via gws and returns the message ID and thread ID.
 // rawMsg is a base64url-encoded RFC 2822 message.
-// If threadID is embedded in the JSON body, gws will thread the reply.
 func (g *GWSCLI) SendEmail(account, to, rawMsg string) (string, string, error) {
-	// Build the JSON body: {"raw": "<base64url>"}
 	body := map[string]string{"raw": rawMsg}
 	bodyJSON, err := json.Marshal(body)
 	if err != nil {
 		return "", "", fmt.Errorf("marshaling send body: %w", err)
 	}
 
-	out, stderr, err := g.run(account, "gmail", "users", "messages", "send",
+	// gws uses userId "me" for the currently authenticated account
+	out, stderr, err := g.run("gmail", "users", "messages", "send",
+		"--params", `{"userId": "me"}`,
 		"--json", string(bodyJSON))
 	if err != nil {
 		return "", "", fmt.Errorf("gws send failed: %w\nstderr: %s", err, stderr)
@@ -101,13 +101,13 @@ func (g *GWSCLI) SendEmail(account, to, rawMsg string) (string, string, error) {
 // ListMessages lists messages matching a Gmail search query.
 func (g *GWSCLI) ListMessages(account, query string) ([]GWSMessage, error) {
 	params := map[string]any{
-		"userId":     account,
+		"userId":     "me",
 		"q":          query,
 		"maxResults": 100,
 	}
 	paramsJSON, _ := json.Marshal(params)
 
-	out, stderr, err := g.run(account, "gmail", "users", "messages", "list",
+	out, stderr, err := g.run("gmail", "users", "messages", "list",
 		"--params", string(paramsJSON))
 	if err != nil {
 		return nil, fmt.Errorf("gws list failed: %w\nstderr: %s", err, stderr)
@@ -139,13 +139,13 @@ func (g *GWSCLI) ListMessages(account, query string) ([]GWSMessage, error) {
 // GetMessage retrieves a single message with full payload (headers).
 func (g *GWSCLI) GetMessage(account, msgID string) (*GWSMessage, error) {
 	params := map[string]any{
-		"userId": account,
+		"userId": "me",
 		"id":     msgID,
 		"format": "full",
 	}
 	paramsJSON, _ := json.Marshal(params)
 
-	out, stderr, err := g.run(account, "gmail", "users", "messages", "get",
+	out, stderr, err := g.run("gmail", "users", "messages", "get",
 		"--params", string(paramsJSON))
 	if err != nil {
 		return nil, fmt.Errorf("gws get failed: %w\nstderr: %s", err, stderr)
@@ -181,7 +181,15 @@ func (g *GWSCLI) GetMessage(account, msgID string) (*GWSMessage, error) {
 	return msg, nil
 }
 
-func (g *GWSCLI) run(account string, args ...string) (stdout, stderr []byte, err error) {
+// gwsErrorResponse checks if gws returned a JSON error (API error with 200 exit code).
+type gwsErrorResponse struct {
+	Error *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func (g *GWSCLI) run(args ...string) (stdout, stderr []byte, err error) {
 	timeout := g.Timeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
@@ -190,8 +198,6 @@ func (g *GWSCLI) run(account string, args ...string) (stdout, stderr []byte, err
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// gws uses --params '{"userId": "<account>"}' for the account
-	// but for send, userId defaults to "me" — we pass the account as userId param
 	cmd := exec.CommandContext(ctx, "gws", args...)
 
 	var outBuf, errBuf bytes.Buffer
@@ -202,7 +208,14 @@ func (g *GWSCLI) run(account string, args ...string) (stdout, stderr []byte, err
 		return outBuf.Bytes(), errBuf.Bytes(), err
 	}
 
-	return outBuf.Bytes(), errBuf.Bytes(), nil
+	// Check for API error in JSON response (gws returns exit 0 even on API errors)
+	out := outBuf.Bytes()
+	var errResp gwsErrorResponse
+	if json.Unmarshal(out, &errResp) == nil && errResp.Error != nil {
+		return out, errBuf.Bytes(), fmt.Errorf("gws API error %d: %s", errResp.Error.Code, errResp.Error.Message)
+	}
+
+	return out, errBuf.Bytes(), nil
 }
 
 // CheckGWSInstalled verifies gws binary is available on PATH.
