@@ -49,6 +49,13 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		return result, nil
 	}
 
+	// Early exit: skip everything if no active campaigns
+	var activeCampaigns int
+	cfg.DB.QueryRow("SELECT COUNT(*) FROM campaigns WHERE status = 'active'").Scan(&activeCampaigns)
+	if activeCampaigns == 0 {
+		return result, nil
+	}
+
 	// 1. Poll for replies
 	replies, err := ProcessReplies(cfg.DB, cfg.GWS, accounts)
 	if err != nil {
