@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -59,15 +62,23 @@ type gwsGetResponse struct {
 
 // GWSCLI is the real implementation that calls gws as a subprocess.
 type GWSCLI struct {
-	Timeout time.Duration
+	Timeout    time.Duration
+	ConfigDirs map[string]string // account email → gws config dir
 }
 
 func NewGWSCLI() *GWSCLI {
-	return &GWSCLI{Timeout: 30 * time.Second}
+	return &GWSCLI{
+		Timeout:    30 * time.Second,
+		ConfigDirs: map[string]string{},
+	}
+}
+
+// SetConfigDir registers a gws config directory for a specific account.
+func (g *GWSCLI) SetConfigDir(account, configDir string) {
+	g.ConfigDirs[account] = configDir
 }
 
 // SendEmail sends an email via gws and returns the message ID and thread ID.
-// rawMsg is a base64url-encoded RFC 2822 message.
 func (g *GWSCLI) SendEmail(account, to, rawMsg string) (string, string, error) {
 	body := map[string]string{"raw": rawMsg}
 	bodyJSON, err := json.Marshal(body)
@@ -75,8 +86,7 @@ func (g *GWSCLI) SendEmail(account, to, rawMsg string) (string, string, error) {
 		return "", "", fmt.Errorf("marshaling send body: %w", err)
 	}
 
-	// gws uses userId "me" for the currently authenticated account
-	out, stderr, err := g.run("gmail", "users", "messages", "send",
+	out, stderr, err := g.run(account, "gmail", "users", "messages", "send",
 		"--params", `{"userId": "me"}`,
 		"--json", string(bodyJSON))
 	if err != nil {
@@ -107,13 +117,12 @@ func (g *GWSCLI) ListMessages(account, query string) ([]GWSMessage, error) {
 	}
 	paramsJSON, _ := json.Marshal(params)
 
-	out, stderr, err := g.run("gmail", "users", "messages", "list",
+	out, stderr, err := g.run(account, "gmail", "users", "messages", "list",
 		"--params", string(paramsJSON))
 	if err != nil {
 		return nil, fmt.Errorf("gws list failed: %w\nstderr: %s", err, stderr)
 	}
 
-	// Handle empty results (gws may return empty or null)
 	if len(bytes.TrimSpace(out)) == 0 {
 		return nil, nil
 	}
@@ -123,7 +132,6 @@ func (g *GWSCLI) ListMessages(account, query string) ([]GWSMessage, error) {
 		return nil, fmt.Errorf("parsing gws list response: %w\nraw: %s", err, out)
 	}
 
-	// For each message, we only get IDs from list. Need to GET each for headers.
 	var messages []GWSMessage
 	for _, m := range resp.Messages {
 		msg, err := g.GetMessage(account, m.ID)
@@ -145,7 +153,7 @@ func (g *GWSCLI) GetMessage(account, msgID string) (*GWSMessage, error) {
 	}
 	paramsJSON, _ := json.Marshal(params)
 
-	out, stderr, err := g.run("gmail", "users", "messages", "get",
+	out, stderr, err := g.run(account, "gmail", "users", "messages", "get",
 		"--params", string(paramsJSON))
 	if err != nil {
 		return nil, fmt.Errorf("gws get failed: %w\nstderr: %s", err, stderr)
@@ -189,7 +197,7 @@ type gwsErrorResponse struct {
 	} `json:"error"`
 }
 
-func (g *GWSCLI) run(args ...string) (stdout, stderr []byte, err error) {
+func (g *GWSCLI) run(account string, args ...string) (stdout, stderr []byte, err error) {
 	timeout := g.Timeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
@@ -199,6 +207,11 @@ func (g *GWSCLI) run(args ...string) (stdout, stderr []byte, err error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "gws", args...)
+
+	// Set per-account gws config dir if registered
+	if configDir, ok := g.ConfigDirs[account]; ok && configDir != "" {
+		cmd.Env = append(os.Environ(), "GOOGLE_WORKSPACE_CLI_CONFIG_DIR="+configDir)
+	}
 
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
@@ -227,9 +240,30 @@ func CheckGWSInstalled() error {
 	return nil
 }
 
+// GWSConfigDirForAccount returns the config dir path for an account.
+// Creates the directory if it doesn't exist.
+func GWSConfigDirForAccount(email string) string {
+	// Sanitize email for use as directory name
+	safe := strings.ReplaceAll(email, "@", "-at-")
+	safe = strings.ReplaceAll(safe, ".", "-")
+	dir := filepath.Join(DataDir(), "gws-accounts", safe)
+	os.MkdirAll(dir, 0755)
+	return dir
+}
+
+// GWSAuthLogin runs 'gws auth login' for a specific account config dir.
+func GWSAuthLogin(configDir string) error {
+	cmd := exec.Command("gws", "auth", "login")
+	cmd.Env = append(os.Environ(), "GOOGLE_WORKSPACE_CLI_CONFIG_DIR="+configDir)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // MockGWS is a test implementation that records calls and returns canned responses.
 type MockGWS struct {
-	SentEmails   []MockSentEmail
+	SentEmails    []MockSentEmail
 	InboxMessages []GWSMessage
 
 	// Control behavior

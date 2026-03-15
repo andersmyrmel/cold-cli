@@ -106,7 +106,7 @@ func TestCLI_AccountAdd(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	runCLI(t, bin, env, "init")
 
-	out, code := runCLI(t, bin, env, "account", "add", "test@example.com")
+	out, code := runCLI(t, bin, env, "account", "add", "--skip-auth", "test@example.com")
 	if code != 0 {
 		t.Fatalf("account add failed (exit %d): %s", code, out)
 	}
@@ -119,7 +119,7 @@ func TestCLI_AccountAdd_JSON(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	runCLI(t, bin, env, "init")
 
-	out, code := runCLI(t, bin, env, "account", "add", "test@example.com", "--json")
+	out, code := runCLI(t, bin, env, "account", "add", "--skip-auth", "test@example.com", "--json")
 	if code != 0 {
 		t.Fatalf("account add --json failed (exit %d): %s", code, out)
 	}
@@ -140,7 +140,7 @@ func TestCLI_AccountAdd_InvalidEmail(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	runCLI(t, bin, env, "init")
 
-	_, code := runCLI(t, bin, env, "account", "add", "not-an-email")
+	_, code := runCLI(t, bin, env, "account", "add", "--skip-auth", "not-an-email")
 	if code == 0 {
 		t.Error("expected non-zero exit for invalid email")
 	}
@@ -149,9 +149,9 @@ func TestCLI_AccountAdd_InvalidEmail(t *testing.T) {
 func TestCLI_AccountAdd_Duplicate(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "dup@example.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "dup@example.com")
 
-	out, code := runCLI(t, bin, env, "account", "add", "dup@example.com")
+	out, code := runCLI(t, bin, env, "account", "add", "--skip-auth", "dup@example.com")
 	if code == 0 {
 		t.Error("expected non-zero exit for duplicate")
 	}
@@ -164,7 +164,7 @@ func TestCLI_AccountAdd_DailyLimit(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	runCLI(t, bin, env, "init")
 
-	out, code := runCLI(t, bin, env, "account", "add", "test@example.com", "--daily-limit", "25", "--json")
+	out, code := runCLI(t, bin, env, "account", "add", "--skip-auth", "test@example.com", "--daily-limit", "25", "--json")
 	if code != 0 {
 		t.Fatalf("failed (exit %d): %s", code, out)
 	}
@@ -202,8 +202,8 @@ func TestCLI_AccountList_Empty(t *testing.T) {
 func TestCLI_AccountList(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "a@x.com")
-	runCLI(t, bin, env, "account", "add", "b@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "a@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "b@x.com")
 
 	out, code := runCLI(t, bin, env, "account", "list")
 	if code != 0 {
@@ -217,7 +217,7 @@ func TestCLI_AccountList(t *testing.T) {
 func TestCLI_AccountList_JSON(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "a@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "a@x.com")
 
 	out, code := runCLI(t, bin, env, "account", "list", "--json")
 	if code != 0 {
@@ -264,7 +264,7 @@ func TestCLI_CampaignCreate(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 
 	out, code := runCLI(t, bin, env, "campaign", "create",
 		"--name", "test-camp",
@@ -289,7 +289,7 @@ func TestCLI_CampaignCreate_JSON(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 
 	out, code := runCLI(t, bin, env, "campaign", "create",
 		"--name", "test-camp",
@@ -325,7 +325,7 @@ func TestCLI_CampaignCreate_DuplicateName(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 	runCLI(t, bin, env, "campaign", "create", "--name", "dup", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
 
 	out, code := runCLI(t, bin, env, "campaign", "create", "--name", "dup", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
@@ -354,7 +354,7 @@ func TestCLI_CampaignCreate_BadAccount(t *testing.T) {
 func TestCLI_CampaignCreate_MissingTemplateField(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 
 	dir := t.TempDir()
 	seqFile := filepath.Join(dir, "seq.yml")
@@ -380,7 +380,7 @@ func TestCLI_CampaignPreview(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
 
 	out, code := runCLI(t, bin, env, "campaign", "preview", "test-camp")
@@ -415,7 +415,7 @@ func TestCLI_CampaignActivate(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
 
 	out, code := runCLI(t, bin, env, "campaign", "activate", "test-camp")
@@ -431,7 +431,7 @@ func TestCLI_CampaignActivate_WrongState(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
 	runCLI(t, bin, env, "campaign", "activate", "test-camp")
 
@@ -449,7 +449,7 @@ func TestCLI_CampaignPauseResume(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
 	runCLI(t, bin, env, "campaign", "activate", "test-camp")
 
@@ -476,7 +476,7 @@ func TestCLI_CampaignStatus(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
 
 	out, code := runCLI(t, bin, env, "campaign", "status", "test-camp")
@@ -498,7 +498,7 @@ func TestCLI_CampaignStatus_JSON(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
 
 	out, code := runCLI(t, bin, env, "campaign", "status", "test-camp", "--json")
@@ -521,7 +521,7 @@ func TestCLI_LeadBlacklist(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
 
 	out, code := runCLI(t, bin, env, "lead", "blacklist", "john@acme.com")
@@ -540,7 +540,7 @@ func TestCLI_LeadBlacklist_Domain(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
 
 	out, code := runCLI(t, bin, env, "lead", "blacklist", "acme.com", "--json")
@@ -575,7 +575,7 @@ func TestCLI_LeadPause(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
 
 	out, code := runCLI(t, bin, env, "lead", "pause", "john@acme.com")
@@ -637,7 +637,7 @@ func TestCLI_Stats_WithCampaign(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
 
 	out, code := runCLI(t, bin, env, "stats")
@@ -653,7 +653,7 @@ func TestCLI_Stats_PerCampaign(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
 
 	out, code := runCLI(t, bin, env, "stats", "test-camp")
@@ -670,7 +670,7 @@ func TestCLI_Stats_PerLead(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "account", "add", "sender@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
 	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
 
 	out, code := runCLI(t, bin, env, "stats", "test-camp", "--leads")
@@ -704,7 +704,7 @@ func TestCLI_NotInitialized(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	// Don't run init
 
-	out, code := runCLI(t, bin, env, "account", "add", "test@x.com")
+	out, code := runCLI(t, bin, env, "account", "add", "--skip-auth", "test@x.com")
 	if code == 0 {
 		t.Error("expected error when not initialized")
 	}

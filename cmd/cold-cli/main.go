@@ -109,10 +109,25 @@ var accountAddCmd = &cobra.Command{
 		defer db.Close()
 
 		dailyLimit, _ := cmd.Flags().GetInt("daily-limit")
+		skipAuth, _ := cmd.Flags().GetBool("skip-auth")
+
+		// Set up per-account gws config directory
+		configDir := internal.GWSConfigDirForAccount(email)
+
+		// Run gws auth login for this account unless skipped
+		if !skipAuth {
+			fmt.Printf("Authenticating %s with gws...\n", email)
+			fmt.Println("A browser window will open for Google OAuth login.")
+			fmt.Println()
+			if err := internal.GWSAuthLogin(configDir); err != nil {
+				return fmt.Errorf("gws auth failed for %s: %w\nYou can retry with: cold-cli account add %s\nOr skip auth with: cold-cli account add %s --skip-auth", email, err, email, email)
+			}
+			fmt.Println()
+		}
 
 		result, err := db.Exec(
-			"INSERT INTO accounts (email, daily_limit) VALUES (?, ?)",
-			email, dailyLimit,
+			"INSERT INTO accounts (email, daily_limit, gws_config_dir) VALUES (?, ?, ?)",
+			email, dailyLimit, configDir,
 		)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
@@ -125,10 +140,11 @@ var accountAddCmd = &cobra.Command{
 
 		if jsonOutput {
 			return printJSON(map[string]any{
-				"id":          id,
-				"email":       email,
-				"daily_limit": dailyLimit,
-				"status":      "active",
+				"id":             id,
+				"email":          email,
+				"daily_limit":    dailyLimit,
+				"status":         "active",
+				"gws_config_dir": configDir,
 			})
 		}
 
@@ -842,9 +858,21 @@ var tickCmd = &cobra.Command{
 		}
 		defer db.Close()
 
+		// Load per-account gws config dirs
+		gwsCLI := internal.NewGWSCLI()
+		rows, err := db.Query("SELECT email, gws_config_dir FROM accounts WHERE status = 'active' AND gws_config_dir != ''")
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var email, configDir string
+				rows.Scan(&email, &configDir)
+				gwsCLI.SetConfigDir(email, configDir)
+			}
+		}
+
 		result, err := internal.Tick(internal.TickConfig{
 			DB:     db,
-			GWS:    internal.NewGWSCLI(),
+			GWS:    gwsCLI,
 			DryRun: dryRun,
 		})
 		if err != nil {
@@ -1057,6 +1085,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 
 	accountAddCmd.Flags().Int("daily-limit", 50, "maximum emails per day for this account")
+	accountAddCmd.Flags().Bool("skip-auth", false, "skip gws OAuth login (for testing or pre-authed accounts)")
 	accountCmd.AddCommand(accountAddCmd, accountListCmd)
 	leadCmd.AddCommand(leadPauseCmd, leadBlacklistCmd)
 

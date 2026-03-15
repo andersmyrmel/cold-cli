@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS accounts (
 	email TEXT NOT NULL UNIQUE,
 	daily_limit INTEGER NOT NULL DEFAULT 50,
 	last_send_at DATETIME,
-	status TEXT NOT NULL DEFAULT 'active'
+	status TEXT NOT NULL DEFAULT 'active',
+	gws_config_dir TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS campaigns (
