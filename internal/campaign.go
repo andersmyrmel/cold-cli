@@ -126,6 +126,9 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 
 		if _, err := tx.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (?, ?, 'active')",
 			campaignID, leadID); err != nil {
+			if strings.Contains(err.Error(), "UNIQUE") {
+				return nil, fmt.Errorf("lead %s is already in this campaign", email)
+			}
 			return nil, fmt.Errorf("linking lead %s: %w", email, err)
 		}
 
@@ -316,4 +319,108 @@ func GetCampaignStatus(db *sql.DB, name string) (*CampaignStatusInfo, error) {
 		SendCounts: counts,
 		CreatedAt:  c.CreatedAt,
 	}, nil
+}
+
+// CampaignListRow is a row from ListCampaigns.
+type CampaignListRow struct {
+	ID     int64  `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Leads  int    `json:"leads"`
+	Sends  int    `json:"sends"`
+}
+
+// ListCampaigns returns all campaigns with lead and send counts.
+func ListCampaigns(db *sql.DB) ([]CampaignListRow, error) {
+	rows, err := db.Query(`
+		SELECT c.id, c.name, c.status,
+			(SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = c.id) as leads,
+			(SELECT COUNT(*) FROM scheduled_sends WHERE campaign_id = c.id) as sends
+		FROM campaigns c
+		ORDER BY c.id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("listing campaigns: %w", err)
+	}
+	defer rows.Close()
+
+	var campaigns []CampaignListRow
+	for rows.Next() {
+		var c CampaignListRow
+		rows.Scan(&c.ID, &c.Name, &c.Status, &c.Leads, &c.Sends)
+		campaigns = append(campaigns, c)
+	}
+	return campaigns, nil
+}
+
+// DeleteCampaign deletes a campaign and all associated data.
+func DeleteCampaign(db *sql.DB, name string) (int64, error) {
+	var campaignID int64
+	err := db.QueryRow("SELECT id FROM campaigns WHERE name = ?", name).Scan(&campaignID)
+	if err == sql.ErrNoRows {
+		return 0, fmt.Errorf("campaign %q not found", name)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("looking up campaign: %w", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	tx.Exec("DELETE FROM scheduled_sends WHERE campaign_id = ?", campaignID)
+	tx.Exec("DELETE FROM events WHERE campaign_id = ?", campaignID)
+	tx.Exec("DELETE FROM campaign_leads WHERE campaign_id = ?", campaignID)
+	tx.Exec("DELETE FROM campaign_accounts WHERE campaign_id = ?", campaignID)
+	tx.Exec("DELETE FROM campaigns WHERE id = ?", campaignID)
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("committing: %w", err)
+	}
+
+	return campaignID, nil
+}
+
+// UpdateCampaignOpts holds fields to update. Zero values are ignored.
+type UpdateCampaignOpts struct {
+	SendWindowStart *string
+	SendWindowEnd   *string
+	SendDays        *string
+	Timezone        *string
+	MinGapSeconds   *int
+	MaxGapSeconds   *int
+}
+
+// UpdateCampaign updates campaign settings.
+func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
+	var campaignID int64
+	err := db.QueryRow("SELECT id FROM campaigns WHERE name = ?", name).Scan(&campaignID)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("campaign %q not found", name)
+	}
+	if err != nil {
+		return fmt.Errorf("looking up campaign: %w", err)
+	}
+
+	if opts.SendWindowStart != nil {
+		db.Exec("UPDATE campaigns SET send_window_start = ? WHERE id = ?", *opts.SendWindowStart, campaignID)
+	}
+	if opts.SendWindowEnd != nil {
+		db.Exec("UPDATE campaigns SET send_window_end = ? WHERE id = ?", *opts.SendWindowEnd, campaignID)
+	}
+	if opts.SendDays != nil {
+		db.Exec("UPDATE campaigns SET send_days = ? WHERE id = ?", *opts.SendDays, campaignID)
+	}
+	if opts.Timezone != nil {
+		db.Exec("UPDATE campaigns SET timezone = ? WHERE id = ?", *opts.Timezone, campaignID)
+	}
+	if opts.MinGapSeconds != nil {
+		db.Exec("UPDATE campaigns SET min_gap_seconds = ? WHERE id = ?", *opts.MinGapSeconds, campaignID)
+	}
+	if opts.MaxGapSeconds != nil {
+		db.Exec("UPDATE campaigns SET max_gap_seconds = ? WHERE id = ?", *opts.MaxGapSeconds, campaignID)
+	}
+
+	return nil
 }

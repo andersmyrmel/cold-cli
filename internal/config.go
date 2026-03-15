@@ -51,9 +51,20 @@ func LoadConfig() (*Config, error) {
 }
 
 func WriteDefaultConfig(path string) error {
-	data, err := yaml.Marshal(DefaultConfig)
-	if err != nil {
-		return fmt.Errorf("marshaling config: %w", err)
-	}
-	return os.WriteFile(path, data, 0644)
+	content := `# cold-cli configuration
+# These are defaults for new campaigns. Per-account daily_limit is set via:
+#   cold-cli account add <email> --daily-limit N
+# The account's daily_limit is the one enforced at send time.
+
+default_timezone: America/New_York
+default_daily_limit: 50
+min_gap_seconds: 90
+max_gap_seconds: 140
+send_window_start: "09:00"
+send_window_end: "17:00"
+
+# Send days: 0=Sunday, 1=Monday, 2=Tuesday, ..., 6=Saturday
+send_days: "1,2,3,4,5"
+`
+	return os.WriteFile(path, []byte(content), 0644)
 }

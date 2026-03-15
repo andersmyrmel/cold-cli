@@ -312,7 +312,9 @@ var campaignPreviewCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Printf("Campaign: %s (status: %s, %d sends)\n\n", args[0], status, len(preview))
+		fmt.Printf("Campaign: %s (status: %s, %d sends)\n", args[0], status, len(preview))
+		fmt.Println("Note: daily limits and send windows are enforced at send time, not shown here.")
+		fmt.Println()
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "SEND AT\tSTEP\tVARIANT\tLEAD\tACCOUNT\tSTATUS")
 		for _, r := range preview {
@@ -320,6 +322,126 @@ var campaignPreviewCmd = &cobra.Command{
 				r.SendAt, r.StepNumber, r.VariantIndex, r.LeadEmail, r.AccountEmail, r.Status)
 		}
 		return w.Flush()
+	},
+}
+
+var campaignListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all campaigns",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		campaigns, err := internal.ListCampaigns(db)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(campaigns)
+		}
+
+		if len(campaigns) == 0 {
+			fmt.Println("No campaigns. Create one with: cold-cli campaign create")
+			return nil
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tNAME\tSTATUS\tLEADS\tSENDS")
+		for _, c := range campaigns {
+			fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%d\n", c.ID, c.Name, c.Status, c.Leads, c.Sends)
+		}
+		return w.Flush()
+	},
+}
+
+var campaignDeleteCmd = &cobra.Command{
+	Use:   "delete <name>",
+	Short: "Delete a campaign and all associated data",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		id, err := internal.DeleteCampaign(db, args[0])
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(map[string]any{"name": args[0], "id": id, "deleted": true})
+		}
+
+		fmt.Printf("Deleted campaign %q (id=%d)\n", args[0], id)
+		return nil
+	},
+}
+
+var campaignUpdateCmd = &cobra.Command{
+	Use:   "update <name>",
+	Short: "Update campaign settings (send window, days, gaps)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		opts := internal.UpdateCampaignOpts{}
+		changed := false
+
+		if cmd.Flags().Changed("send-window-start") {
+			v, _ := cmd.Flags().GetString("send-window-start")
+			opts.SendWindowStart = &v
+			changed = true
+		}
+		if cmd.Flags().Changed("send-window-end") {
+			v, _ := cmd.Flags().GetString("send-window-end")
+			opts.SendWindowEnd = &v
+			changed = true
+		}
+		if cmd.Flags().Changed("send-days") {
+			v, _ := cmd.Flags().GetString("send-days")
+			opts.SendDays = &v
+			changed = true
+		}
+		if cmd.Flags().Changed("timezone") {
+			v, _ := cmd.Flags().GetString("timezone")
+			opts.Timezone = &v
+			changed = true
+		}
+		if cmd.Flags().Changed("min-gap") {
+			v, _ := cmd.Flags().GetInt("min-gap")
+			opts.MinGapSeconds = &v
+			changed = true
+		}
+		if cmd.Flags().Changed("max-gap") {
+			v, _ := cmd.Flags().GetInt("max-gap")
+			opts.MaxGapSeconds = &v
+			changed = true
+		}
+
+		if !changed {
+			return fmt.Errorf("no settings to update — use flags like --send-days, --send-window-start, etc.")
+		}
+
+		if err := internal.UpdateCampaign(db, args[0], opts); err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(map[string]any{"name": args[0], "updated": true})
+		}
+
+		fmt.Printf("Updated campaign %q\n", args[0])
+		return nil
 	},
 }
 
@@ -564,7 +686,13 @@ func init() {
 	campaignCreateCmd.Flags().String("sequence", "", "path to sequence YAML file")
 	campaignCreateCmd.Flags().String("leads", "", "path to leads CSV file")
 	campaignCreateCmd.Flags().String("accounts", "", "comma-separated account emails")
-	campaignCmd.AddCommand(campaignCreateCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd)
+	campaignUpdateCmd.Flags().String("send-window-start", "", "send window start (HH:MM)")
+	campaignUpdateCmd.Flags().String("send-window-end", "", "send window end (HH:MM)")
+	campaignUpdateCmd.Flags().String("send-days", "", "send days (0=Sun,1=Mon,...,6=Sat)")
+	campaignUpdateCmd.Flags().String("timezone", "", "timezone (e.g. America/New_York)")
+	campaignUpdateCmd.Flags().Int("min-gap", 0, "minimum seconds between sends")
+	campaignUpdateCmd.Flags().Int("max-gap", 0, "maximum seconds between sends")
+	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignUpdateCmd)
 
 	tickCmd.Flags().Bool("dry-run", false, "show what would be sent without actually sending")
 
