@@ -709,6 +709,15 @@ var campaignStatusCmd = &cobra.Command{
 		fmt.Printf("  leads:       %d\n", info.Leads)
 		fmt.Printf("  accounts:    %d\n", info.Accounts)
 		fmt.Printf("  created:     %s\n", info.CreatedAt)
+		if info.ReplyRate != nil {
+			fmt.Printf("  reply rate:  %.1f%%\n", *info.ReplyRate)
+		}
+		if info.LastSendAt != nil {
+			fmt.Printf("  last send:   %s\n", *info.LastSendAt)
+		}
+		if info.NextSendAt != nil {
+			fmt.Printf("  next send:   %s\n", *info.NextSendAt)
+		}
 		fmt.Printf("\nScheduled sends: %d total\n", info.TotalSends)
 		for _, s := range []string{"pending", "sent", "failed", "skipped", "cancelled"} {
 			if n, ok := info.SendCounts[s]; ok {

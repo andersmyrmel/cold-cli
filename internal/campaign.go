@@ -268,6 +268,9 @@ type CampaignStatusInfo struct {
 	TotalSends int            `json:"total_sends"`
 	SendCounts map[string]int `json:"send_counts"`
 	CreatedAt  string         `json:"created_at"`
+	ReplyRate  *float64       `json:"reply_rate,omitempty"`
+	NextSendAt *string        `json:"next_send_at,omitempty"`
+	LastSendAt *string        `json:"last_send_at,omitempty"`
 }
 
 // GetCampaignStatus returns campaign details and send counts.
@@ -313,7 +316,7 @@ func GetCampaignStatus(db *sql.DB, name string) (*CampaignStatusInfo, error) {
 	db.QueryRow("SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = ?", c.ID).Scan(&leadCount)
 	db.QueryRow("SELECT COUNT(*) FROM campaign_accounts WHERE campaign_id = ?", c.ID).Scan(&accountCount)
 
-	return &CampaignStatusInfo{
+	info := &CampaignStatusInfo{
 		Name:       name,
 		Status:     c.Status,
 		Sequence:   c.SeqFile,
@@ -324,7 +327,34 @@ func GetCampaignStatus(db *sql.DB, name string) (*CampaignStatusInfo, error) {
 		TotalSends: total,
 		SendCounts: counts,
 		CreatedAt:  c.CreatedAt,
-	}, nil
+	}
+
+	// Reply rate: replies / sent
+	sent := counts["sent"]
+	var replyCount int
+	db.QueryRow("SELECT COUNT(*) FROM events WHERE campaign_id = ? AND type = 'reply'", c.ID).Scan(&replyCount)
+	if sent > 0 {
+		rate := float64(replyCount) / float64(sent) * 100
+		info.ReplyRate = &rate
+	}
+
+	// Next pending send
+	var nextSend sql.NullString
+	db.QueryRow("SELECT MIN(send_at) FROM scheduled_sends WHERE campaign_id = ? AND status = 'pending'",
+		c.ID).Scan(&nextSend)
+	if nextSend.Valid {
+		info.NextSendAt = &nextSend.String
+	}
+
+	// Last sent
+	var lastSend sql.NullString
+	db.QueryRow("SELECT MAX(sent_at) FROM scheduled_sends WHERE campaign_id = ? AND status = 'sent'",
+		c.ID).Scan(&lastSend)
+	if lastSend.Valid {
+		info.LastSendAt = &lastSend.String
+	}
+
+	return info, nil
 }
 
 // CampaignListRow is a row from ListCampaigns.
