@@ -87,6 +87,77 @@ var initCmd = &cobra.Command{
 	},
 }
 
+// --- doctor command ---
+
+var doctorCmd = &cobra.Command{
+	Use:   "doctor [domain...]",
+	Short: "Check domain DNS setup for email deliverability (MX, SPF, DKIM, DMARC)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var domains []string
+
+		if len(args) > 0 {
+			domains = args
+		} else {
+			// Auto-detect from accounts
+			db, err := openDB()
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+
+			seen := map[string]bool{}
+			accounts, err := internal.ListAccounts(db)
+			if err != nil {
+				return err
+			}
+			for _, a := range accounts {
+				parts := strings.SplitN(a.Email, "@", 2)
+				if len(parts) == 2 && !seen[parts[1]] {
+					seen[parts[1]] = true
+					domains = append(domains, parts[1])
+				}
+			}
+			if len(domains) == 0 {
+				return fmt.Errorf("no accounts found — specify a domain: cold-cli doctor example.com")
+			}
+		}
+
+		var allDiags []*internal.DomainDiagnostic
+		for _, domain := range domains {
+			diag, err := internal.CheckDomain(domain)
+			if err != nil {
+				return fmt.Errorf("checking %s: %w", domain, err)
+			}
+			allDiags = append(allDiags, diag)
+		}
+
+		if jsonOutput {
+			return printJSON(allDiags)
+		}
+
+		for i, diag := range allDiags {
+			if i > 0 {
+				fmt.Println()
+			}
+			fmt.Printf("Domain: %s\n", diag.Domain)
+			for _, c := range diag.Checks {
+				if c.Passed {
+					fmt.Printf("  ✓ %-6s %s\n", c.Name, c.Detail)
+				} else {
+					fmt.Printf("  ✗ %-6s %s\n", c.Name, c.Detail)
+				}
+			}
+			fmt.Printf("\n  Score: %d/%d\n", diag.Score, diag.MaxScore)
+			for _, c := range diag.Checks {
+				if !c.Passed && c.Fix != "" {
+					fmt.Printf("  Fix:   %s\n", c.Fix)
+				}
+			}
+		}
+		return nil
+	},
+}
+
 // --- account commands ---
 
 var accountCmd = &cobra.Command{
@@ -1007,7 +1078,7 @@ func init() {
 
 	logCmd.Flags().Int("limit", 20, "number of events to show")
 
-	rootCmd.AddCommand(initCmd, accountCmd, leadCmd, campaignCmd, tickCmd, statsCmd, logCmd)
+	rootCmd.AddCommand(initCmd, doctorCmd, accountCmd, leadCmd, campaignCmd, tickCmd, statsCmd, logCmd)
 }
 
 func main() {
