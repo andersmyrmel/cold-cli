@@ -32,6 +32,7 @@ type TickConfig struct {
 	Now                time.Time      // injectable for testing
 	NoSleep            bool           // skip inter-send sleep (for testing)
 	Timezone           *time.Location // for daily limit day boundary; defaults to UTC
+	UnsubscribeHeader  bool           // add List-Unsubscribe header (off by default for cold email)
 	UnsubscribeSubject string         // subject for List-Unsubscribe mailto header
 }
 
@@ -152,10 +153,12 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 
 		// Build email
 		emailParams := BuildEmailForSend(seq, send.StepNumber, send.VariantIndex, leadFields, account.Email)
-		emailParams.UnsubscribeEmail = account.Email
-		emailParams.UnsubscribeSubject = cfg.UnsubscribeSubject
-		if emailParams.UnsubscribeSubject == "" {
-			emailParams.UnsubscribeSubject = "Unsubscribe"
+		if cfg.UnsubscribeHeader {
+			emailParams.UnsubscribeEmail = account.Email
+			emailParams.UnsubscribeSubject = cfg.UnsubscribeSubject
+			if emailParams.UnsubscribeSubject == "" {
+				emailParams.UnsubscribeSubject = "Unsubscribe"
+			}
 		}
 		if emailParams.ToEmail == "" {
 			slog.Error("could not build email",

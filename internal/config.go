@@ -16,6 +16,7 @@ type Config struct {
 	SendWindowStart    string `yaml:"send_window_start"`
 	SendWindowEnd      string `yaml:"send_window_end"`
 	SendDays           string `yaml:"send_days"`
+	UnsubscribeHeader  bool   `yaml:"unsubscribe_header"`
 	UnsubscribeSubject string `yaml:"unsubscribe_subject"`
 }
 
@@ -68,7 +69,11 @@ send_window_end: "17:00"
 # Send days: 0=Sunday, 1=Monday, 2=Tuesday, ..., 6=Saturday
 send_days: "1,2,3,4,5"
 
-# Subject line used in List-Unsubscribe mailto header and for detecting unsubscribe replies
+# Add List-Unsubscribe header to emails (off by default — not needed for cold email from personal Gmail)
+# Enable only if sending bulk/marketing campaigns that require it
+unsubscribe_header: false
+
+# Subject line used for detecting unsubscribe replies (always active regardless of header setting)
 unsubscribe_subject: Unsubscribe
 `
 	return os.WriteFile(path, []byte(content), 0644)

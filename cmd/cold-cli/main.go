@@ -577,9 +577,13 @@ var tickCmd = &cobra.Command{
 			}
 		}
 
+		var unsubHeader bool
 		unsubSubject := "Unsubscribe"
-		if cfg != nil && cfg.UnsubscribeSubject != "" {
-			unsubSubject = cfg.UnsubscribeSubject
+		if cfg != nil {
+			unsubHeader = cfg.UnsubscribeHeader
+			if cfg.UnsubscribeSubject != "" {
+				unsubSubject = cfg.UnsubscribeSubject
+			}
 		}
 
 		result, err := internal.Tick(internal.TickConfig{
@@ -587,6 +591,7 @@ var tickCmd = &cobra.Command{
 			GWS:                gwsCLI,
 			DryRun:             dryRun,
 			Timezone:           tz,
+			UnsubscribeHeader:  unsubHeader,
 			UnsubscribeSubject: unsubSubject,
 		})
 		if err != nil {
