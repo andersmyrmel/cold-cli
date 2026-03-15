@@ -388,6 +388,338 @@ func DeleteCampaign(db *sql.DB, name string) (int64, error) {
 	return campaignID, nil
 }
 
+// CloneCampaignOpts holds options for CloneCampaign.
+type CloneCampaignOpts struct {
+	SourceName string
+	NewName    string
+	LeadsFile  string
+	Accounts   []string // optional: override accounts; empty = reuse source accounts
+}
+
+// CloneCampaign creates a new campaign by copying settings from an existing one with new leads.
+func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, error) {
+	// Load source campaign
+	var src struct {
+		ID              int64
+		SeqFile         string
+		SeqContent      string
+		StopOnReply     bool
+		StopOnDomain    bool
+		WindowStart     string
+		WindowEnd       string
+		SendDays        string
+		Timezone        string
+		MinGap          int
+		MaxGap          int
+	}
+	err := db.QueryRow(`SELECT id, sequence_file, sequence_content, stop_on_reply, stop_on_domain_reply,
+		send_window_start, send_window_end, send_days, timezone, min_gap_seconds, max_gap_seconds
+		FROM campaigns WHERE name = ?`, opts.SourceName).
+		Scan(&src.ID, &src.SeqFile, &src.SeqContent, &src.StopOnReply, &src.StopOnDomain,
+			&src.WindowStart, &src.WindowEnd, &src.SendDays, &src.Timezone, &src.MinGap, &src.MaxGap)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("source campaign %q not found", opts.SourceName)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading source campaign: %w", err)
+	}
+
+	// Parse sequence from stored content or file
+	var seq *Sequence
+	if src.SeqContent != "" {
+		seq, err = ParseSequenceFromBytes([]byte(src.SeqContent))
+	} else {
+		seq, err = ParseSequence(src.SeqFile)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("parsing sequence: %w", err)
+	}
+
+	// Parse leads
+	records, _, err := ParseLeadsCSV(opts.LeadsFile)
+	if err != nil {
+		return nil, err
+	}
+
+	placeholders := seq.CollectPlaceholders()
+	if err := ValidateLeadFields(records, placeholders); err != nil {
+		return nil, err
+	}
+
+	// Resolve accounts
+	var accountIDs []int64
+	if len(opts.Accounts) > 0 {
+		for _, email := range opts.Accounts {
+			email = strings.TrimSpace(email)
+			var id int64
+			if err := db.QueryRow("SELECT id FROM accounts WHERE email = ? AND status = 'active'", email).Scan(&id); err != nil {
+				return nil, fmt.Errorf("account %s not found or not active", email)
+			}
+			accountIDs = append(accountIDs, id)
+		}
+	} else {
+		// Reuse source campaign's accounts
+		rows, err := db.Query("SELECT account_id FROM campaign_accounts WHERE campaign_id = ?", src.ID)
+		if err != nil {
+			return nil, fmt.Errorf("loading source accounts: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			rows.Scan(&id)
+			accountIDs = append(accountIDs, id)
+		}
+	}
+	if len(accountIDs) == 0 {
+		return nil, fmt.Errorf("no accounts available")
+	}
+
+	sendDays, err := ParseSendDays(src.SendDays)
+	if err != nil {
+		return nil, fmt.Errorf("parsing send_days: %w", err)
+	}
+	tz, err := time.LoadLocation(src.Timezone)
+	if err != nil {
+		return nil, fmt.Errorf("loading timezone: %w", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Create new campaign with same settings
+	stopReply := 0
+	if src.StopOnReply {
+		stopReply = 1
+	}
+	stopDomain := 0
+	if src.StopOnDomain {
+		stopDomain = 1
+	}
+
+	res, err := tx.Exec(`
+		INSERT INTO campaigns (name, status, sequence_file, sequence_content, stop_on_reply, stop_on_domain_reply,
+			send_window_start, send_window_end, send_days, timezone, min_gap_seconds, max_gap_seconds)
+		VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		opts.NewName, src.SeqFile, src.SeqContent, stopReply, stopDomain,
+		src.WindowStart, src.WindowEnd, src.SendDays, src.Timezone, src.MinGap, src.MaxGap)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
+			return nil, fmt.Errorf("campaign %q already exists", opts.NewName)
+		}
+		return nil, fmt.Errorf("inserting campaign: %w", err)
+	}
+	campaignID, _ := res.LastInsertId()
+
+	for _, accID := range accountIDs {
+		tx.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (?, ?)", campaignID, accID)
+	}
+
+	// Insert leads and compute schedule
+	leadsAdded, sendsAdded, err := insertLeadsAndSchedule(tx, campaignID, accountIDs, records, seq,
+		src.WindowStart, src.WindowEnd, sendDays, tz, src.MinGap, src.MaxGap)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing: %w", err)
+	}
+
+	return &CreateCampaignResult{
+		ID:             campaignID,
+		Name:           opts.NewName,
+		Status:         "draft",
+		Leads:          leadsAdded,
+		ScheduledSends: sendsAdded,
+		Accounts:       len(accountIDs),
+	}, nil
+}
+
+// AddLeadsResult is returned by AddLeadsToCampaign.
+type AddLeadsResult struct {
+	Campaign       string `json:"campaign"`
+	LeadsAdded     int    `json:"leads_added"`
+	LeadsSkipped   int    `json:"leads_skipped"`
+	ScheduledSends int    `json:"scheduled_sends"`
+}
+
+// AddLeadsToCampaign adds new leads to an existing campaign and schedules their sends.
+func AddLeadsToCampaign(db *sql.DB, campaignName, leadsFile string) (*AddLeadsResult, error) {
+	// Load campaign
+	var campID int64
+	var seqFile, seqContent, windowStart, windowEnd, sendDaysStr, tzName string
+	var minGap, maxGap int
+	err := db.QueryRow(`SELECT id, sequence_file, sequence_content, send_window_start, send_window_end,
+		send_days, timezone, min_gap_seconds, max_gap_seconds
+		FROM campaigns WHERE name = ?`, campaignName).
+		Scan(&campID, &seqFile, &seqContent, &windowStart, &windowEnd, &sendDaysStr, &tzName, &minGap, &maxGap)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("campaign %q not found", campaignName)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading campaign: %w", err)
+	}
+
+	// Parse sequence
+	var seq *Sequence
+	if seqContent != "" {
+		seq, err = ParseSequenceFromBytes([]byte(seqContent))
+	} else {
+		seq, err = ParseSequence(seqFile)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("parsing sequence: %w", err)
+	}
+
+	// Parse leads
+	records, _, err := ParseLeadsCSV(leadsFile)
+	if err != nil {
+		return nil, err
+	}
+
+	placeholders := seq.CollectPlaceholders()
+	if err := ValidateLeadFields(records, placeholders); err != nil {
+		return nil, err
+	}
+
+	// Get campaign accounts
+	var accountIDs []int64
+	rows, err := db.Query("SELECT account_id FROM campaign_accounts WHERE campaign_id = ?", campID)
+	if err != nil {
+		return nil, fmt.Errorf("loading accounts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		rows.Scan(&id)
+		accountIDs = append(accountIDs, id)
+	}
+	if len(accountIDs) == 0 {
+		return nil, fmt.Errorf("campaign has no accounts")
+	}
+
+	sendDays, err := ParseSendDays(sendDaysStr)
+	if err != nil {
+		return nil, fmt.Errorf("parsing send_days: %w", err)
+	}
+	tz, err := time.LoadLocation(tzName)
+	if err != nil {
+		return nil, fmt.Errorf("loading timezone: %w", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	totalRecords := len(records)
+	leadsAdded, sendsAdded, err := insertLeadsAndSchedule(tx, campID, accountIDs, records, seq,
+		windowStart, windowEnd, sendDays, tz, minGap, maxGap)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing: %w", err)
+	}
+
+	return &AddLeadsResult{
+		Campaign:       campaignName,
+		LeadsAdded:     leadsAdded,
+		LeadsSkipped:   totalRecords - leadsAdded,
+		ScheduledSends: sendsAdded,
+	}, nil
+}
+
+// insertLeadsAndSchedule is the shared logic for creating leads and their scheduled sends.
+// It inserts/upserts leads, links them to the campaign, computes schedule, and inserts sends.
+// Returns the number of leads added and sends created.
+func insertLeadsAndSchedule(tx *sql.Tx, campaignID int64, accountIDs []int64,
+	records []LeadRecord, seq *Sequence,
+	windowStart, windowEnd string, sendDays []time.Weekday, tz *time.Location,
+	minGap, maxGap int) (leadsAdded int, sendsAdded int, err error) {
+
+	var leadsForSchedule []LeadForSchedule
+	for _, rec := range records {
+		email := rec.Fields["email"]
+		domain := ExtractDomain(email)
+		firstName := rec.Fields["first_name"]
+		lastName := rec.Fields["last_name"]
+		company := rec.Fields["company"]
+
+		tx.Exec(`INSERT OR IGNORE INTO leads (email, first_name, last_name, company, domain)
+			VALUES (?, ?, ?, ?, ?)`,
+			email, firstName, lastName, company, domain)
+
+		var leadID int64
+		if err := tx.QueryRow("SELECT id FROM leads WHERE email = ?", email).Scan(&leadID); err != nil {
+			return 0, 0, fmt.Errorf("looking up lead %s: %w", email, err)
+		}
+
+		var globalStatus string
+		tx.QueryRow("SELECT global_status FROM leads WHERE id = ?", leadID).Scan(&globalStatus)
+		if globalStatus == "blacklisted" || globalStatus == "bounced" {
+			continue
+		}
+
+		// Skip if already in this campaign
+		var existing int
+		tx.QueryRow("SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = ? AND lead_id = ?",
+			campaignID, leadID).Scan(&existing)
+		if existing > 0 {
+			continue
+		}
+
+		if _, err := tx.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (?, ?, 'active')",
+			campaignID, leadID); err != nil {
+			return 0, 0, fmt.Errorf("linking lead %s: %w", email, err)
+		}
+
+		leadsForSchedule = append(leadsForSchedule, LeadForSchedule{
+			ID:     leadID,
+			Fields: rec.Fields,
+		})
+	}
+
+	if len(leadsForSchedule) == 0 {
+		return 0, 0, nil
+	}
+
+	schedRows, err := ComputeSchedule(ScheduleConfig{
+		CampaignID:      campaignID,
+		AccountIDs:      accountIDs,
+		Leads:           leadsForSchedule,
+		Sequence:        seq,
+		SendWindowStart: windowStart,
+		SendWindowEnd:   windowEnd,
+		SendDays:        sendDays,
+		Timezone:        tz,
+		MinGapSeconds:   minGap,
+		MaxGapSeconds:   maxGap,
+		StartTime:       time.Now().In(tz),
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("computing schedule: %w", err)
+	}
+
+	for _, row := range schedRows {
+		if _, err := tx.Exec(`
+			INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			row.CampaignID, row.LeadID, row.AccountID,
+			row.StepNumber, row.VariantIndex, row.SendAt.UTC().Format(time.RFC3339),
+		); err != nil {
+			return 0, 0, fmt.Errorf("inserting scheduled_send: %w", err)
+		}
+	}
+
+	return len(leadsForSchedule), len(schedRows), nil
+}
+
 // UpdateCampaignOpts holds fields to update. Zero values are ignored.
 type UpdateCampaignOpts struct {
 	SendWindowStart *string

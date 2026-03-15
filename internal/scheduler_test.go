@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -572,6 +574,197 @@ func TestUpdateCampaign_Validation(t *testing.T) {
 	err = UpdateCampaign(db, "nonexistent", UpdateCampaignOpts{Timezone: &validTZ})
 	if err == nil {
 		t.Error("expected error for nonexistent campaign")
+	}
+}
+
+// writeTempCSV creates a temp CSV file and returns its path.
+func writeTempCSV(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "leads.csv")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("writing temp CSV: %v", err)
+	}
+	return path
+}
+
+func TestCloneCampaign(t *testing.T) {
+	db := testDB(t)
+
+	// Setup source campaign
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	seqYAML := `name: Test
+defaults:
+  from_name: "Test"
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello {{first_name}} at {{company}}"
+`
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content,
+		send_window_start, send_window_end, send_days, timezone, min_gap_seconds, max_gap_seconds,
+		stop_on_reply, stop_on_domain_reply)
+		VALUES ('source', 'active', 'seq.yml', ?, '08:00', '16:00', '1,2,3,4,5', 'America/New_York', 100, 150, 1, 1)`,
+		seqYAML)
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+
+	// Create temp CSV
+	csvPath := writeTempCSV(t, "email,first_name,company\nalice@new.com,Alice,NewCo\nbob@new.com,Bob,NewCo\n")
+
+	// Clone without specifying accounts (reuse source)
+	result, err := CloneCampaign(db, CloneCampaignOpts{
+		SourceName: "source",
+		NewName:    "cloned",
+		LeadsFile:  csvPath,
+	})
+	if err != nil {
+		t.Fatalf("CloneCampaign error: %v", err)
+	}
+
+	if result.Name != "cloned" {
+		t.Errorf("expected name 'cloned', got %q", result.Name)
+	}
+	if result.Status != "draft" {
+		t.Errorf("expected status 'draft', got %q", result.Status)
+	}
+	if result.Leads != 2 {
+		t.Errorf("expected 2 leads, got %d", result.Leads)
+	}
+	if result.Accounts != 1 {
+		t.Errorf("expected 1 account, got %d", result.Accounts)
+	}
+
+	// Verify settings were copied
+	var windowStart, windowEnd, sendDays, tz string
+	var minGap, maxGap, stopOnReply, stopOnDomain int
+	db.QueryRow(`SELECT send_window_start, send_window_end, send_days, timezone,
+		min_gap_seconds, max_gap_seconds, stop_on_reply, stop_on_domain_reply
+		FROM campaigns WHERE name = 'cloned'`).
+		Scan(&windowStart, &windowEnd, &sendDays, &tz, &minGap, &maxGap, &stopOnReply, &stopOnDomain)
+
+	if windowStart != "08:00" {
+		t.Errorf("expected window start '08:00', got %q", windowStart)
+	}
+	if tz != "America/New_York" {
+		t.Errorf("expected timezone 'America/New_York', got %q", tz)
+	}
+	if stopOnDomain != 1 {
+		t.Errorf("expected stop_on_domain_reply=1, got %d", stopOnDomain)
+	}
+	if minGap != 100 {
+		t.Errorf("expected min_gap=100, got %d", minGap)
+	}
+}
+
+func TestCloneCampaign_DuplicateName(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email) VALUES ('sender@x.com')")
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content)
+		VALUES ('source', 'active', 'seq.yml', 'name: Test
+defaults:
+  from_name: "T"
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello"
+')`)
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+
+	csvPath := writeTempCSV(t, "email,first_name\nalice@new.com,Alice\n")
+
+	// Clone to existing name should fail
+	_, err := CloneCampaign(db, CloneCampaignOpts{
+		SourceName: "source",
+		NewName:    "source",
+		LeadsFile:  csvPath,
+	})
+	if err == nil {
+		t.Error("expected error for duplicate campaign name")
+	}
+}
+
+func TestAddLeadsToCampaign(t *testing.T) {
+	db := testDB(t)
+
+	// Setup campaign with 1 existing lead
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	seqYAML := `name: Test
+defaults:
+  from_name: "Test"
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello {{first_name}}"
+`
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content,
+		send_window_start, send_window_end, send_days, timezone)
+		VALUES ('test-add', 'active', 'seq.yml', ?, '00:00', '23:59', '0,1,2,3,4,5,6', 'UTC')`, seqYAML)
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('existing@acme.com', 'Existing', 'acme.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+
+	// CSV with 3 leads: 1 existing (should skip), 2 new
+	csvPath := writeTempCSV(t, "email,first_name\nexisting@acme.com,Existing\nalice@new.com,Alice\nbob@new.com,Bob\n")
+
+	result, err := AddLeadsToCampaign(db, "test-add", csvPath)
+	if err != nil {
+		t.Fatalf("AddLeadsToCampaign error: %v", err)
+	}
+
+	if result.LeadsAdded != 2 {
+		t.Errorf("expected 2 leads added, got %d", result.LeadsAdded)
+	}
+	if result.LeadsSkipped != 1 {
+		t.Errorf("expected 1 lead skipped, got %d", result.LeadsSkipped)
+	}
+	if result.ScheduledSends < 2 {
+		t.Errorf("expected at least 2 scheduled sends, got %d", result.ScheduledSends)
+	}
+
+	// Verify total leads in campaign
+	var totalLeads int
+	db.QueryRow("SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = 1").Scan(&totalLeads)
+	if totalLeads != 3 {
+		t.Errorf("expected 3 total leads in campaign, got %d", totalLeads)
+	}
+}
+
+func TestAddLeadsToCampaign_SkipsBlacklisted(t *testing.T) {
+	db := testDB(t)
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	seqYAML := `name: Test
+defaults:
+  from_name: "Test"
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello"
+`
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content,
+		send_window_start, send_window_end, send_days, timezone)
+		VALUES ('test-bl', 'draft', 'seq.yml', ?, '00:00', '23:59', '0,1,2,3,4,5,6', 'UTC')`, seqYAML)
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+
+	// Pre-create a blacklisted lead
+	db.Exec("INSERT INTO leads (email, first_name, domain, global_status) VALUES ('bad@acme.com', 'Bad', 'acme.com', 'blacklisted')")
+
+	csvPath := writeTempCSV(t, "email,first_name\nbad@acme.com,Bad\ngood@acme.com,Good\n")
+
+	result, err := AddLeadsToCampaign(db, "test-bl", csvPath)
+	if err != nil {
+		t.Fatalf("AddLeadsToCampaign error: %v", err)
+	}
+
+	if result.LeadsAdded != 1 {
+		t.Errorf("expected 1 lead added (blacklisted skipped), got %d", result.LeadsAdded)
+	}
+	if result.LeadsSkipped != 1 {
+		t.Errorf("expected 1 skipped, got %d", result.LeadsSkipped)
 	}
 }
 

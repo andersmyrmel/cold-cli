@@ -447,6 +447,87 @@ var campaignUpdateCmd = &cobra.Command{
 	},
 }
 
+var campaignCloneCmd = &cobra.Command{
+	Use:   "clone <source-name>",
+	Short: "Clone a campaign with new leads (copies sequence + settings)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name, _ := cmd.Flags().GetString("name")
+		leadsFile, _ := cmd.Flags().GetString("leads")
+		accountsFlag, _ := cmd.Flags().GetString("accounts")
+
+		if name == "" || leadsFile == "" {
+			return fmt.Errorf("required flags: --name, --leads")
+		}
+
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		var accounts []string
+		if accountsFlag != "" {
+			accounts = strings.Split(accountsFlag, ",")
+		}
+
+		result, err := internal.CloneCampaign(db, internal.CloneCampaignOpts{
+			SourceName: args[0],
+			NewName:    name,
+			LeadsFile:  leadsFile,
+			Accounts:   accounts,
+		})
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		fmt.Printf("Cloned %q → %q (id=%d)\n", args[0], result.Name, result.ID)
+		fmt.Printf("  leads:    %d\n", result.Leads)
+		fmt.Printf("  sends:    %d\n", result.ScheduledSends)
+		fmt.Printf("  accounts: %d\n", result.Accounts)
+		fmt.Printf("  status:   %s\n", result.Status)
+		fmt.Printf("\nRun 'cold-cli campaign preview %s' to review the schedule.\n", result.Name)
+		return nil
+	},
+}
+
+var campaignAddLeadsCmd = &cobra.Command{
+	Use:   "add-leads <name>",
+	Short: "Add new leads to an existing campaign",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		leadsFile, _ := cmd.Flags().GetString("leads")
+		if leadsFile == "" {
+			return fmt.Errorf("required flag: --leads")
+		}
+
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		result, err := internal.AddLeadsToCampaign(db, args[0], leadsFile)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		fmt.Printf("Added leads to %q\n", result.Campaign)
+		fmt.Printf("  added:   %d\n", result.LeadsAdded)
+		fmt.Printf("  skipped: %d (already in campaign, blacklisted, or bounced)\n", result.LeadsSkipped)
+		fmt.Printf("  sends:   %d scheduled\n", result.ScheduledSends)
+		return nil
+	},
+}
+
 var campaignActivateCmd = &cobra.Command{
 	Use:   "activate <name>",
 	Short: "Activate a draft campaign so tick will process it",
@@ -757,7 +838,11 @@ func init() {
 	campaignUpdateCmd.Flags().String("timezone", "", "timezone (e.g. America/New_York)")
 	campaignUpdateCmd.Flags().Int("min-gap", 0, "minimum seconds between sends")
 	campaignUpdateCmd.Flags().Int("max-gap", 0, "maximum seconds between sends")
-	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignUpdateCmd)
+	campaignCloneCmd.Flags().String("name", "", "new campaign name")
+	campaignCloneCmd.Flags().String("leads", "", "path to leads CSV file")
+	campaignCloneCmd.Flags().String("accounts", "", "comma-separated account emails (default: reuse source accounts)")
+	campaignAddLeadsCmd.Flags().String("leads", "", "path to leads CSV file")
+	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignUpdateCmd, campaignCloneCmd, campaignAddLeadsCmd)
 
 	tickCmd.Flags().Bool("dry-run", false, "show what would be sent without actually sending")
 
