@@ -89,7 +89,7 @@ john@acme.com,John,Acme Inc
 jane@bigcorp.com,Jane,BigCorp
 ```
 
-`email` is the only required column. All other columns are driven by what `{{placeholders}}` your sequence uses — cold-cli validates this at campaign creation.
+`email` is the only required column. All other columns are driven by what `{{placeholders}}` your sequence uses. cold-cli validates this at campaign creation.
 
 ## Commands
 
@@ -189,7 +189,7 @@ When round-robin is used, all steps for a given lead use the same account (requi
 
 ### Campaign Cloning
 
-Clone a campaign with new leads — copies sequence, settings, and accounts:
+Clone a campaign with new leads. Copies sequence, settings, and accounts:
 
 ```bash
 cold-cli campaign clone q1-outreach --name q2-outreach --leads new-leads.csv
