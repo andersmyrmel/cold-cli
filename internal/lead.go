@@ -59,6 +59,54 @@ func PauseLead(db *sql.DB, email string) (*PauseLeadResult, error) {
 	}, nil
 }
 
+// LeadListRow is a row from ListLeads.
+type LeadListRow struct {
+	ID           int64  `json:"id"`
+	Email        string `json:"email"`
+	FirstName    string `json:"first_name"`
+	Company      string `json:"company"`
+	Domain       string `json:"domain"`
+	GlobalStatus string `json:"global_status"`
+	Campaigns    int    `json:"campaigns"`
+}
+
+// ListLeads returns leads, optionally filtered by domain or status.
+func ListLeads(db *sql.DB, domain, status string, limit int) ([]LeadListRow, error) {
+	query := `
+		SELECT l.id, l.email, l.first_name, l.company, l.domain, l.global_status,
+			(SELECT COUNT(*) FROM campaign_leads WHERE lead_id = l.id) as campaigns
+		FROM leads l
+		WHERE 1=1`
+
+	var args []any
+	if domain != "" {
+		query += " AND l.domain = ?"
+		args = append(args, strings.ToLower(domain))
+	}
+	if status != "" {
+		query += " AND l.global_status = ?"
+		args = append(args, status)
+	}
+	query += " ORDER BY l.id DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying leads: %w", err)
+	}
+	defer rows.Close()
+
+	var leads []LeadListRow
+	for rows.Next() {
+		var l LeadListRow
+		if err := rows.Scan(&l.ID, &l.Email, &l.FirstName, &l.Company, &l.Domain, &l.GlobalStatus, &l.Campaigns); err != nil {
+			return nil, fmt.Errorf("scanning lead: %w", err)
+		}
+		leads = append(leads, l)
+	}
+	return leads, nil
+}
+
 // BlacklistResult is returned by BlacklistLead.
 type BlacklistResult struct {
 	Target           string `json:"target"`

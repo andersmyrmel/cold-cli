@@ -181,3 +181,122 @@ func setupScheduledSendsTestData(t *testing.T, db *sql.DB) {
 		}
 	}
 }
+
+func TestPauseAccount(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	db.Exec("INSERT INTO campaigns (name, sequence_file) VALUES ('c1', 'seq.yml')")
+	db.Exec("INSERT INTO leads (email, domain) VALUES ('lead@x.com', 'x.com')")
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status) VALUES (1, 1, 1, 1, '2025-01-01', 'pending')")
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status) VALUES (1, 1, 1, 2, '2025-01-04', 'pending')")
+
+	result, err := PauseAccount(db, "sender@x.com")
+	if err != nil {
+		t.Fatalf("PauseAccount error: %v", err)
+	}
+	if result.CancelledSends != 2 {
+		t.Errorf("expected 2 cancelled sends, got %d", result.CancelledSends)
+	}
+
+	var status string
+	db.QueryRow("SELECT status FROM accounts WHERE email = 'sender@x.com'").Scan(&status)
+	if status != "paused" {
+		t.Errorf("expected account status 'paused', got %q", status)
+	}
+
+	// Pause again should error
+	_, err = PauseAccount(db, "sender@x.com")
+	if err == nil {
+		t.Error("expected error pausing already-paused account")
+	}
+}
+
+func TestResumeAccount(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, status) VALUES ('sender@x.com', 'paused')")
+
+	err := ResumeAccount(db, "sender@x.com")
+	if err != nil {
+		t.Fatalf("ResumeAccount error: %v", err)
+	}
+
+	var status string
+	db.QueryRow("SELECT status FROM accounts WHERE email = 'sender@x.com'").Scan(&status)
+	if status != "active" {
+		t.Errorf("expected 'active', got %q", status)
+	}
+
+	// Resume active should error
+	err = ResumeAccount(db, "sender@x.com")
+	if err == nil {
+		t.Error("expected error resuming active account")
+	}
+}
+
+func TestRemoveAccount(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	db.Exec("INSERT INTO campaigns (name, sequence_file) VALUES ('c1', 'seq.yml')")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+	db.Exec("INSERT INTO leads (email, domain) VALUES ('lead@x.com', 'x.com')")
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status) VALUES (1, 1, 1, 1, '2025-01-01', 'pending')")
+
+	result, err := RemoveAccount(db, "sender@x.com")
+	if err != nil {
+		t.Fatalf("RemoveAccount error: %v", err)
+	}
+	if result.CancelledSends != 1 {
+		t.Errorf("expected 1 cancelled, got %d", result.CancelledSends)
+	}
+
+	// Account should be marked 'removed' (kept for historical reference)
+	var status string
+	db.QueryRow("SELECT status FROM accounts WHERE email = 'sender@x.com'").Scan(&status)
+	if status != "removed" {
+		t.Errorf("expected status 'removed', got %q", status)
+	}
+
+	// campaign_accounts link should be gone
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM campaign_accounts WHERE account_id = 1").Scan(&count)
+	if count != 0 {
+		t.Error("expected campaign_accounts link to be deleted")
+	}
+}
+
+func TestListLeads(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('a@acme.com', 'Alice', 'Acme', 'acme.com')")
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('b@acme.com', 'Bob', 'Acme', 'acme.com')")
+	db.Exec("INSERT INTO leads (email, first_name, company, domain, global_status) VALUES ('c@other.com', 'Carol', 'Other', 'other.com', 'blacklisted')")
+
+	// All leads
+	leads, err := ListLeads(db, "", "", 50)
+	if err != nil {
+		t.Fatalf("ListLeads error: %v", err)
+	}
+	if len(leads) != 3 {
+		t.Errorf("expected 3 leads, got %d", len(leads))
+	}
+
+	// Filter by domain
+	leads, _ = ListLeads(db, "acme.com", "", 50)
+	if len(leads) != 2 {
+		t.Errorf("expected 2 acme.com leads, got %d", len(leads))
+	}
+
+	// Filter by status
+	leads, _ = ListLeads(db, "", "blacklisted", 50)
+	if len(leads) != 1 {
+		t.Errorf("expected 1 blacklisted lead, got %d", len(leads))
+	}
+	if leads[0].Email != "c@other.com" {
+		t.Errorf("expected c@other.com, got %s", leads[0].Email)
+	}
+
+	// Limit
+	leads, _ = ListLeads(db, "", "", 1)
+	if len(leads) != 1 {
+		t.Errorf("expected 1 lead with limit=1, got %d", len(leads))
+	}
+}

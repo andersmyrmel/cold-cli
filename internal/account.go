@@ -38,6 +38,94 @@ func AddAccount(db *sql.DB, email string, dailyLimit int, configDir string) (*Ad
 	}, nil
 }
 
+// PauseAccountResult is returned by PauseAccount.
+type PauseAccountResult struct {
+	Email          string `json:"email"`
+	CancelledSends int64  `json:"cancelled_sends"`
+}
+
+// PauseAccount deactivates an account and cancels its pending sends.
+func PauseAccount(db *sql.DB, email string) (*PauseAccountResult, error) {
+	var id int64
+	var status string
+	err := db.QueryRow("SELECT id, status FROM accounts WHERE email = ?", email).Scan(&id, &status)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("account %s not found", email)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("looking up account: %w", err)
+	}
+	if status != "active" {
+		return nil, fmt.Errorf("account %s is already %s", email, status)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	tx.Exec("UPDATE accounts SET status = 'paused' WHERE id = ?", id)
+
+	res, _ := tx.Exec("UPDATE scheduled_sends SET status = 'cancelled' WHERE account_id = ? AND status = 'pending'", id)
+	cancelled, _ := res.RowsAffected()
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing: %w", err)
+	}
+
+	return &PauseAccountResult{Email: email, CancelledSends: cancelled}, nil
+}
+
+// ResumeAccount reactivates a paused account.
+func ResumeAccount(db *sql.DB, email string) error {
+	var status string
+	err := db.QueryRow("SELECT status FROM accounts WHERE email = ?", email).Scan(&status)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("account %s not found", email)
+	}
+	if err != nil {
+		return fmt.Errorf("looking up account: %w", err)
+	}
+	if status != "paused" {
+		return fmt.Errorf("account %s is %s (expected paused)", email, status)
+	}
+
+	_, err = db.Exec("UPDATE accounts SET status = 'active' WHERE email = ?", email)
+	return err
+}
+
+// RemoveAccount deactivates an account permanently and cancels its pending sends.
+// The account row is kept (status='removed') because historical sends/events reference it.
+func RemoveAccount(db *sql.DB, email string) (*PauseAccountResult, error) {
+	var id int64
+	err := db.QueryRow("SELECT id FROM accounts WHERE email = ?", email).Scan(&id)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("account %s not found", email)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("looking up account: %w", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, _ := tx.Exec("UPDATE scheduled_sends SET status = 'cancelled' WHERE account_id = ? AND status = 'pending'", id)
+	cancelled, _ := res.RowsAffected()
+
+	tx.Exec("DELETE FROM campaign_accounts WHERE account_id = ?", id)
+	tx.Exec("UPDATE accounts SET status = 'removed' WHERE id = ?", id)
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing: %w", err)
+	}
+
+	return &PauseAccountResult{Email: email, CancelledSends: cancelled}, nil
+}
+
 // ListAccountsRow is a row from ListAccounts.
 type ListAccountsRow struct {
 	ID         int64  `json:"id"`

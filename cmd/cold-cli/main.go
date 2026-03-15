@@ -172,11 +172,121 @@ var accountListCmd = &cobra.Command{
 	},
 }
 
+var accountPauseCmd = &cobra.Command{
+	Use:   "pause <email>",
+	Short: "Pause an account (stops sending, cancels pending sends)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		result, err := internal.PauseAccount(db, strings.TrimSpace(args[0]))
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+		fmt.Printf("Paused account %s: %d sends cancelled\n", result.Email, result.CancelledSends)
+		return nil
+	},
+}
+
+var accountResumeCmd = &cobra.Command{
+	Use:   "resume <email>",
+	Short: "Resume a paused account",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		email := strings.TrimSpace(args[0])
+		if err := internal.ResumeAccount(db, email); err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(map[string]any{"email": email, "status": "active"})
+		}
+		fmt.Printf("Resumed account %s\n", email)
+		return nil
+	},
+}
+
+var accountRemoveCmd = &cobra.Command{
+	Use:   "remove <email>",
+	Short: "Remove an account and cancel its pending sends",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		result, err := internal.RemoveAccount(db, strings.TrimSpace(args[0]))
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+		fmt.Printf("Removed account %s: %d sends cancelled\n", result.Email, result.CancelledSends)
+		return nil
+	},
+}
+
 // --- lead commands ---
 
 var leadCmd = &cobra.Command{
 	Use:   "lead",
 	Short: "Manage leads",
+}
+
+var leadListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List leads, optionally filtered by domain or status",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		domain, _ := cmd.Flags().GetString("domain")
+		status, _ := cmd.Flags().GetString("status")
+		limit, _ := cmd.Flags().GetInt("limit")
+
+		leads, err := internal.ListLeads(db, domain, status, limit)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(leads)
+		}
+
+		if len(leads) == 0 {
+			fmt.Println("No leads found.")
+			return nil
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tEMAIL\tNAME\tCOMPANY\tDOMAIN\tSTATUS\tCAMPAIGNS")
+		for _, l := range leads {
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%d\n",
+				l.ID, l.Email, l.FirstName, l.Company, l.Domain, l.GlobalStatus, l.Campaigns)
+		}
+		return w.Flush()
+	},
 }
 
 var leadPauseCmd = &cobra.Command{
@@ -859,8 +969,11 @@ func init() {
 
 	accountAddCmd.Flags().Int("daily-limit", 50, "maximum emails per day for this account")
 	accountAddCmd.Flags().Bool("skip-auth", false, "skip gws OAuth login (for testing or pre-authed accounts)")
-	accountCmd.AddCommand(accountAddCmd, accountListCmd)
-	leadCmd.AddCommand(leadPauseCmd, leadBlacklistCmd)
+	accountCmd.AddCommand(accountAddCmd, accountListCmd, accountPauseCmd, accountResumeCmd, accountRemoveCmd)
+	leadListCmd.Flags().String("domain", "", "filter by domain")
+	leadListCmd.Flags().String("status", "", "filter by status (active, blacklisted, bounced)")
+	leadListCmd.Flags().Int("limit", 50, "max leads to show")
+	leadCmd.AddCommand(leadListCmd, leadPauseCmd, leadBlacklistCmd)
 
 	campaignCreateCmd.Flags().String("name", "", "campaign name")
 	campaignCreateCmd.Flags().String("sequence", "", "path to sequence YAML file")
