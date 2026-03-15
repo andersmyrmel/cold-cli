@@ -4,15 +4,17 @@ Open-source, agent-first CLI cold email sequence engine in Go. Built on top of [
 
 ## Problem
 
-No CLI-native cold email sequence engine exists. SaaS tools (Instantly, Smartlead, Lemlist) are all GUIs. We want the sequence engine layer only — gws handles Gmail send/receive.
+No CLI-native cold email sequence engine exists. SaaS tools (Instantly, Smartlead, Lemlist) are all GUIs. We want the sequence engine layer only, gws handles Gmail send/receive.
 
 ## Tech Stack
 
-- **Go** — single binary, no runtime deps
-- **SQLite** — single file (`~/.cold-cli/data.db`), pure Go driver (`modernc.org/sqlite`, no CGO)
-- **gws CLI** — subprocess calls for Gmail send + inbox polling
-- **Cobra** — CLI framework (same as gh, docker, kubectl)
-- **YAML** — sequence definitions and config (`~/.cold-cli/config.yml`)
+- **Go** single binary, no runtime deps
+- **SQLite** single file (`~/.cold-cli/data.db`), pure Go driver (`modernc.org/sqlite`, no CGO)
+- **gws CLI** subprocess calls for Gmail send + inbox polling
+- **Cobra** CLI framework (same as gh, docker, kubectl)
+- **YAML** sequence definitions and config (`~/.cold-cli/config.yml`)
+- **log/slog** structured JSON logging to `~/.cold-cli/tick.log`
+- **whois** domain age lookups for `cold-cli doctor`
 
 ## Project Structure
 
@@ -26,11 +28,15 @@ cold-cli/
 │   ├─ tick.go              (tick engine: lock, poll, send loop)
 │   ├─ scheduler.go         (eager schedule computation, variant assignment)
 │   ├─ gws.go               (GWSClient interface + real subprocess impl)
-│   ├─ send.go              (email construction: RFC 2822, threading headers)
-│   ├─ reply.go             (reply/bounce detection, header matching)
+│   ├─ send.go              (email construction: RFC 2822, threading, List-Unsubscribe)
+│   ├─ reply.go             (reply/bounce/unsubscribe detection, header matching)
 │   ├─ template.go          ({{placeholder}} string replacement)
 │   ├─ csv.go               (lead CSV import, BOM stripping, validation)
-│   └─ config.go            (YAML config loading)
+│   ├─ config.go            (YAML config loading)
+│   ├─ stats.go             (campaign/step/variant/lead stats, event log)
+│   ├─ account.go           (account CRUD, domain diagnostics)
+│   ├─ lead.go              (lead pause/blacklist/list)
+│   └─ campaign.go          (campaign CRUD, clone, add-leads)
 ├─ go.mod
 └─ go.sum
 ```
@@ -43,10 +49,11 @@ accounts
 ├─ email
 ├─ daily_limit
 ├─ last_send_at
-└─ status
+├─ status (active/paused/removed)
+└─ gws_config_dir
 
 campaigns
-├─ id, name, status, sequence_file
+├─ id, name, status, sequence_file, sequence_content
 ├─ stop_on_reply, stop_on_domain_reply
 ├─ send_window_start/end, send_days, timezone
 ├─ min_gap_seconds, max_gap_seconds
@@ -80,10 +87,14 @@ scheduled_sends
 
 events
 ├─ id, campaign_id, lead_id, account_id
-├─ type (sent/reply/bounce)
+├─ type (sent/reply/bounce/unsubscribe)
 ├─ step_number, message_id, thread_id
 ├─ timestamp
 └─ metadata (json)
+
+kv
+├─ key (e.g. last_poll_at)
+└─ value
 ```
 
 ### Indexes
@@ -100,17 +111,18 @@ CREATE INDEX idx_leads_domain ON leads(domain);
 
 ```
 ┌─────────┐
-│ pending │──send ok───▶ sent
+│ pending │──send ok────▶ sent
 │         │──send fail──▶ failed
-│         │──reply─────▶ skipped
-│         │──bounce────▶ skipped
-│         │──user──────▶ cancelled
+│         │──reply──────▶ skipped
+│         │──bounce─────▶ skipped
+│         │──unsub──────▶ cancelled (via blacklist)
+│         │──user───────▶ cancelled
 └─────────┘
 ```
 
 ## Core Engine: tick
 
-Single idempotent command. Triggered by cron (`*/10 9-17 * * 1-5`), manual invocation, or agent.
+Single idempotent command. Triggered by cron (`*/10 * * * *`), manual invocation, or agent. All output logged to `~/.cold-cli/tick.log` as structured JSON.
 
 ```
 tick starts
@@ -119,9 +131,11 @@ tick starts
 │   └─ locked? → print "tick already running", exit 0
 │
 ├─ 1. Poll inbox (via gws, messages after last_poll_at)
-│      → match replies via In-Reply-To header → events.message_id
-│      → UPDATE campaign_leads.status = 'replied'
-│      → UPDATE scheduled_sends.status = 'skipped' (remaining sends)
+│      → match replies via In-Reply-To header
+│      → detect unsubscribe requests (keyword matching)
+│      │   → unsubscribe: blacklist lead globally, cancel all sends
+│      │   → reply: UPDATE campaign_leads.status = 'replied',
+│      │            skip remaining sends
 │      → if stop_on_domain_reply: skip same-domain leads in campaign
 │      → structured JSON logging via log/slog for all operations
 │
@@ -147,6 +161,7 @@ tick starts
 │      ├─ construct RFC 2822 message
 │      │   step 1: new thread (Subject, From, To)
 │      │   step 2+: In-Reply-To, References, Re: Subject, thread_id
+│      │   optional: List-Unsubscribe header (if configured)
 │      ├─ call gws send (30s timeout)
 │      │   success → mark 'sent', INSERT event (error-checked + logged)
 │      │   failure → mark 'failed', slog.Error, continue
@@ -156,7 +171,7 @@ tick starts
 │      ├─ increment in-memory daily count
 │      └─ sleep 90-140 sec (random)
 │
-├─ 6. Print summary (sent/failed/skipped counts)
+├─ 6. Log summary to tick.log, print human-readable summary
 │
 └─ release lock
 ```
@@ -166,16 +181,16 @@ tick starts
 All send times pre-computed at campaign creation. Each send = a `scheduled_sends` row.
 
 Enables:
-- `campaign preview` — see full schedule before activating
+- `campaign preview` to show full schedule before activating
 - Agent review of the timeline
 - tick is trivially simple: `SELECT WHERE send_at <= now AND status = 'pending'`
 
 ### Schedule Computation
 
-At `campaign create`:
+At `campaign create` (or `clone` / `add-leads`):
 1. Parse sequence YAML (steps, delays, variants)
 2. Parse leads CSV (validate `email` + all `{{placeholders}}` used in sequence)
-3. Assign accounts round-robin (all steps for one lead → same account for thread continuity)
+3. Assign accounts round-robin (all steps for one lead = same account for thread continuity)
 4. Assign variants (round-robin across leads for each step that has variants)
 5. Compute `send_at` for each lead+step:
    - Step 1: campaign start time + offset based on lead position
@@ -187,18 +202,19 @@ At `campaign create`:
 
 ### Catch-Up After Laptop Sleep
 
-tick processes all overdue sends (`send_at <= now`) with normal 90-140 sec gaps. Daily limit and send window are the safety valves. No staleness cutoff — sends scheduled hours ago still get sent. Recipients don't see the originally scheduled time.
+tick processes all overdue sends (`send_at <= now`) with normal 90-140 sec gaps. Daily limit, send window, and send day are the safety valves. No staleness cutoff. Recipients don't see the originally scheduled time.
 
 ## Account Rotation
 
 Round-robin assignment at schedule time (not send time). All steps for a given lead use the same account (required for Gmail thread continuity). Assignment is deterministic and visible in `campaign preview`.
 
-## Reply/Bounce Handling
+## Reply/Bounce/Unsubscribe Handling
 
 - **Reply detected** → `campaign_leads.status = 'replied'`, remaining `scheduled_sends` marked `'skipped'`
 - **Domain reply** (if `stop_on_domain_reply=true`) → all leads with same domain in that campaign get their pending sends skipped
+- **Unsubscribe detected** (keyword matching: "unsubscribe", "remove me", "opt out", etc.) → lead blacklisted globally, all pending sends across all campaigns cancelled, `'unsubscribe'` event recorded
 - **Bounce detected** → `leads.global_status = 'bounced'` (global), `campaign_leads.status = 'bounced'`, pending sends skipped
-- Daily send counts derived from `COUNT(*) FROM events WHERE type='sent'` — no mutable counter, always accurate
+- Daily send counts derived from `COUNT(*) FROM events WHERE type='sent'` with timezone-aware day boundary
 
 ## Template Engine
 
@@ -206,6 +222,7 @@ Simple `strings.ReplaceAll` for `{{placeholder}}` substitution. No template engi
 
 - Placeholders validated at campaign creation: extract all `{{X}}` from sequence YAML, verify every lead has non-empty values
 - CSV schema: `email` is the only hardcoded required column; all other required columns are driven by the sequence's placeholders
+- Custom CSV columns stored as JSON in `leads.custom_fields`, parsed at send time
 
 ## gws Integration
 
@@ -217,118 +234,117 @@ type GWSClient interface {
 ```
 
 - Real implementation calls gws as subprocess with 30s timeout
-- Per-send error isolation: gws failure marks that `scheduled_sends` row as `'failed'`, logs error with stderr, continues to next send
-- Health check on `cold-cli init`: verify gws binary exists, is executable, can authenticate
+- Per-account config dirs for multi-account OAuth
+- Per-send error isolation: gws failure marks that `scheduled_sends` row as `'failed'`, logs error, continues to next send
+- Health check on `cold-cli init`: verify gws binary exists
 - `last_poll_at` stored for efficient reply polling (`after:` query filter)
 
 ## Error Handling
 
 - **gws not found**: caught at `init` and first `tick` run
-- **gws send failure**: per-send isolation, mark `'failed'`, continue
+- **gws send failure**: per-send isolation, mark `'failed'`, slog.Error, continue
 - **Missing message_id after step 1**: treated as send failure (prevents broken threading)
+- **DB write failure after send**: slog.Error with full context (send_id, message_id), continue
 - **Concurrent tick**: flock auto-releases on process exit; second tick exits cleanly
-- **Lock file after crash**: OS releases flock on process exit — no stale lock problem
+- **Lock file after crash**: OS releases flock on process exit, no stale lock problem
+- **Invalid campaign update**: timezone, time format, send days validated before writing
+
+## Domain Diagnostics
+
+`cold-cli doctor` checks sending domains for deliverability:
+- **MX records** via DNS lookup
+- **SPF** via TXT record lookup
+- **DKIM** via TXT lookup across 19 common selectors (google, default, selector1/2, key1/2/3, etc.)
+- **DMARC** via TXT lookup at `_dmarc.<domain>`
+- **Domain age** via WHOIS lookup
+
+Auto-detects domains from registered accounts if no domain specified.
 
 ## CLI Interface
 
 ```
 cold-cli init
-cold-cli account add <email>
-cold-cli account list
-cold-cli campaign create --name X --sequence seq.yml --leads leads.csv --accounts a@x.com
-cold-cli campaign preview <name>
-cold-cli campaign activate <name>
-cold-cli campaign pause/resume/status <name>
+cold-cli doctor [domain...]
+
+cold-cli account add/list/pause/resume/remove
+
+cold-cli campaign create --name --sequence --leads --accounts
+cold-cli campaign clone <source> --name <new> --leads <csv>
+cold-cli campaign add-leads <name> --leads <csv>
+cold-cli campaign preview/activate/pause/resume/status <name>
+cold-cli campaign list/update/delete <name>
+
 cold-cli tick [--dry-run]
-cold-cli stats [campaign] [--json]
-cold-cli stats <name> --leads
+
+cold-cli stats [campaign] [--leads] [--variants]
+cold-cli log [campaign] [--limit N]
+
+cold-cli lead list [--domain X] [--status X]
 cold-cli lead pause/blacklist <email|domain>
 ```
 
-All commands support `--json` for agent consumption. No interactive prompts — everything via flags.
-
-## Sequence Format (YAML)
-
-```yaml
-name: Lifecycle Agency Outreach
-defaults:
-  from_name: "Anders"
-steps:
-  - step: 1
-    delay: 0
-    subject: "{{first_name}}, quick question about {{company}}"
-    body: |
-      Hi {{first_name}}, ...
-    variants:
-      - subject: "{{company}} + lifecycle emails"
-        body: |
-          [variant B]
-  - step: 2
-    delay: 3  # days after step 1
-    body: |  # no subject = reply in same thread
-      Hey {{first_name}}, circling back...
-  - step: 3
-    delay: 5
-    body: |
-      Last note — ...
-```
+All commands support `--json` for agent consumption. No interactive prompts, everything via flags.
 
 ## System Diagram
 
 ```
-                    ┌─────────────────────┐
-                    │    cold-cli CLI      │
-                    │    (Cobra)           │
-                    ├─────────────────────┤
-                    │ init                 │
-                    │ account add/list     │
-                    │ campaign create/     │
-                    │   preview/activate/  │
-                    │   pause/resume/status│
-                    │ tick [--dry-run]     │
-                    │ stats [--json]       │
-                    │ lead pause/blacklist │
-                    └────────┬────────────┘
+                    ┌─────────────────────────┐
+                    │      cold-cli CLI        │
+                    │      (Cobra)             │
+                    ├─────────────────────────┤
+                    │ init / doctor            │
+                    │ account add/list/pause/  │
+                    │   resume/remove          │
+                    │ campaign create/clone/   │
+                    │   add-leads/preview/     │
+                    │   activate/pause/resume/ │
+                    │   status/list/update/del │
+                    │ tick [--dry-run]         │
+                    │ stats [--leads/variants] │
+                    │ log [--limit]            │
+                    │ lead list/pause/blacklist│
+                    └────────┬────────────────┘
                              │
               ┌──────────────┼──────────────┐
               │              │              │
               ▼              ▼              ▼
      ┌────────────┐  ┌────────────┐  ┌───────────┐
-     │ scheduler  │  │  tick      │  │  stats    │
-     │            │  │  engine    │  │  queries  │
+     │ scheduler  │  │  tick      │  │  stats /  │
+     │            │  │  engine    │  │  log      │
      │ • compute  │  │            │  │           │
      │   send_at  │  │ • flock    │  │ • agg by  │
      │ • round-   │  │ • poll     │  │   campaign│
      │   robin    │  │   replies  │  │   /step   │
-     │   accounts │  │ • poll     │  │   /type   │
-     │ • assign   │  │   bounces  │  └───────────┘
-     │   variants │  │ • send due │
-     │ • validate │  │ • backfill │
-     │   templates│  │   threads  │
-     └─────┬──────┘  └──┬───┬────┘
-           │            │   │
-           ▼            │   ▼
-     ┌───────────┐      │  ┌──────────────┐
-     │  SQLite   │◄─────┘  │  GWSClient   │
-     │  (~/.cold-│         │  (interface)  │
-     │  cli/     │         ├──────────────┤
-     │  data.db) │         │ SendEmail()  │
-     │           │         │ ListMessages()│
-     └───────────┘         └──────┬───────┘
-                                  │
-                                  ▼
-                           ┌──────────────┐
-                           │   gws CLI    │
-                           │  (subprocess)│
+     │   accounts │  │ • detect   │  │   /variant│
+     │ • assign   │  │   unsubs   │  │ • event   │
+     │   variants │  │ • poll     │  │   log     │
+     │ • validate │  │   bounces  │  └───────────┘
+     │   templates│  │ • send due │
+     └─────┬──────┘  │ • slog    │
+           │         └──┬───┬────┘
+           ▼            │   │
+     ┌───────────┐      │   ▼
+     │  SQLite   │◄─────┘  ┌──────────────┐
+     │  (~/.cold-│         │  GWSClient   │
+     │  cli/     │         │  (interface)  │
+     │  data.db) │         ├──────────────┤
+     │           │         │ SendEmail()  │
+     └───────────┘         │ ListMessages()│
+                           └──────┬───────┘
+     ┌───────────┐                │
+     │ tick.log  │                ▼
+     │ (slog     │         ┌──────────────┐
+     │  JSON)    │         │   gws CLI    │
+     └───────────┘         │  (subprocess)│
                            │  Gmail API   │
-                           └──────────────┘
+     ┌───────────┐         └──────────────┘
+     │  doctor   │
+     │ • DNS MX  │
+     │ • SPF/DKIM│
+     │ • DMARC   │
+     │ • WHOIS   │
+     └───────────┘
 ```
-
-## v1 Scope
-
-**In:** Sequence engine, eager scheduling, reply detection, bounce handling, multi-account rotation, A/B variants, analytics (sent/replied/bounced per campaign/step)
-
-**Out:** Warmup, open tracking, click tracking, GUI, branching sequences, ESP matching
 
 ## Design Decisions Log
 
@@ -338,7 +354,7 @@ steps:
 | 2 | Concurrent tick protection | flock file lock | OS auto-releases on exit, standard cron pattern |
 | 3 | Thread management | Backfill thread_id onto scheduled_sends | Self-contained rows, no joins at send time |
 | 4 | Daily limit tracking | COUNT from events table | No mutable counter, always accurate |
-| 5 | Catch-up after sleep | Send all overdue with gaps | Daily limit + send window are safety valves |
+| 5 | Catch-up after sleep | Send all overdue with gaps | Daily limit + send window + send day are safety valves |
 | 6 | Reply cancellation status | 'skipped' (vs 'cancelled') | Distinguishes auto-skip from user-initiated cancel |
 | 7 | Project structure | Flat internal/ package | Right-sized for ~15 files, no over-nesting |
 | 8 | CLI framework | Cobra | Industry standard, subcommand nesting |
@@ -350,3 +366,10 @@ steps:
 | 14 | CSV schema | email required, rest driven by template | Flexible, no arbitrary constraints |
 | 15 | Daily count query | Preload at tick start | One GROUP BY query, in-memory map |
 | 16 | Reply polling | last_poll_at + after: filter | Efficient, only checks new messages |
+| 17 | Sequence storage | YAML content in DB + file path fallback | Survives file moves, immutable per campaign |
+| 18 | Daily limit timezone | Config default_timezone for day boundary | Prevents limit overshoot near midnight |
+| 19 | Send day enforcement | Check day-of-week at tick time | Prevents weekend catch-up sends |
+| 20 | Unsubscribe detection | Keyword matching on reply subject/snippet | Auto-blacklists globally, no manual intervention |
+| 21 | Tick logging | log/slog JSON to ~/.cold-cli/tick.log | Works with cron, no redirection needed |
+| 22 | List-Unsubscribe header | Opt-in (off by default) | Cold email should look like 1-to-1, not marketing |
+| 23 | Domain diagnostics | DNS + WHOIS, no external APIs | Works offline, no rate limits on DNS |
