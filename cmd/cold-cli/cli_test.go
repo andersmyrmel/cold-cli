@@ -698,6 +698,195 @@ func TestCLI_Stats_NotFound(t *testing.T) {
 	}
 }
 
+// --- campaign list/delete/update tests ---
+
+func TestCLI_CampaignList_Empty(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "campaign", "list")
+	if code != 0 {
+		t.Fatalf("failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "No campaigns") {
+		t.Errorf("expected empty message: %s", out)
+	}
+}
+
+func TestCLI_CampaignList(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "camp-a", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "camp-b", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "list")
+	if code != 0 {
+		t.Fatalf("failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "camp-a") || !strings.Contains(out, "camp-b") {
+		t.Errorf("expected both campaigns: %s", out)
+	}
+}
+
+func TestCLI_CampaignList_JSON(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "camp-a", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "list", "--json")
+	if code != 0 {
+		t.Fatalf("failed (exit %d): %s", code, out)
+	}
+	var result []map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(result) != 1 {
+		t.Errorf("expected 1 campaign, got %d", len(result))
+	}
+}
+
+func TestCLI_CampaignDelete(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "to-delete", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "delete", "to-delete")
+	if code != 0 {
+		t.Fatalf("delete failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "Deleted") {
+		t.Errorf("expected 'Deleted' message: %s", out)
+	}
+
+	// Verify it's gone
+	out, code = runCLI(t, bin, env, "campaign", "status", "to-delete")
+	if code == 0 {
+		t.Error("expected error for deleted campaign")
+	}
+	if !strings.Contains(out, "not found") {
+		t.Errorf("expected 'not found': %s", out)
+	}
+}
+
+func TestCLI_CampaignDelete_NotFound(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "campaign", "delete", "nonexistent")
+	if code == 0 {
+		t.Error("expected error for nonexistent campaign")
+	}
+	if !strings.Contains(out, "not found") {
+		t.Errorf("expected 'not found': %s", out)
+	}
+}
+
+func TestCLI_CampaignDelete_Recreate(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+
+	// Create, delete, recreate with same name
+	runCLI(t, bin, env, "campaign", "create", "--name", "reuse", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "delete", "reuse")
+	out, code := runCLI(t, bin, env, "campaign", "create", "--name", "reuse", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+	if code != 0 {
+		t.Fatalf("recreate failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "Created campaign") {
+		t.Errorf("expected 'Created': %s", out)
+	}
+}
+
+func TestCLI_CampaignUpdate(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "updatable", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "update", "updatable", "--send-days", "2,3,4")
+	if code != 0 {
+		t.Fatalf("update failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "Updated") {
+		t.Errorf("expected 'Updated': %s", out)
+	}
+
+	// Verify via status
+	out, code = runCLI(t, bin, env, "campaign", "status", "updatable", "--json")
+	if code != 0 {
+		t.Fatalf("status failed (exit %d): %s", code, out)
+	}
+}
+
+func TestCLI_CampaignUpdate_NoFlags(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "no-update", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "update", "no-update")
+	if code == 0 {
+		t.Error("expected error when no flags provided")
+	}
+	if !strings.Contains(out, "no settings") {
+		t.Errorf("expected guidance message: %s", out)
+	}
+}
+
+func TestCLI_CampaignUpdate_NotFound(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "campaign", "update", "nonexistent", "--send-days", "1,2,3")
+	if code == 0 {
+		t.Error("expected error for nonexistent campaign")
+	}
+	if !strings.Contains(out, "not found") {
+		t.Errorf("expected 'not found': %s", out)
+	}
+}
+
+func TestCLI_CampaignPreview_ShowsNote(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "preview-note", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "preview", "preview-note")
+	if code != 0 {
+		t.Fatalf("preview failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "daily limits") {
+		t.Errorf("expected daily limits note in preview: %s", out)
+	}
+}
+
+func TestCLI_CampaignHelp_NewCommands(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+
+	out, code := runCLI(t, bin, env, "campaign", "--help")
+	if code != 0 {
+		t.Fatalf("help failed (exit %d): %s", code, out)
+	}
+	for _, sub := range []string{"list", "delete", "update"} {
+		if !strings.Contains(out, sub) {
+			t.Errorf("campaign help missing new subcommand %q: %s", sub, out)
+		}
+	}
+}
+
 // --- error handling tests ---
 
 func TestCLI_NotInitialized(t *testing.T) {
