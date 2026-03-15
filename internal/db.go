@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
 	name TEXT NOT NULL UNIQUE,
 	status TEXT NOT NULL DEFAULT 'draft',
 	sequence_file TEXT NOT NULL,
+	sequence_content TEXT NOT NULL DEFAULT '',
 	stop_on_reply INTEGER NOT NULL DEFAULT 1,
 	stop_on_domain_reply INTEGER NOT NULL DEFAULT 0,
 	send_window_start TEXT NOT NULL DEFAULT '09:00',
@@ -154,6 +155,7 @@ func OpenDB(path string) (*sql.DB, error) {
 func runMigrations(db *sql.DB) {
 	migrations := []string{
 		"ALTER TABLE accounts ADD COLUMN gws_config_dir TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE campaigns ADD COLUMN sequence_content TEXT NOT NULL DEFAULT ''",
 	}
 	for _, m := range migrations {
 		db.Exec(m) // ignore errors (column may already exist)

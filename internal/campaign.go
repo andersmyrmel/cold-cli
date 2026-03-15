@@ -3,6 +3,7 @@ package internal
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -30,6 +31,11 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 	seq, err := ParseSequence(opts.SequenceFile)
 	if err != nil {
 		return nil, err
+	}
+
+	seqContent, err := os.ReadFile(opts.SequenceFile)
+	if err != nil {
+		return nil, fmt.Errorf("reading sequence file: %w", err)
 	}
 
 	records, _, err := ParseLeadsCSV(opts.LeadsFile)
@@ -78,10 +84,10 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 	defer tx.Rollback()
 
 	result, err := tx.Exec(`
-		INSERT INTO campaigns (name, status, sequence_file, send_window_start, send_window_end,
+		INSERT INTO campaigns (name, status, sequence_file, sequence_content, send_window_start, send_window_end,
 			send_days, timezone, min_gap_seconds, max_gap_seconds)
-		VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?)`,
-		opts.Name, opts.SequenceFile,
+		VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?)`,
+		opts.Name, opts.SequenceFile, string(seqContent),
 		cfg.SendWindowStart, cfg.SendWindowEnd,
 		cfg.SendDays, cfg.DefaultTimezone,
 		cfg.MinGapSeconds, cfg.MaxGapSeconds,
@@ -392,8 +398,30 @@ type UpdateCampaignOpts struct {
 	MaxGapSeconds   *int
 }
 
-// UpdateCampaign updates campaign settings.
+// UpdateCampaign updates campaign settings with validation.
 func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
+	// Validate inputs before touching the database
+	if opts.Timezone != nil {
+		if _, err := time.LoadLocation(*opts.Timezone); err != nil {
+			return fmt.Errorf("invalid timezone %q: %w", *opts.Timezone, err)
+		}
+	}
+	if opts.SendWindowStart != nil {
+		if _, err := parseTimeOfDay(*opts.SendWindowStart); err != nil {
+			return fmt.Errorf("invalid send_window_start: %w", err)
+		}
+	}
+	if opts.SendWindowEnd != nil {
+		if _, err := parseTimeOfDay(*opts.SendWindowEnd); err != nil {
+			return fmt.Errorf("invalid send_window_end: %w", err)
+		}
+	}
+	if opts.SendDays != nil {
+		if _, err := ParseSendDays(*opts.SendDays); err != nil {
+			return fmt.Errorf("invalid send_days: %w", err)
+		}
+	}
+
 	var campaignID int64
 	err := db.QueryRow("SELECT id FROM campaigns WHERE name = ?", name).Scan(&campaignID)
 	if err == sql.ErrNoRows {
@@ -403,24 +431,40 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 		return fmt.Errorf("looking up campaign: %w", err)
 	}
 
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	updates := []struct {
+		col string
+		val any
+	}{}
 	if opts.SendWindowStart != nil {
-		db.Exec("UPDATE campaigns SET send_window_start = ? WHERE id = ?", *opts.SendWindowStart, campaignID)
+		updates = append(updates, struct{ col string; val any }{"send_window_start", *opts.SendWindowStart})
 	}
 	if opts.SendWindowEnd != nil {
-		db.Exec("UPDATE campaigns SET send_window_end = ? WHERE id = ?", *opts.SendWindowEnd, campaignID)
+		updates = append(updates, struct{ col string; val any }{"send_window_end", *opts.SendWindowEnd})
 	}
 	if opts.SendDays != nil {
-		db.Exec("UPDATE campaigns SET send_days = ? WHERE id = ?", *opts.SendDays, campaignID)
+		updates = append(updates, struct{ col string; val any }{"send_days", *opts.SendDays})
 	}
 	if opts.Timezone != nil {
-		db.Exec("UPDATE campaigns SET timezone = ? WHERE id = ?", *opts.Timezone, campaignID)
+		updates = append(updates, struct{ col string; val any }{"timezone", *opts.Timezone})
 	}
 	if opts.MinGapSeconds != nil {
-		db.Exec("UPDATE campaigns SET min_gap_seconds = ? WHERE id = ?", *opts.MinGapSeconds, campaignID)
+		updates = append(updates, struct{ col string; val any }{"min_gap_seconds", *opts.MinGapSeconds})
 	}
 	if opts.MaxGapSeconds != nil {
-		db.Exec("UPDATE campaigns SET max_gap_seconds = ? WHERE id = ?", *opts.MaxGapSeconds, campaignID)
+		updates = append(updates, struct{ col string; val any }{"max_gap_seconds", *opts.MaxGapSeconds})
 	}
 
-	return nil
+	for _, u := range updates {
+		if _, err := tx.Exec("UPDATE campaigns SET "+u.col+" = ? WHERE id = ?", u.val, campaignID); err != nil {
+			return fmt.Errorf("updating %s: %w", u.col, err)
+		}
+	}
+
+	return tx.Commit()
 }

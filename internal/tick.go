@@ -2,7 +2,9 @@ package internal
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -26,8 +28,9 @@ type TickConfig struct {
 	DB       *sql.DB
 	GWS      GWSClient
 	DryRun   bool
-	Now      time.Time // injectable for testing
-	NoSleep  bool      // skip inter-send sleep (for testing)
+	Now      time.Time      // injectable for testing
+	NoSleep  bool           // skip inter-send sleep (for testing)
+	Timezone *time.Location // for daily limit day boundary; defaults to UTC
 }
 
 // Tick runs one tick cycle: poll replies, poll bounces, send due emails.
@@ -37,6 +40,11 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 	now := cfg.Now
 	if now.IsZero() {
 		now = time.Now()
+	}
+
+	tz := cfg.Timezone
+	if tz == nil {
+		tz = time.UTC
 	}
 
 	// Load active accounts
@@ -59,23 +67,22 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 	// 1. Poll for replies
 	replies, err := ProcessReplies(cfg.DB, cfg.GWS, accounts)
 	if err != nil {
-		// Log but don't abort — we still want to send
-		fmt.Fprintf(os.Stderr, "warning: reply detection error: %v\n", err)
+		slog.Warn("reply detection error", "error", err)
 	}
 	result.RepliesDetected = replies
 
 	// 2. Poll for bounces
 	bounces, err := ProcessBounces(cfg.DB, cfg.GWS, accounts)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: bounce detection error: %v\n", err)
+		slog.Warn("bounce detection error", "error", err)
 	}
 	result.BouncesDetected = bounces
 
 	// Update last_poll_at so next tick only checks new messages
 	SetLastPollAt(cfg.DB, now)
 
-	// 3. Preload daily send counts per account
-	dailyCounts, err := preloadDailyCounts(cfg.DB, now)
+	// 3. Preload daily send counts per account (timezone-aware day boundary)
+	dailyCounts, err := preloadDailyCounts(cfg.DB, now, tz)
 	if err != nil {
 		return nil, fmt.Errorf("loading daily counts: %w", err)
 	}
@@ -109,7 +116,7 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			continue
 		}
 
-		// Check send window
+		// Check send window and send day
 		if !isInSendWindow(cfg.DB, send.CampaignID, now) {
 			result.Skipped++
 			continue
@@ -120,7 +127,8 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		if !ok {
 			seq, err = loadSequenceForCampaign(cfg.DB, send.CampaignID)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: loading sequence for campaign %d: %v\n", send.CampaignID, err)
+				slog.Error("failed to load sequence",
+					"campaign_id", send.CampaignID, "error", err)
 				result.Failed++
 				continue
 			}
@@ -130,7 +138,8 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		// Load lead fields
 		leadFields, err := loadLeadFields(cfg.DB, send.LeadID)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: loading lead %d: %v\n", send.LeadID, err)
+			slog.Error("failed to load lead",
+				"lead_id", send.LeadID, "error", err)
 			result.Failed++
 			continue
 		}
@@ -141,7 +150,8 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		// Build email
 		emailParams := BuildEmailForSend(seq, send.StepNumber, send.VariantIndex, leadFields, account.Email)
 		if emailParams.ToEmail == "" {
-			fmt.Fprintf(os.Stderr, "warning: could not build email for send %d\n", send.ID)
+			slog.Error("could not build email",
+				"send_id", send.ID, "step", send.StepNumber)
 			markSendStatus(cfg.DB, send.ID, "failed")
 			result.Failed++
 			continue
@@ -149,7 +159,6 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 
 		// For follow-ups, add threading headers
 		if send.StepNumber > 1 && send.ParentMessageID != "" {
-			// Look up the original subject from step 1
 			originalSubject := getOriginalSubject(seq, send.VariantIndex)
 			PrepareFollowUp(&emailParams, send.ParentMessageID, send.ThreadID, originalSubject)
 		}
@@ -165,11 +174,12 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		rawMsg := BuildRawMessage(emailParams)
 
 		// Send via gws
-		// For threaded replies, we need to include threadId in the send
 		msgID, threadID, err := cfg.GWS.SendEmail(account.Email, emailParams.ToEmail, rawMsg)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "FAILED send %d (step %d to %s via %s): %v\n",
-				send.ID, send.StepNumber, emailParams.ToEmail, account.Email, err)
+			slog.Error("send failed",
+				"send_id", send.ID, "step", send.StepNumber,
+				"to", emailParams.ToEmail, "account", account.Email,
+				"error", err)
 			markSendStatus(cfg.DB, send.ID, "failed")
 			result.Failed++
 			continue
@@ -177,27 +187,38 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 
 		// Validate response
 		if msgID == "" || threadID == "" {
-			fmt.Fprintf(os.Stderr, "FAILED send %d: gws returned empty message_id or thread_id\n", send.ID)
+			slog.Error("gws returned empty message_id or thread_id",
+				"send_id", send.ID)
 			markSendStatus(cfg.DB, send.ID, "failed")
 			result.Failed++
 			continue
 		}
 
 		// Mark sent
-		cfg.DB.Exec(`UPDATE scheduled_sends SET status = 'sent', message_id = ?, sent_at = ?
-			WHERE id = ?`, msgID, now.UTC().Format(time.RFC3339), send.ID)
+		if _, err := cfg.DB.Exec(`UPDATE scheduled_sends SET status = 'sent', message_id = ?, sent_at = ?
+			WHERE id = ?`, msgID, now.UTC().Format(time.RFC3339), send.ID); err != nil {
+			slog.Error("email sent but failed to mark as sent in DB",
+				"send_id", send.ID, "message_id", msgID, "error", err)
+		}
 
 		// Insert event
-		cfg.DB.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		if _, err := cfg.DB.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
 			VALUES (?, ?, ?, 'sent', ?, ?, ?)`,
-			send.CampaignID, send.LeadID, send.AccountID, send.StepNumber, msgID, threadID)
+			send.CampaignID, send.LeadID, send.AccountID, send.StepNumber, msgID, threadID); err != nil {
+			slog.Error("failed to insert sent event",
+				"send_id", send.ID, "message_id", msgID, "error", err)
+		}
 
 		// If step 1: backfill thread_id and parent_message_id on future sends
 		if send.StepNumber == 1 {
-			cfg.DB.Exec(`UPDATE scheduled_sends
+			if _, err := cfg.DB.Exec(`UPDATE scheduled_sends
 				SET thread_id = ?, parent_message_id = ?
 				WHERE campaign_id = ? AND lead_id = ? AND step_number > 1 AND status = 'pending'`,
-				threadID, msgID, send.CampaignID, send.LeadID)
+				threadID, msgID, send.CampaignID, send.LeadID); err != nil {
+				slog.Error("failed to backfill thread info",
+					"send_id", send.ID, "campaign_id", send.CampaignID,
+					"lead_id", send.LeadID, "error", err)
+			}
 		}
 
 		dailyCounts[send.AccountID]++
@@ -250,9 +271,11 @@ func loadActiveAccounts(db *sql.DB) ([]Account, error) {
 	return accounts, nil
 }
 
-func preloadDailyCounts(db *sql.DB, now time.Time) (map[int64]int, error) {
-	// Start of today in UTC
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+func preloadDailyCounts(db *sql.DB, now time.Time, tz *time.Location) (map[int64]int, error) {
+	// Start of today in the configured timezone, converted to UTC for query
+	localNow := now.In(tz)
+	startOfDay := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, tz)
+	today := startOfDay.UTC().Format(time.RFC3339)
 
 	rows, err := db.Query(`
 		SELECT account_id, COUNT(*)
@@ -314,9 +337,9 @@ func loadDueSends(db *sql.DB, now time.Time) ([]dueSend, error) {
 }
 
 func isInSendWindow(db *sql.DB, campaignID int64, now time.Time) bool {
-	var windowStart, windowEnd, tzName string
-	err := db.QueryRow("SELECT send_window_start, send_window_end, timezone FROM campaigns WHERE id = ?",
-		campaignID).Scan(&windowStart, &windowEnd, &tzName)
+	var windowStart, windowEnd, tzName, sendDaysStr string
+	err := db.QueryRow("SELECT send_window_start, send_window_end, timezone, send_days FROM campaigns WHERE id = ?",
+		campaignID).Scan(&windowStart, &windowEnd, &tzName, &sendDaysStr)
 	if err != nil {
 		return true // default to allowing if we can't check
 	}
@@ -327,6 +350,17 @@ func isInSendWindow(db *sql.DB, campaignID int64, now time.Time) bool {
 	}
 
 	localNow := now.In(tz)
+
+	// Check day-of-week
+	sendDays, err := ParseSendDays(sendDaysStr)
+	if err != nil {
+		return true
+	}
+	if !isDaySendable(localNow.Weekday(), sendDays) {
+		return false
+	}
+
+	// Check time window
 	start, err := parseTimeOfDay(windowStart)
 	if err != nil {
 		return true
@@ -344,10 +378,15 @@ func isInSendWindow(db *sql.DB, campaignID int64, now time.Time) bool {
 }
 
 func loadSequenceForCampaign(db *sql.DB, campaignID int64) (*Sequence, error) {
-	var seqFile string
-	err := db.QueryRow("SELECT sequence_file FROM campaigns WHERE id = ?", campaignID).Scan(&seqFile)
+	var seqFile, seqContent string
+	err := db.QueryRow("SELECT sequence_file, sequence_content FROM campaigns WHERE id = ?",
+		campaignID).Scan(&seqFile, &seqContent)
 	if err != nil {
 		return nil, err
+	}
+	// Prefer stored content; fall back to file path for pre-migration campaigns
+	if seqContent != "" {
+		return ParseSequenceFromBytes([]byte(seqContent))
 	}
 	return ParseSequence(seqFile)
 }
@@ -369,13 +408,29 @@ func loadLeadFields(db *sql.DB, leadID int64) (map[string]string, error) {
 		"domain":     domain,
 	}
 
-	// TODO: parse custom_fields JSON and merge into fields
+	// Parse custom_fields JSON and merge into fields
+	if customFields != "" && customFields != "{}" {
+		var cf map[string]string
+		if err := json.Unmarshal([]byte(customFields), &cf); err != nil {
+			slog.Warn("failed to parse custom_fields JSON",
+				"lead_id", leadID, "error", err)
+		} else {
+			for k, v := range cf {
+				if _, exists := fields[k]; !exists {
+					fields[k] = v
+				}
+			}
+		}
+	}
 
 	return fields, nil
 }
 
 func markSendStatus(db *sql.DB, sendID int64, status string) {
-	db.Exec("UPDATE scheduled_sends SET status = ? WHERE id = ?", status, sendID)
+	if _, err := db.Exec("UPDATE scheduled_sends SET status = ? WHERE id = ?", status, sendID); err != nil {
+		slog.Error("failed to mark send status",
+			"send_id", sendID, "status", status, "error", err)
+	}
 }
 
 func getOriginalSubject(seq *Sequence, variantIndex int) string {

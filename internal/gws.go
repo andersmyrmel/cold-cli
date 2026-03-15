@@ -113,7 +113,7 @@ func (g *GWSCLI) ListMessages(account, query string) ([]GWSMessage, error) {
 	params := map[string]any{
 		"userId":     "me",
 		"q":          query,
-		"maxResults": 100,
+		"maxResults": 25,
 	}
 	paramsJSON, _ := json.Marshal(params)
 
@@ -246,7 +246,7 @@ func GWSConfigDirForAccount(email string) string {
 	safe := strings.ReplaceAll(email, "@", "-at-")
 	safe = strings.ReplaceAll(safe, ".", "-")
 	dir := filepath.Join(DataDir(), "gws-accounts", safe)
-	os.MkdirAll(dir, 0755)
+	os.MkdirAll(dir, 0700)
 
 	// Copy client_secret.json from default gws config if not present
 	destSecret := filepath.Join(dir, "client_secret.json")

@@ -123,6 +123,7 @@ tick starts
 │      → UPDATE campaign_leads.status = 'replied'
 │      → UPDATE scheduled_sends.status = 'skipped' (remaining sends)
 │      → if stop_on_domain_reply: skip same-domain leads in campaign
+│      → structured JSON logging via log/slog for all operations
 │
 ├─ 2. Poll inbox for bounce NDRs (MAILER-DAEMON)
 │      → extract bounced email, match to leads
@@ -131,21 +132,24 @@ tick starts
 │
 ├─ 3. Preload daily send counts per account
 │      SELECT account_id, COUNT(*) FROM events
-│      WHERE type='sent' AND timestamp >= today
+│      WHERE type='sent' AND timestamp >= start_of_today_in_config_tz
 │      GROUP BY account_id
+│      (uses config default_timezone for correct day boundary)
 │
 ├─ 4. SELECT * FROM scheduled_sends
 │     WHERE send_at <= now AND status = 'pending'
-│     (filter: account under daily limit, within send window)
+│     (filter: account under daily limit, within send window + send day)
 │
 ├─ 5. For each send:
+│      ├─ load sequence from DB content (fallback to file for pre-migration)
+│      ├─ load lead fields including custom_fields JSON
 │      ├─ render template (strings.ReplaceAll)
 │      ├─ construct RFC 2822 message
 │      │   step 1: new thread (Subject, From, To)
 │      │   step 2+: In-Reply-To, References, Re: Subject, thread_id
 │      ├─ call gws send (30s timeout)
-│      │   success → mark 'sent', INSERT event
-│      │   failure → mark 'failed', log error, continue
+│      │   success → mark 'sent', INSERT event (error-checked + logged)
+│      │   failure → mark 'failed', slog.Error, continue
 │      ├─ validate message_id/thread_id returned (else mark failed)
 │      ├─ if step 1: backfill thread_id + parent_message_id
 │      │   onto all future scheduled_sends for this lead+campaign

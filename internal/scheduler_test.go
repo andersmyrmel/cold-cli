@@ -522,6 +522,59 @@ func TestCampaignStateTransitions_DB(t *testing.T) {
 	}
 }
 
+func TestUpdateCampaign_Validation(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO campaigns (name, sequence_file) VALUES ('test', 'seq.yml')")
+
+	// Invalid timezone
+	badTZ := "Invalid/Timezone"
+	err := UpdateCampaign(db, "test", UpdateCampaignOpts{Timezone: &badTZ})
+	if err == nil {
+		t.Error("expected error for invalid timezone")
+	}
+
+	// Invalid send window start
+	badTime := "25:00"
+	err = UpdateCampaign(db, "test", UpdateCampaignOpts{SendWindowStart: &badTime})
+	if err == nil {
+		t.Error("expected error for invalid send_window_start")
+	}
+
+	// Invalid send days
+	badDays := "8,9"
+	err = UpdateCampaign(db, "test", UpdateCampaignOpts{SendDays: &badDays})
+	if err == nil {
+		t.Error("expected error for invalid send_days")
+	}
+
+	// Valid update should succeed
+	validTZ := "America/New_York"
+	validStart := "08:00"
+	err = UpdateCampaign(db, "test", UpdateCampaignOpts{
+		Timezone:        &validTZ,
+		SendWindowStart: &validStart,
+	})
+	if err != nil {
+		t.Errorf("expected no error for valid update, got: %v", err)
+	}
+
+	// Verify values were updated
+	var tz, ws string
+	db.QueryRow("SELECT timezone, send_window_start FROM campaigns WHERE name = 'test'").Scan(&tz, &ws)
+	if tz != "America/New_York" {
+		t.Errorf("expected timezone 'America/New_York', got %q", tz)
+	}
+	if ws != "08:00" {
+		t.Errorf("expected send_window_start '08:00', got %q", ws)
+	}
+
+	// Campaign not found
+	err = UpdateCampaign(db, "nonexistent", UpdateCampaignOpts{Timezone: &validTZ})
+	if err == nil {
+		t.Error("expected error for nonexistent campaign")
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && containsStr(s, substr)
 }

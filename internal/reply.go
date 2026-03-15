@@ -3,6 +3,7 @@ package internal
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -23,9 +24,11 @@ func GetLastPollAt(db *sql.DB) time.Time {
 
 // SetLastPollAt updates the last poll timestamp.
 func SetLastPollAt(db *sql.DB, t time.Time) {
-	db.Exec(`INSERT INTO kv (key, value) VALUES ('last_poll_at', ?)
+	if _, err := db.Exec(`INSERT INTO kv (key, value) VALUES ('last_poll_at', ?)
 		ON CONFLICT(key) DO UPDATE SET value = ?`,
-		t.UTC().Format(time.RFC3339), t.UTC().Format(time.RFC3339))
+		t.UTC().Format(time.RFC3339), t.UTC().Format(time.RFC3339)); err != nil {
+		slog.Warn("failed to update last_poll_at", "error", err)
+	}
 }
 
 // ProcessReplies checks inbox messages for replies to our sent emails.
@@ -73,17 +76,27 @@ func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (int, error) 
 			}
 
 			// Record the reply event
-			db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+			if _, err := db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
 				VALUES (?, ?, ?, 'reply', 0, ?, ?)`,
-				campaignID, leadID, account.ID, msg.ID, msg.ThreadID)
+				campaignID, leadID, account.ID, msg.ID, msg.ThreadID); err != nil {
+				slog.Warn("failed to insert reply event",
+					"campaign_id", campaignID, "lead_id", leadID,
+					"message_id", msg.ID, "error", err)
+			}
 
 			// Update lead status
-			db.Exec("UPDATE campaign_leads SET status = 'replied' WHERE campaign_id = ? AND lead_id = ? AND status = 'active'",
-				campaignID, leadID)
+			if _, err := db.Exec("UPDATE campaign_leads SET status = 'replied' WHERE campaign_id = ? AND lead_id = ? AND status = 'active'",
+				campaignID, leadID); err != nil {
+				slog.Warn("failed to update campaign_lead to replied",
+					"campaign_id", campaignID, "lead_id", leadID, "error", err)
+			}
 
 			// Skip remaining scheduled sends
-			db.Exec("UPDATE scheduled_sends SET status = 'skipped' WHERE campaign_id = ? AND lead_id = ? AND status = 'pending'",
-				campaignID, leadID)
+			if _, err := db.Exec("UPDATE scheduled_sends SET status = 'skipped' WHERE campaign_id = ? AND lead_id = ? AND status = 'pending'",
+				campaignID, leadID); err != nil {
+				slog.Warn("failed to skip remaining sends after reply",
+					"campaign_id", campaignID, "lead_id", leadID, "error", err)
+			}
 
 			// Check stop_on_domain_reply
 			var stopOnDomainReply bool
@@ -94,19 +107,25 @@ func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (int, error) 
 				db.QueryRow("SELECT domain FROM leads WHERE id = ?", leadID).Scan(&domain)
 
 				if domain != "" {
-					db.Exec(`
+					if _, err := db.Exec(`
 						UPDATE scheduled_sends SET status = 'skipped'
 						WHERE campaign_id = ?
 						AND lead_id IN (SELECT id FROM leads WHERE domain = ? AND id != ?)
 						AND status = 'pending'`,
-						campaignID, domain, leadID)
+						campaignID, domain, leadID); err != nil {
+						slog.Warn("failed to skip domain sends",
+							"campaign_id", campaignID, "domain", domain, "error", err)
+					}
 
-					db.Exec(`
+					if _, err := db.Exec(`
 						UPDATE campaign_leads SET status = 'paused'
 						WHERE campaign_id = ?
 						AND lead_id IN (SELECT id FROM leads WHERE domain = ? AND id != ?)
 						AND status = 'active'`,
-						campaignID, domain, leadID)
+						campaignID, domain, leadID); err != nil {
+						slog.Warn("failed to pause domain leads",
+							"campaign_id", campaignID, "domain", domain, "error", err)
+					}
 				}
 			}
 
@@ -149,13 +168,22 @@ func ProcessBounces(db *sql.DB, gws GWSClient, accounts []Account) (int, error) 
 			}
 
 			// Mark lead as globally bounced
-			db.Exec("UPDATE leads SET global_status = 'bounced' WHERE id = ?", leadID)
+			if _, err := db.Exec("UPDATE leads SET global_status = 'bounced' WHERE id = ?", leadID); err != nil {
+				slog.Warn("failed to mark lead as bounced",
+					"lead_id", leadID, "error", err)
+			}
 
 			// Update all campaign_leads
-			db.Exec("UPDATE campaign_leads SET status = 'bounced' WHERE lead_id = ? AND status IN ('active', 'pending')", leadID)
+			if _, err := db.Exec("UPDATE campaign_leads SET status = 'bounced' WHERE lead_id = ? AND status IN ('active', 'pending')", leadID); err != nil {
+				slog.Warn("failed to update campaign_leads to bounced",
+					"lead_id", leadID, "error", err)
+			}
 
 			// Skip all pending sends across all campaigns
-			db.Exec("UPDATE scheduled_sends SET status = 'skipped' WHERE lead_id = ? AND status = 'pending'", leadID)
+			if _, err := db.Exec("UPDATE scheduled_sends SET status = 'skipped' WHERE lead_id = ? AND status = 'pending'", leadID); err != nil {
+				slog.Warn("failed to skip pending sends for bounced lead",
+					"lead_id", leadID, "error", err)
+			}
 
 			bouncesFound++
 		}

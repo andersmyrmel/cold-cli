@@ -4,10 +4,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/mail"
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/anders/cold-cli/internal"
 	"github.com/spf13/cobra"
@@ -533,6 +535,9 @@ var tickCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
+		// Set up structured JSON logging for tick
+		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+
 		if !dryRun {
 			if err := internal.EnsureDataDir(); err != nil {
 				return err
@@ -554,6 +559,13 @@ var tickCmd = &cobra.Command{
 		}
 		defer db.Close()
 
+		// Load timezone for daily limit calculation
+		cfg, _ := internal.LoadConfig()
+		var tz *time.Location
+		if cfg != nil {
+			tz, _ = time.LoadLocation(cfg.DefaultTimezone)
+		}
+
 		gwsCLI := internal.NewGWSCLI()
 		rows, err := db.Query("SELECT email, gws_config_dir FROM accounts WHERE status = 'active' AND gws_config_dir != ''")
 		if err == nil {
@@ -566,9 +578,10 @@ var tickCmd = &cobra.Command{
 		}
 
 		result, err := internal.Tick(internal.TickConfig{
-			DB:     db,
-			GWS:    gwsCLI,
-			DryRun: dryRun,
+			DB:       db,
+			GWS:      gwsCLI,
+			DryRun:   dryRun,
+			Timezone: tz,
 		})
 		if err != nil {
 			return err

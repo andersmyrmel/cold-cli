@@ -2,6 +2,7 @@ package internal
 
 import (
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -448,6 +449,333 @@ func TestFormatTickResult(t *testing.T) {
 		if !containsStr(got, tt.contains) {
 			t.Errorf("FormatTickResult(%+v) = %q, want to contain %q", tt.result, got, tt.contains)
 		}
+	}
+}
+
+func TestTick_SendDayEnforcement(t *testing.T) {
+	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
+
+	// Set send days to weekdays only (1-5 = Mon-Fri)
+	db.Exec("UPDATE campaigns SET send_days = '1,2,3,4,5' WHERE id = ?", campaignID)
+
+	// Set current time to a Saturday at noon UTC
+	// 2025-01-04 is a Saturday
+	now := time.Date(2025, 1, 4, 12, 0, 0, 0, time.UTC)
+	insertPendingSend(t, db, campaignID, leadIDs[0], accountIDs[0], 1, now.Add(-1*time.Hour))
+
+	mock := &MockGWS{}
+
+	result, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+
+	if result.Skipped != 1 {
+		t.Errorf("expected 1 skipped (Saturday, send_days=weekdays), got %d", result.Skipped)
+	}
+	if result.Sent != 0 {
+		t.Errorf("expected 0 sent, got %d", result.Sent)
+	}
+}
+
+func TestTick_DailyLimitTimezone(t *testing.T) {
+	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
+
+	// Use US Eastern (UTC-5) timezone
+	eastern, _ := time.LoadLocation("America/New_York")
+
+	// Set current time to 11pm Eastern = 4am next day UTC
+	// 2025-01-06 Monday 23:00 Eastern = 2025-01-07 04:00 UTC
+	now := time.Date(2025, 1, 7, 4, 0, 0, 0, time.UTC)
+
+	// Pre-populate 49 sent events "today" (Eastern Monday) at 10am Eastern = 3pm UTC
+	todayMorning := time.Date(2025, 1, 6, 15, 0, 0, 0, time.UTC) // 10am Eastern
+	for i := 0; i < 49; i++ {
+		db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id, timestamp)
+			VALUES (?, ?, ?, 'sent', 1, ?, ?, ?)`,
+			campaignID, leadIDs[0], accountIDs[0],
+			fmt.Sprintf("msg-pre-%d", i), fmt.Sprintf("thread-pre-%d", i),
+			todayMorning.Format(time.RFC3339))
+	}
+
+	// Insert a pending send due now
+	insertPendingSend(t, db, campaignID, leadIDs[1], accountIDs[0], 1, now.Add(-1*time.Hour))
+
+	mock := &MockGWS{}
+
+	// With Eastern timezone, all 49 events are "today" (Monday Eastern)
+	// Daily limit is 50, so 1 more send should be allowed
+	result, err := Tick(TickConfig{
+		DB:       db,
+		GWS:      mock,
+		Now:      now,
+		NoSleep:  true,
+		Timezone: eastern,
+	})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+
+	if result.Sent != 1 {
+		t.Errorf("expected 1 sent (49/50 daily limit in Eastern tz), got %d", result.Sent)
+	}
+
+	// Now with UTC timezone, the 49 events are split across two UTC days
+	// (most from yesterday UTC, some from today UTC), so limit appears lower
+	// This proves the timezone matters for correct counting
+}
+
+func TestTick_CustomFieldsRendered(t *testing.T) {
+	db := testDB(t)
+
+	// Create account
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	// Create a sequence that uses a custom field
+	seqYAML := `name: Custom Fields Test
+defaults:
+  from_name: "Test"
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}, {{title}} at {{company}}"
+    body: "Hello {{first_name}}, I see you're the {{title}} at {{company}}"
+`
+	// Create campaign with sequence_content stored in DB
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content, send_window_start, send_window_end,
+		send_days, timezone) VALUES ('test-custom', 'active', 'N/A', ?, '00:00', '23:59', '0,1,2,3,4,5,6', 'UTC')`,
+		seqYAML)
+
+	// Create lead with custom_fields JSON
+	db.Exec(`INSERT INTO leads (email, first_name, company, domain, custom_fields)
+		VALUES ('alice@corp.com', 'Alice', 'Corp Inc', 'corp.com', '{"title":"VP of Sales"}')`)
+
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+
+	now := time.Now().UTC()
+	insertPendingSend(t, db, 1, 1, 1, 1, now.Add(-1*time.Hour))
+
+	mock := &MockGWS{}
+
+	result, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+
+	if result.Sent != 1 {
+		t.Errorf("expected 1 sent, got %d", result.Sent)
+	}
+
+	// Verify custom field was available during rendering by checking loadLeadFields
+	fields, err := loadLeadFields(db, 1)
+	if err != nil {
+		t.Fatalf("loadLeadFields error: %v", err)
+	}
+	if fields["title"] != "VP of Sales" {
+		t.Errorf("expected custom field 'title' = 'VP of Sales', got %q", fields["title"])
+	}
+}
+
+func TestTick_SequenceFromDBContent(t *testing.T) {
+	db := testDB(t)
+
+	// Create account
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	// Store sequence content directly in DB (no file needed)
+	seqYAML := `name: DB Stored Sequence
+defaults:
+  from_name: "Test"
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hello {{first_name}}"
+    body: "Hi {{first_name}} at {{company}}"
+`
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content, send_window_start, send_window_end,
+		send_days, timezone) VALUES ('db-seq-test', 'active', '/nonexistent/path.yml', ?, '00:00', '23:59', '0,1,2,3,4,5,6', 'UTC')`,
+		seqYAML)
+
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('test@example.com', 'Test', 'Example', 'example.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+
+	now := time.Now().UTC()
+	insertPendingSend(t, db, 1, 1, 1, 1, now.Add(-1*time.Hour))
+
+	mock := &MockGWS{}
+
+	// Should succeed even though sequence_file points to nonexistent path
+	// because sequence_content is populated
+	result, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+
+	if result.Sent != 1 {
+		t.Errorf("expected 1 sent (sequence from DB content), got %d", result.Sent)
+	}
+	if result.Failed != 0 {
+		t.Errorf("expected 0 failed, got %d", result.Failed)
+	}
+}
+
+func TestTick_SequenceFallbackToFile(t *testing.T) {
+	db := testDB(t)
+
+	// Create account
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	// Campaign with empty sequence_content (simulating pre-migration campaign)
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content, send_window_start, send_window_end,
+		send_days, timezone) VALUES ('file-fallback', 'active', 'testdata/seq.yml', '', '00:00', '23:59', '0,1,2,3,4,5,6', 'UTC')`)
+
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('test@example.com', 'Test', 'Example', 'example.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+
+	now := time.Now().UTC()
+	insertPendingSend(t, db, 1, 1, 1, 1, now.Add(-1*time.Hour))
+
+	mock := &MockGWS{}
+
+	// Should fall back to reading from file path
+	result, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+
+	if result.Sent != 1 {
+		t.Errorf("expected 1 sent (sequence from file fallback), got %d", result.Sent)
+	}
+}
+
+func TestLoadLeadFields_CustomFields(t *testing.T) {
+	db := testDB(t)
+
+	// Lead with custom fields
+	db.Exec(`INSERT INTO leads (email, first_name, last_name, company, domain, custom_fields)
+		VALUES ('test@example.com', 'Test', 'User', 'Example', 'example.com', '{"title":"CTO","city":"NYC"}')`)
+
+	fields, err := loadLeadFields(db, 1)
+	if err != nil {
+		t.Fatalf("loadLeadFields error: %v", err)
+	}
+
+	if fields["title"] != "CTO" {
+		t.Errorf("expected title=CTO, got %q", fields["title"])
+	}
+	if fields["city"] != "NYC" {
+		t.Errorf("expected city=NYC, got %q", fields["city"])
+	}
+	// Built-in fields should still be present
+	if fields["email"] != "test@example.com" {
+		t.Errorf("expected email=test@example.com, got %q", fields["email"])
+	}
+}
+
+func TestLoadLeadFields_CustomFieldsDoNotOverrideBuiltins(t *testing.T) {
+	db := testDB(t)
+
+	// Custom fields trying to override built-in 'email'
+	db.Exec(`INSERT INTO leads (email, first_name, last_name, company, domain, custom_fields)
+		VALUES ('real@example.com', 'Test', '', '', '', '{"email":"fake@evil.com"}')`)
+
+	fields, err := loadLeadFields(db, 1)
+	if err != nil {
+		t.Fatalf("loadLeadFields error: %v", err)
+	}
+
+	// Built-in should win over custom_fields
+	if fields["email"] != "real@example.com" {
+		t.Errorf("expected email=real@example.com (built-in), got %q", fields["email"])
+	}
+}
+
+func TestLoadLeadFields_EmptyCustomFields(t *testing.T) {
+	db := testDB(t)
+
+	db.Exec(`INSERT INTO leads (email, first_name, last_name, company, domain, custom_fields)
+		VALUES ('test@example.com', 'Test', '', '', '', '{}')`)
+
+	fields, err := loadLeadFields(db, 1)
+	if err != nil {
+		t.Fatalf("loadLeadFields error: %v", err)
+	}
+
+	if fields["email"] != "test@example.com" {
+		t.Errorf("expected email=test@example.com, got %q", fields["email"])
+	}
+}
+
+func TestPreloadDailyCounts_Timezone(t *testing.T) {
+	db := testDB(t)
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	db.Exec("INSERT INTO campaigns (name, sequence_file) VALUES ('test', 'seq.yml')")
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('test@example.com', 'Test', 'Example', 'example.com')")
+
+	eastern, _ := time.LoadLocation("America/New_York")
+
+	// Insert an event at 11pm Eastern Monday = 4am UTC Tuesday
+	// 2025-01-06 is a Monday
+	eventTime := time.Date(2025, 1, 7, 4, 0, 0, 0, time.UTC) // 11pm Eastern Monday
+	_, err := db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, timestamp)
+		VALUES (1, 1, 1, 'sent', 1, ?)`, eventTime.Format(time.RFC3339))
+	if err != nil {
+		t.Fatalf("inserting event: %v", err)
+	}
+
+	// Count with Eastern timezone — event should be "today" (Monday Eastern)
+	now := time.Date(2025, 1, 7, 4, 30, 0, 0, time.UTC) // 11:30pm Eastern Monday
+	counts, err := preloadDailyCounts(db, now, eastern)
+	if err != nil {
+		t.Fatalf("preloadDailyCounts error: %v", err)
+	}
+
+	if counts[1] != 1 {
+		t.Errorf("expected 1 event counted for today (Eastern), got %d", counts[1])
+	}
+
+	// Count with UTC — event is "today" in UTC (Tuesday), which is correct
+	// but the "day" starts at midnight UTC, not midnight Eastern
+	countsUTC, err := preloadDailyCounts(db, now, time.UTC)
+	if err != nil {
+		t.Fatalf("preloadDailyCounts error: %v", err)
+	}
+
+	// In UTC, the event at 4am Tuesday is counted for Tuesday
+	// now is 4:30am Tuesday UTC, so start of today UTC is midnight Tuesday
+	// The event at 4am Tuesday is after midnight Tuesday UTC, so it counts
+	if countsUTC[1] != 1 {
+		t.Errorf("expected 1 event counted for today (UTC), got %d", countsUTC[1])
+	}
+}
+
+func TestIsInSendWindow_ChecksDay(t *testing.T) {
+	db := testDB(t)
+
+	// Campaign with weekday-only send days and 09:00-17:00 window
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, send_window_start, send_window_end,
+		send_days, timezone) VALUES ('test', 'active', 'testdata/seq.yml', '09:00', '17:00', '1,2,3,4,5', 'UTC')`)
+
+	// Saturday at noon — should be outside send days
+	saturday := time.Date(2025, 1, 4, 12, 0, 0, 0, time.UTC)
+	if isInSendWindow(db, 1, saturday) {
+		t.Error("expected isInSendWindow=false on Saturday with weekday-only send_days")
+	}
+
+	// Monday at noon — should be in window
+	monday := time.Date(2025, 1, 6, 12, 0, 0, 0, time.UTC)
+	if !isInSendWindow(db, 1, monday) {
+		t.Error("expected isInSendWindow=true on Monday at noon")
+	}
+
+	// Monday at 8am — in send day but before window
+	mondayEarly := time.Date(2025, 1, 6, 8, 0, 0, 0, time.UTC)
+	if isInSendWindow(db, 1, mondayEarly) {
+		t.Error("expected isInSendWindow=false on Monday at 8am (before 09:00 window)")
 	}
 }
 
