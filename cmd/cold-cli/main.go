@@ -577,11 +577,17 @@ var tickCmd = &cobra.Command{
 			}
 		}
 
+		unsubSubject := "Unsubscribe"
+		if cfg != nil && cfg.UnsubscribeSubject != "" {
+			unsubSubject = cfg.UnsubscribeSubject
+		}
+
 		result, err := internal.Tick(internal.TickConfig{
-			DB:       db,
-			GWS:      gwsCLI,
-			DryRun:   dryRun,
-			Timezone: tz,
+			DB:                 db,
+			GWS:                gwsCLI,
+			DryRun:             dryRun,
+			Timezone:           tz,
+			UnsubscribeSubject: unsubSubject,
 		})
 		if err != nil {
 			return err
@@ -660,9 +666,9 @@ var statsCmd = &cobra.Command{
 			}
 			fmt.Printf("Campaign: %s\n\n", name)
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "STEP\tSENT\tREPLIES\tBOUNCES")
+			fmt.Fprintln(w, "STEP\tSENT\tREPLIES\tUNSUBS\tBOUNCES")
 			for _, s := range stats {
-				fmt.Fprintf(w, "%d\t%d\t%d\t%d\n", s.Step, s.Sent, s.Replies, s.Bounces)
+				fmt.Fprintf(w, "%d\t%d\t%d\t%d\t%d\n", s.Step, s.Sent, s.Replies, s.Unsubscribes, s.Bounces)
 			}
 			return w.Flush()
 		}
@@ -679,9 +685,9 @@ var statsCmd = &cobra.Command{
 			return nil
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "CAMPAIGN\tSTATUS\tSENT\tREPLIES\tBOUNCES")
+		fmt.Fprintln(w, "CAMPAIGN\tSTATUS\tSENT\tREPLIES\tUNSUBS\tBOUNCES")
 		for _, s := range stats {
-			fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\n", s.Name, s.Status, s.Sent, s.Replies, s.Bounces)
+			fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\n", s.Name, s.Status, s.Sent, s.Replies, s.Unsubscribes, s.Bounces)
 		}
 		return w.Flush()
 	},

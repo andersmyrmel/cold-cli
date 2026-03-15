@@ -261,3 +261,43 @@ func TestMockGWS_MessageIDValidation(t *testing.T) {
 		t.Error("mock should auto-generate msgID")
 	}
 }
+
+func TestBuildRawMessage_ListUnsubscribeHeaders(t *testing.T) {
+	raw := BuildRawMessage(EmailParams{
+		FromEmail:          "anders@example.com",
+		ToEmail:            "john@acme.com",
+		Subject:            "Quick question",
+		Body:               "Hi John",
+		UnsubscribeEmail:   "anders@example.com",
+		UnsubscribeSubject: "Unsubscribe",
+	})
+
+	decoded, err := base64.URLEncoding.DecodeString(raw)
+	if err != nil {
+		t.Fatalf("decoding raw message: %v", err)
+	}
+	msg := string(decoded)
+
+	if !strings.Contains(msg, "List-Unsubscribe: <mailto:anders@example.com?subject=Unsubscribe>") {
+		t.Error("missing or incorrect List-Unsubscribe header")
+	}
+	if !strings.Contains(msg, "List-Unsubscribe-Post: List-Unsubscribe=One-Click") {
+		t.Error("missing List-Unsubscribe-Post header")
+	}
+}
+
+func TestBuildRawMessage_NoUnsubscribeWhenEmpty(t *testing.T) {
+	raw := BuildRawMessage(EmailParams{
+		FromEmail: "anders@example.com",
+		ToEmail:   "john@acme.com",
+		Subject:   "Hi",
+		Body:      "Hello",
+	})
+
+	decoded, _ := base64.URLEncoding.DecodeString(raw)
+	msg := string(decoded)
+
+	if strings.Contains(msg, "List-Unsubscribe") {
+		t.Error("should not have List-Unsubscribe when UnsubscribeEmail is empty")
+	}
+}

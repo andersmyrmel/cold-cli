@@ -9,23 +9,25 @@ import (
 )
 
 type Config struct {
-	DefaultTimezone   string `yaml:"default_timezone"`
-	DefaultDailyLimit int    `yaml:"default_daily_limit"`
-	MinGapSeconds     int    `yaml:"min_gap_seconds"`
-	MaxGapSeconds     int    `yaml:"max_gap_seconds"`
-	SendWindowStart   string `yaml:"send_window_start"`
-	SendWindowEnd     string `yaml:"send_window_end"`
-	SendDays          string `yaml:"send_days"`
+	DefaultTimezone    string `yaml:"default_timezone"`
+	DefaultDailyLimit  int    `yaml:"default_daily_limit"`
+	MinGapSeconds      int    `yaml:"min_gap_seconds"`
+	MaxGapSeconds      int    `yaml:"max_gap_seconds"`
+	SendWindowStart    string `yaml:"send_window_start"`
+	SendWindowEnd      string `yaml:"send_window_end"`
+	SendDays           string `yaml:"send_days"`
+	UnsubscribeSubject string `yaml:"unsubscribe_subject"`
 }
 
 var DefaultConfig = Config{
-	DefaultTimezone:   "America/New_York",
-	DefaultDailyLimit: 50,
-	MinGapSeconds:     90,
-	MaxGapSeconds:     140,
-	SendWindowStart:   "09:00",
-	SendWindowEnd:     "17:00",
-	SendDays:          "1,2,3,4,5",
+	DefaultTimezone:    "America/New_York",
+	DefaultDailyLimit:  50,
+	MinGapSeconds:      90,
+	MaxGapSeconds:      140,
+	SendWindowStart:    "09:00",
+	SendWindowEnd:      "17:00",
+	SendDays:           "1,2,3,4,5",
+	UnsubscribeSubject: "Unsubscribe",
 }
 
 func ConfigPath() string {
@@ -65,6 +67,9 @@ send_window_end: "17:00"
 
 # Send days: 0=Sunday, 1=Monday, 2=Tuesday, ..., 6=Saturday
 send_days: "1,2,3,4,5"
+
+# Subject line used in List-Unsubscribe mailto header and for detecting unsubscribe replies
+unsubscribe_subject: Unsubscribe
 `
 	return os.WriteFile(path, []byte(content), 0644)
 }

@@ -271,7 +271,7 @@ func TestTick_ReplyDetection(t *testing.T) {
 	}
 
 	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
-	replies, err := ProcessReplies(db, mock, accounts)
+	replies, _, err := ProcessReplies(db, mock, accounts)
 	if err != nil {
 		t.Fatalf("ProcessReplies error: %v", err)
 	}

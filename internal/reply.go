@@ -31,10 +31,38 @@ func SetLastPollAt(db *sql.DB, t time.Time) {
 	}
 }
 
+// IsUnsubscribeRequest checks if a message appears to be an unsubscribe request
+// based on its subject and snippet text.
+func IsUnsubscribeRequest(subject, snippet string) bool {
+	text := strings.ToLower(subject + " " + snippet)
+
+	unsubPhrases := []string{
+		"unsubscribe",
+		"stop emailing",
+		"stop sending",
+		"remove me",
+		"opt out",
+		"opt-out",
+		"take me off",
+		"don't contact",
+		"do not contact",
+		"don't email",
+		"do not email",
+		"stop contacting",
+	}
+
+	for _, phrase := range unsubPhrases {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // ProcessReplies checks inbox messages for replies to our sent emails.
-// Returns the number of new replies detected.
-func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (int, error) {
-	repliesFound := 0
+// Returns the number of new replies and unsubscribes detected.
+func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (replies int, unsubscribes int, err error) {
 	lastPoll := GetLastPollAt(db)
 
 	// Gmail 'after:' uses epoch seconds
@@ -43,7 +71,7 @@ func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (int, error) 
 	for _, account := range accounts {
 		messages, err := gws.ListMessages(account.Email, afterFilter)
 		if err != nil {
-			return repliesFound, fmt.Errorf("listing messages for %s: %w", account.Email, err)
+			return replies, unsubscribes, fmt.Errorf("listing messages for %s: %w", account.Email, err)
 		}
 
 		for _, msg := range messages {
@@ -51,9 +79,10 @@ func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (int, error) 
 				continue
 			}
 
-			// Dedup: skip if we already recorded this message as a reply event
+			// Dedup: skip if we already recorded this message as a reply or unsubscribe event
 			var existing int
-			db.QueryRow("SELECT COUNT(*) FROM events WHERE message_id = ? AND type = 'reply'", msg.ID).Scan(&existing)
+			db.QueryRow("SELECT COUNT(*) FROM events WHERE message_id = ? AND type IN ('reply', 'unsubscribe')",
+				msg.ID).Scan(&existing)
 			if existing > 0 {
 				continue
 			}
@@ -72,7 +101,35 @@ func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (int, error) 
 				continue // Not a reply to our email
 			}
 			if err != nil {
-				return repliesFound, fmt.Errorf("looking up event for In-Reply-To %s: %w", msg.InReplyTo, err)
+				return replies, unsubscribes, fmt.Errorf("looking up event for In-Reply-To %s: %w", msg.InReplyTo, err)
+			}
+
+			// Check if this is an unsubscribe request
+			if IsUnsubscribeRequest(msg.Subject, msg.Snippet) {
+				// Record unsubscribe event
+				if _, err := db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+					VALUES (?, ?, ?, 'unsubscribe', 0, ?, ?)`,
+					campaignID, leadID, account.ID, msg.ID, msg.ThreadID); err != nil {
+					slog.Warn("failed to insert unsubscribe event",
+						"campaign_id", campaignID, "lead_id", leadID,
+						"message_id", msg.ID, "error", err)
+				}
+
+				// Blacklist the lead globally (cancels all pending sends across all campaigns)
+				var leadEmail string
+				db.QueryRow("SELECT email FROM leads WHERE id = ?", leadID).Scan(&leadEmail)
+				if leadEmail != "" {
+					if _, err := BlacklistLead(db, leadEmail); err != nil {
+						slog.Warn("failed to blacklist unsubscribed lead",
+							"lead_email", leadEmail, "error", err)
+					}
+				}
+
+				slog.Info("unsubscribe detected",
+					"campaign_id", campaignID, "lead_id", leadID,
+					"lead_email", leadEmail, "message_id", msg.ID)
+				unsubscribes++
+				continue
 			}
 
 			// Record the reply event
@@ -129,11 +186,11 @@ func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (int, error) 
 				}
 			}
 
-			repliesFound++
+			replies++
 		}
 	}
 
-	return repliesFound, nil
+	return replies, unsubscribes, nil
 }
 
 // ProcessBounces checks inbox messages for bounce NDRs.
@@ -198,8 +255,6 @@ func ProcessBounces(db *sql.DB, gws GWSClient, accounts []Account) (int, error) 
 // Strategy 3: snippet/subject text parsing (fallback).
 func resolveBounceToLead(db *sql.DB, msg GWSMessage) (leadID int64, found bool) {
 	// Strategy 1: Thread matching
-	// Gmail puts the NDR in the same thread as the original email.
-	// If we sent an email in this thread, we know exactly which lead bounced.
 	if msg.ThreadID != "" {
 		var id int64
 		err := db.QueryRow(`

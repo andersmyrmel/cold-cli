@@ -26,7 +26,7 @@ func TestProcessReplies_Dedup(t *testing.T) {
 	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
 
 	// First call: detects 1 reply
-	replies1, err := ProcessReplies(db, mock, accounts)
+	replies1, _, err := ProcessReplies(db, mock, accounts)
 	if err != nil {
 		t.Fatalf("first ProcessReplies error: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestProcessReplies_Dedup(t *testing.T) {
 	}
 
 	// Second call with same messages: should detect 0 (deduped)
-	replies2, err := ProcessReplies(db, mock, accounts)
+	replies2, _, err := ProcessReplies(db, mock, accounts)
 	if err != nil {
 		t.Fatalf("second ProcessReplies error: %v", err)
 	}
@@ -390,6 +390,151 @@ func TestBounce_RealWorldExamples(t *testing.T) {
 		if status != "bounced" {
 			t.Errorf("lead %s: expected 'bounced', got %q", email, status)
 		}
+	}
+}
+
+func TestIsUnsubscribeRequest(t *testing.T) {
+	tests := []struct {
+		name    string
+		subject string
+		snippet string
+		want    bool
+	}{
+		{"exact subject", "Unsubscribe", "", true},
+		{"case insensitive", "UNSUBSCRIBE", "", true},
+		{"in snippet", "Re: Your email", "please unsubscribe me from this list", true},
+		{"remove me", "", "Please remove me from your mailing list", true},
+		{"opt out", "I want to opt out", "", true},
+		{"opt-out hyphen", "opt-out please", "", true},
+		{"stop emailing", "", "stop emailing me", true},
+		{"do not contact", "", "do not contact me again", true},
+		{"normal reply", "Re: Quick question", "Thanks for reaching out, let's chat", false},
+		{"interested reply", "Re: Partnership", "This sounds interesting", false},
+		{"empty", "", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsUnsubscribeRequest(tt.subject, tt.snippet)
+			if got != tt.want {
+				t.Errorf("IsUnsubscribeRequest(%q, %q) = %v, want %v",
+					tt.subject, tt.snippet, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProcessReplies_UnsubscribeDetected(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	// Insert sent event
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (1, 1, 1, 'sent', 1, '<sent-1@gmail.com>', 'thread-1')`)
+
+	// Insert pending step 2
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 2, '2099-01-01', 'pending')`)
+
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{ID: "unsub-1", ThreadID: "thread-1", InReplyTo: "<sent-1@gmail.com>",
+				From: "john@acme.com", Subject: "Unsubscribe"},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	replies, unsubs, err := ProcessReplies(db, mock, accounts)
+	if err != nil {
+		t.Fatalf("ProcessReplies error: %v", err)
+	}
+
+	if replies != 0 {
+		t.Errorf("expected 0 replies (should be unsubscribe), got %d", replies)
+	}
+	if unsubs != 1 {
+		t.Errorf("expected 1 unsubscribe, got %d", unsubs)
+	}
+
+	// Lead should be blacklisted globally
+	var globalStatus string
+	db.QueryRow("SELECT global_status FROM leads WHERE id = 1").Scan(&globalStatus)
+	if globalStatus != "blacklisted" {
+		t.Errorf("expected global_status 'blacklisted', got %q", globalStatus)
+	}
+
+	// Pending sends should be cancelled (BlacklistLead uses 'cancelled')
+	var ssStatus string
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE campaign_id = 1 AND lead_id = 1").Scan(&ssStatus)
+	if ssStatus != "cancelled" {
+		t.Errorf("expected scheduled_send 'cancelled', got %q", ssStatus)
+	}
+
+	// Should have an unsubscribe event, not a reply event
+	var unsubCount, replyCount int
+	db.QueryRow("SELECT COUNT(*) FROM events WHERE type = 'unsubscribe'").Scan(&unsubCount)
+	db.QueryRow("SELECT COUNT(*) FROM events WHERE type = 'reply'").Scan(&replyCount)
+	if unsubCount != 1 {
+		t.Errorf("expected 1 unsubscribe event, got %d", unsubCount)
+	}
+	if replyCount != 0 {
+		t.Errorf("expected 0 reply events, got %d", replyCount)
+	}
+}
+
+func TestProcessReplies_UnsubscribeBlacklistsGlobally(t *testing.T) {
+	db := testDB(t)
+
+	// Setup: 1 account, 2 campaigns, 1 lead in both
+	db.Exec("INSERT INTO accounts (email) VALUES ('sender@x.com')")
+	db.Exec("INSERT INTO campaigns (name, status, sequence_file) VALUES ('camp1', 'active', 'seq.yml')")
+	db.Exec("INSERT INTO campaigns (name, status, sequence_file) VALUES ('camp2', 'active', 'seq.yml')")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('john@acme.com', 'John', 'acme.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (2, 1, 'active')")
+
+	// Sent from campaign 1
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (1, 1, 1, 'sent', 1, '<sent-camp1@gmail.com>', 'thread-1')`)
+
+	// Pending sends in both campaigns
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 2, '2099-01-01', 'pending')`)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (2, 1, 1, 1, '2099-01-01', 'pending')`)
+
+	// Unsubscribe reply to campaign 1
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{ID: "unsub-1", ThreadID: "thread-1", InReplyTo: "<sent-camp1@gmail.com>",
+				From: "john@acme.com", Subject: "Please remove me"},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	_, unsubs, err := ProcessReplies(db, mock, accounts)
+	if err != nil {
+		t.Fatalf("ProcessReplies error: %v", err)
+	}
+	if unsubs != 1 {
+		t.Errorf("expected 1 unsubscribe, got %d", unsubs)
+	}
+
+	// Both campaigns' pending sends should be cancelled
+	var s1, s2 string
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE campaign_id = 1").Scan(&s1)
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE campaign_id = 2").Scan(&s2)
+	if s1 != "cancelled" {
+		t.Errorf("campaign 1 send should be 'cancelled', got %q", s1)
+	}
+	if s2 != "cancelled" {
+		t.Errorf("campaign 2 send should be 'cancelled' (global blacklist), got %q", s2)
+	}
+
+	// Lead should be globally blacklisted
+	var globalStatus string
+	db.QueryRow("SELECT global_status FROM leads WHERE id = 1").Scan(&globalStatus)
+	if globalStatus != "blacklisted" {
+		t.Errorf("expected 'blacklisted', got %q", globalStatus)
 	}
 }
 

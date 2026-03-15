@@ -15,22 +15,24 @@ import (
 
 // TickResult holds the summary of a tick invocation.
 type TickResult struct {
-	RepliesDetected int  `json:"replies_detected"`
-	BouncesDetected int  `json:"bounces_detected"`
-	Sent            int  `json:"sent"`
-	Failed          int  `json:"failed"`
-	Skipped         int  `json:"skipped"`
-	DryRun          bool `json:"dry_run"`
+	RepliesDetected      int  `json:"replies_detected"`
+	UnsubscribesDetected int  `json:"unsubscribes_detected"`
+	BouncesDetected      int  `json:"bounces_detected"`
+	Sent                 int  `json:"sent"`
+	Failed               int  `json:"failed"`
+	Skipped              int  `json:"skipped"`
+	DryRun               bool `json:"dry_run"`
 }
 
 // TickConfig holds configuration for a tick invocation.
 type TickConfig struct {
 	DB       *sql.DB
 	GWS      GWSClient
-	DryRun   bool
-	Now      time.Time      // injectable for testing
-	NoSleep  bool           // skip inter-send sleep (for testing)
-	Timezone *time.Location // for daily limit day boundary; defaults to UTC
+	DryRun             bool
+	Now                time.Time      // injectable for testing
+	NoSleep            bool           // skip inter-send sleep (for testing)
+	Timezone           *time.Location // for daily limit day boundary; defaults to UTC
+	UnsubscribeSubject string         // subject for List-Unsubscribe mailto header
 }
 
 // Tick runs one tick cycle: poll replies, poll bounces, send due emails.
@@ -64,12 +66,13 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		return result, nil
 	}
 
-	// 1. Poll for replies
-	replies, err := ProcessReplies(cfg.DB, cfg.GWS, accounts)
+	// 1. Poll for replies and unsubscribes
+	replies, unsubs, err := ProcessReplies(cfg.DB, cfg.GWS, accounts)
 	if err != nil {
 		slog.Warn("reply detection error", "error", err)
 	}
 	result.RepliesDetected = replies
+	result.UnsubscribesDetected = unsubs
 
 	// 2. Poll for bounces
 	bounces, err := ProcessBounces(cfg.DB, cfg.GWS, accounts)
@@ -149,6 +152,11 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 
 		// Build email
 		emailParams := BuildEmailForSend(seq, send.StepNumber, send.VariantIndex, leadFields, account.Email)
+		emailParams.UnsubscribeEmail = account.Email
+		emailParams.UnsubscribeSubject = cfg.UnsubscribeSubject
+		if emailParams.UnsubscribeSubject == "" {
+			emailParams.UnsubscribeSubject = "Unsubscribe"
+		}
 		if emailParams.ToEmail == "" {
 			slog.Error("could not build email",
 				"send_id", send.ID, "step", send.StepNumber)
@@ -466,6 +474,9 @@ func FormatTickResult(r *TickResult) string {
 	}
 	if r.RepliesDetected > 0 {
 		parts = append(parts, fmt.Sprintf("%d replies", r.RepliesDetected))
+	}
+	if r.UnsubscribesDetected > 0 {
+		parts = append(parts, fmt.Sprintf("%d unsubscribes", r.UnsubscribesDetected))
 	}
 	if r.BouncesDetected > 0 {
 		parts = append(parts, fmt.Sprintf("%d bounces", r.BouncesDetected))

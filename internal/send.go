@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"mime"
+	"net/url"
 	"strings"
 )
 
@@ -19,6 +20,10 @@ type EmailParams struct {
 	InReplyTo string // Message-ID of the previous step
 	References string // same as InReplyTo for simple chains
 	ThreadID  string // Gmail thread ID for threading
+
+	// Unsubscribe
+	UnsubscribeEmail   string // mailto address for List-Unsubscribe header
+	UnsubscribeSubject string // subject for the mailto unsubscribe
 }
 
 // BuildRawMessage constructs an RFC 2822 message and returns it as a base64url-encoded string.
@@ -43,6 +48,13 @@ func BuildRawMessage(p EmailParams) string {
 			refs = p.InReplyTo
 		}
 		msg.WriteString(fmt.Sprintf("References: %s\r\n", refs))
+	}
+
+	// List-Unsubscribe headers (required by Gmail/Yahoo for bulk senders)
+	if p.UnsubscribeEmail != "" {
+		subj := url.QueryEscape(p.UnsubscribeSubject)
+		msg.WriteString(fmt.Sprintf("List-Unsubscribe: <mailto:%s?subject=%s>\r\n", p.UnsubscribeEmail, subj))
+		msg.WriteString("List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n")
 	}
 
 	msg.WriteString("MIME-Version: 1.0\r\n")
