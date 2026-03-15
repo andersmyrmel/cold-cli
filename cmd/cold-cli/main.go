@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/mail"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -616,8 +617,12 @@ var tickCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
-		// Set up structured JSON logging for tick
-		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+		// Set up structured JSON logging to ~/.cold-cli/tick.log
+		logPath := filepath.Join(internal.DataDir(), "tick.log")
+		if logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+			defer logFile.Close()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(logFile, nil)))
+		}
 
 		if !dryRun {
 			if err := internal.EnsureDataDir(); err != nil {
@@ -678,6 +683,12 @@ var tickCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+
+		// Log tick summary to file
+		slog.Info("tick complete",
+			"sent", result.Sent, "failed", result.Failed, "skipped", result.Skipped,
+			"replies", result.RepliesDetected, "unsubscribes", result.UnsubscribesDetected,
+			"bounces", result.BouncesDetected, "dry_run", result.DryRun)
 
 		if jsonOutput {
 			return printJSON(result)
