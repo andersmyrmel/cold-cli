@@ -2,7 +2,7 @@
 
 Open-source CLI cold email sequence engine. Single binary, SQLite storage, no SaaS.
 
-Built on [gws](https://github.com/nicholasgasior/gws) for Gmail API access. Designed to be operated by coding agents (Claude Code, etc.) or humans comfortable with a terminal.
+Built on [gws](https://github.com/nicholasgasior/gws) for Gmail API access. Works great with coding agents (Claude Code, Cursor, etc.) or directly from the terminal.
 
 ## Install
 
@@ -119,7 +119,7 @@ All commands support `--json` for programmatic use.
 All send times are pre-computed when you create a campaign. Each send becomes a row in SQLite with a specific `send_at` timestamp, assigned account, and variant. This means:
 
 - `campaign preview` shows the exact schedule before you activate
-- `tick` is trivially simple: query for rows where `send_at <= now`
+- `tick` just queries for rows where `send_at <= now`
 - Agents can review and approve the full timeline
 
 ### Tick Engine
