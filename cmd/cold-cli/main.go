@@ -698,6 +698,47 @@ var statsCmd = &cobra.Command{
 	},
 }
 
+var logCmd = &cobra.Command{
+	Use:   "log [campaign]",
+	Short: "Show recent activity (sends, replies, bounces, unsubscribes)",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		limit, _ := cmd.Flags().GetInt("limit")
+		var campaignName string
+		if len(args) == 1 {
+			campaignName = args[0]
+		}
+
+		events, err := internal.GetEventLog(db, campaignName, limit)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(events)
+		}
+
+		if len(events) == 0 {
+			fmt.Println("No events yet.")
+			return nil
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "TIME\tTYPE\tCAMPAIGN\tLEAD\tACCOUNT\tSTEP")
+		for _, e := range events {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\n",
+				e.Timestamp, e.Type, e.Campaign, e.LeadEmail, e.AccountEmail, e.StepNumber)
+		}
+		return w.Flush()
+	},
+}
+
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 
@@ -722,7 +763,9 @@ func init() {
 
 	statsCmd.Flags().Bool("leads", false, "show per-lead breakdown")
 
-	rootCmd.AddCommand(initCmd, accountCmd, leadCmd, campaignCmd, tickCmd, statsCmd)
+	logCmd.Flags().Int("limit", 20, "number of events to show")
+
+	rootCmd.AddCommand(initCmd, accountCmd, leadCmd, campaignCmd, tickCmd, statsCmd, logCmd)
 }
 
 func main() {

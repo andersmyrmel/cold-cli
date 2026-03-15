@@ -84,6 +84,51 @@ type LeadStatsRow struct {
 	ReplyAt   *string `json:"reply_at,omitempty"`
 }
 
+// EventLogRow is a row from GetEventLog.
+type EventLogRow struct {
+	Timestamp    string `json:"timestamp"`
+	Type         string `json:"type"`
+	Campaign     string `json:"campaign"`
+	LeadEmail    string `json:"lead_email"`
+	AccountEmail string `json:"account_email"`
+	StepNumber   int    `json:"step_number"`
+	MessageID    string `json:"message_id,omitempty"`
+}
+
+// GetEventLog returns the most recent events, optionally filtered by campaign.
+func GetEventLog(db *sql.DB, campaignName string, limit int) ([]EventLogRow, error) {
+	query := `
+		SELECT e.timestamp, e.type, c.name, l.email, a.email, e.step_number, e.message_id
+		FROM events e
+		JOIN campaigns c ON e.campaign_id = c.id
+		JOIN leads l ON e.lead_id = l.id
+		JOIN accounts a ON e.account_id = a.id`
+
+	var args []any
+	if campaignName != "" {
+		query += " WHERE c.name = ?"
+		args = append(args, campaignName)
+	}
+	query += " ORDER BY e.timestamp DESC, e.id DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying event log: %w", err)
+	}
+	defer rows.Close()
+
+	var events []EventLogRow
+	for rows.Next() {
+		var e EventLogRow
+		if err := rows.Scan(&e.Timestamp, &e.Type, &e.Campaign, &e.LeadEmail, &e.AccountEmail, &e.StepNumber, &e.MessageID); err != nil {
+			return nil, fmt.Errorf("scanning event: %w", err)
+		}
+		events = append(events, e)
+	}
+	return events, nil
+}
+
 // GetCampaignLeadStats returns per-lead stats for a campaign.
 func GetCampaignLeadStats(db *sql.DB, campaignID int64) ([]LeadStatsRow, error) {
 	rows, err := db.Query(`
