@@ -18,6 +18,9 @@ Requires [gws](https://github.com/nicholasgasior/gws) for Gmail integration.
 # Initialize
 cold-cli init
 
+# Check domain deliverability
+cold-cli doctor
+
 # Add a sending account (opens browser for Google OAuth)
 cold-cli account add you@company.com
 
@@ -39,6 +42,8 @@ cold-cli tick
 
 # Check results
 cold-cli stats q1-outreach
+cold-cli stats q1-outreach --variants    # A/B test results
+cold-cli log                              # recent activity
 ```
 
 ## Sequence Format
@@ -90,23 +95,40 @@ jane@bigcorp.com,Jane,BigCorp
 
 ```
 cold-cli init                              # set up ~/.cold-cli/ directory, database, config
+cold-cli doctor [domain...]                # check MX, SPF, DKIM, DMARC, domain age
+
 cold-cli account add <email>               # add sending account with OAuth
 cold-cli account list                      # list accounts
+cold-cli account pause <email>             # deactivate, cancel pending sends
+cold-cli account resume <email>            # reactivate a paused account
+cold-cli account remove <email>            # permanently deactivate
 
 cold-cli campaign create --name --sequence --leads --accounts
+cold-cli campaign clone <source> --name <new> --leads <csv>
+cold-cli campaign add-leads <name> --leads <csv>
 cold-cli campaign preview <name>           # see full schedule before activating
 cold-cli campaign activate <name>          # start sending
 cold-cli campaign pause <name>             # stop sending
 cold-cli campaign resume <name>            # resume
-cold-cli campaign status <name>            # details + send counts
+cold-cli campaign status <name>            # details + reply rate + next/last send
+cold-cli campaign list                     # list all campaigns
+cold-cli campaign update <name>            # update send window, timezone, gaps
+cold-cli campaign delete <name>            # delete campaign and all data
 
 cold-cli tick                              # process replies, bounces, send due emails
 cold-cli tick --dry-run                    # show what would happen
 
 cold-cli stats [campaign]                  # sent/replied/bounced per campaign
-cold-cli stats <name> --leads              # per-lead breakdown
+cold-cli stats <name> --leads             # per-lead breakdown
+cold-cli stats <name> --variants          # A/B test results with reply rates
 
-cold-cli lead pause <email>               # pause across all campaigns
+cold-cli log [campaign]                    # recent activity (sends, replies, bounces)
+cold-cli log --limit 50                    # show more events
+
+cold-cli lead list                         # list all leads
+cold-cli lead list --domain <domain>       # filter by domain
+cold-cli lead list --status <status>       # filter by status
+cold-cli lead pause <email>                # pause across all campaigns
 cold-cli lead blacklist <email|domain>     # blacklist + cancel pending sends
 ```
 
@@ -128,15 +150,18 @@ All send times are pre-computed when you create a campaign. Each send becomes a 
 
 1. Poll inbox for replies → match via In-Reply-To headers → pause lead
 2. Poll inbox for bounces → detect via thread matching → mark bounced
-3. Find sends where `send_at <= now` and campaign is active
-4. Send each email via gws with 90-140 second random gaps
-5. Respect daily limits and send windows
+3. Detect unsubscribe requests → auto-blacklist lead globally
+4. Find sends where `send_at <= now` and campaign is active
+5. Send each email via gws with 90-140 second random gaps
+6. Respect daily limits, send windows, and send days
 
-Run it manually, via cron (`*/10 * * * *`), or have an agent call it.
+Run it manually, via cron (`*/10 * * * *`), or have an agent call it. All tick activity is logged to `~/.cold-cli/tick.log` as structured JSON.
 
-### Reply Detection
+### Reply & Unsubscribe Detection
 
 Matches inbox messages to sent emails using `In-Reply-To` headers. When a reply is detected, remaining sends for that lead are cancelled. With `stop_on_domain_reply`, all leads on the same domain are paused.
+
+Unsubscribe requests ("unsubscribe", "remove me", "opt out", etc.) are auto-detected and blacklist the lead globally across all campaigns.
 
 ### Bounce Detection
 
@@ -162,6 +187,33 @@ cold-cli campaign create --accounts sender1@company.com,sender2@company.com ...
 
 When round-robin is used, all steps for a given lead use the same account (required for Gmail thread continuity).
 
+### Campaign Cloning
+
+Clone a campaign with new leads — copies sequence, settings, and accounts:
+
+```bash
+cold-cli campaign clone q1-outreach --name q2-outreach --leads new-leads.csv
+```
+
+Add more leads to a running campaign:
+
+```bash
+cold-cli campaign add-leads q1-outreach --leads more-leads.csv
+```
+
+Automatically skips leads already in the campaign, blacklisted, or bounced.
+
+### Domain Diagnostics
+
+Check your sending domains for deliverability issues:
+
+```bash
+cold-cli doctor              # auto-checks all account domains
+cold-cli doctor example.com  # check specific domain
+```
+
+Checks MX records, SPF, DKIM (19 common selectors), DMARC, and domain age via WHOIS.
+
 ## Configuration
 
 `~/.cold-cli/config.yml`:
@@ -174,6 +226,11 @@ max_gap_seconds: 140
 send_window_start: "09:00"
 send_window_end: "17:00"
 send_days: "1,2,3,4,5"
+
+# Unsubscribe reply detection is always on.
+# List-Unsubscribe header is off by default (not needed for cold email from personal Gmail).
+unsubscribe_header: false
+unsubscribe_subject: Unsubscribe
 ```
 
 ## Architecture
@@ -182,6 +239,7 @@ send_days: "1,2,3,4,5"
 - **SQLite** — `~/.cold-cli/data.db`, pure Go driver (no CGO)
 - **gws CLI** — subprocess calls for Gmail API (send, list, get)
 - **Cobra** — CLI framework
+- **log/slog** — structured JSON logging to `~/.cold-cli/tick.log`
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for data model, tick flow diagrams, and design decisions.
 
