@@ -144,5 +144,18 @@ func OpenDB(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("running schema migration: %w", err)
 	}
 
+	// Incremental migrations for existing databases
+	runMigrations(db)
+
 	return db, nil
+}
+
+// runMigrations applies incremental schema changes to existing databases.
+func runMigrations(db *sql.DB) {
+	migrations := []string{
+		"ALTER TABLE accounts ADD COLUMN gws_config_dir TEXT NOT NULL DEFAULT ''",
+	}
+	for _, m := range migrations {
+		db.Exec(m) // ignore errors (column may already exist)
+	}
 }

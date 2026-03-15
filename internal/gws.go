@@ -241,13 +241,23 @@ func CheckGWSInstalled() error {
 }
 
 // GWSConfigDirForAccount returns the config dir path for an account.
-// Creates the directory if it doesn't exist.
+// Creates the directory and copies client_secret.json from the default gws config.
 func GWSConfigDirForAccount(email string) string {
-	// Sanitize email for use as directory name
 	safe := strings.ReplaceAll(email, "@", "-at-")
 	safe = strings.ReplaceAll(safe, ".", "-")
 	dir := filepath.Join(DataDir(), "gws-accounts", safe)
 	os.MkdirAll(dir, 0755)
+
+	// Copy client_secret.json from default gws config if not present
+	destSecret := filepath.Join(dir, "client_secret.json")
+	if _, err := os.Stat(destSecret); os.IsNotExist(err) {
+		home, _ := os.UserHomeDir()
+		srcSecret := filepath.Join(home, ".config", "gws", "client_secret.json")
+		if data, err := os.ReadFile(srcSecret); err == nil {
+			os.WriteFile(destSecret, data, 0600)
+		}
+	}
+
 	return dir
 }
 
