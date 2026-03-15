@@ -1,19 +1,8 @@
 package internal
 
 import (
-	"database/sql"
 	"testing"
 )
-
-func testDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := OpenDB(":memory:")
-	if err != nil {
-		t.Fatalf("opening test db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	return db
-}
 
 func TestOpenDB(t *testing.T) {
 	db := testDB(t)

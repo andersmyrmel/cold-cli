@@ -2,7 +2,6 @@ package internal
 
 import (
 	"database/sql"
-	"fmt"
 	"testing"
 	"time"
 )
@@ -186,26 +185,6 @@ func TestTick_FailedSendIsolation(t *testing.T) {
 	}
 }
 
-type failFirstMockGWS struct {
-	callCount int
-	MockGWS
-}
-
-func (m *failFirstMockGWS) SendEmail(account, to, rawMsg string) (string, string, error) {
-	m.callCount++
-	if m.callCount == 1 {
-		return "", "", fmt.Errorf("simulated gws failure")
-	}
-	return fmt.Sprintf("msg-%d", m.callCount), fmt.Sprintf("thread-%d", m.callCount), nil
-}
-
-func (m *failFirstMockGWS) ListMessages(account, query string) ([]GWSMessage, error) {
-	return nil, nil
-}
-
-func (m *failFirstMockGWS) GetMessage(account, msgID string) (*GWSMessage, error) {
-	return nil, fmt.Errorf("not found")
-}
 
 func TestTick_DailyLimitEnforcement(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
