@@ -732,6 +732,59 @@ steps:
 	}
 }
 
+func TestGetCampaignVariantStats(t *testing.T) {
+	db := testDB(t)
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file) VALUES ('ab-test', 'active', 'seq.yml')`)
+
+	// 3 leads: 2 got variant 0, 1 got variant 1
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('a@x.com', 'A', 'x.com')")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('b@x.com', 'B', 'x.com')")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('c@x.com', 'C', 'x.com')")
+
+	// Scheduled sends: step 1, variants 0 and 1
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at, status)
+		VALUES (1, 1, 1, 1, 0, '2025-01-01', 'sent')`)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at, status)
+		VALUES (1, 2, 1, 1, 0, '2025-01-01', 'sent')`)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at, status)
+		VALUES (1, 3, 1, 1, 1, '2025-01-01', 'sent')`)
+
+	// Lead 1 (variant 0) replied
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id)
+		VALUES (1, 1, 1, 'reply', 1, 'reply-1')`)
+
+	// Lead 3 (variant 1) replied
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id)
+		VALUES (1, 3, 1, 'reply', 1, 'reply-3')`)
+
+	stats, err := GetCampaignVariantStats(db, 1)
+	if err != nil {
+		t.Fatalf("GetCampaignVariantStats error: %v", err)
+	}
+
+	if len(stats) != 2 {
+		t.Fatalf("expected 2 variant rows, got %d", len(stats))
+	}
+
+	// Variant 0: 2 sent, 1 reply = 50%
+	if stats[0].Variant != 0 || stats[0].Sent != 2 || stats[0].Replies != 1 {
+		t.Errorf("variant 0: expected sent=2 replies=1, got sent=%d replies=%d", stats[0].Sent, stats[0].Replies)
+	}
+	if stats[0].ReplyRate < 49 || stats[0].ReplyRate > 51 {
+		t.Errorf("variant 0: expected ~50%% reply rate, got %.1f%%", stats[0].ReplyRate)
+	}
+
+	// Variant 1: 1 sent, 1 reply = 100%
+	if stats[1].Variant != 1 || stats[1].Sent != 1 || stats[1].Replies != 1 {
+		t.Errorf("variant 1: expected sent=1 replies=1, got sent=%d replies=%d", stats[1].Sent, stats[1].Replies)
+	}
+	if stats[1].ReplyRate < 99 || stats[1].ReplyRate > 101 {
+		t.Errorf("variant 1: expected ~100%% reply rate, got %.1f%%", stats[1].ReplyRate)
+	}
+}
+
 func TestAddLeadsToCampaign_SkipsBlacklisted(t *testing.T) {
 	db := testDB(t)
 

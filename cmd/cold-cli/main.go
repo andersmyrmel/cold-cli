@@ -713,6 +713,7 @@ var statsCmd = &cobra.Command{
 		defer db.Close()
 
 		perLeads, _ := cmd.Flags().GetBool("leads")
+		perVariants, _ := cmd.Flags().GetBool("variants")
 
 		if len(args) == 1 {
 			name := args[0]
@@ -723,6 +724,28 @@ var statsCmd = &cobra.Command{
 			}
 			if err != nil {
 				return fmt.Errorf("looking up campaign: %w", err)
+			}
+
+			if perVariants {
+				stats, err := internal.GetCampaignVariantStats(db, campaignID)
+				if err != nil {
+					return err
+				}
+				if jsonOutput {
+					return printJSON(map[string]any{"campaign": name, "variants": stats})
+				}
+				if len(stats) == 0 {
+					fmt.Printf("Campaign %q has no sends yet.\n", name)
+					return nil
+				}
+				fmt.Printf("Campaign: %s\n\n", name)
+				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+				fmt.Fprintln(w, "STEP\tVARIANT\tSENT\tREPLIES\tRATE\tUNSUBS\tBOUNCES")
+				for _, s := range stats {
+					fmt.Fprintf(w, "%d\t%d\t%d\t%d\t%.1f%%\t%d\t%d\n",
+						s.Step, s.Variant, s.Sent, s.Replies, s.ReplyRate, s.Unsubscribes, s.Bounces)
+				}
+				return w.Flush()
 			}
 
 			if perLeads {
@@ -858,6 +881,7 @@ func init() {
 	tickCmd.Flags().Bool("dry-run", false, "show what would be sent without actually sending")
 
 	statsCmd.Flags().Bool("leads", false, "show per-lead breakdown")
+	statsCmd.Flags().Bool("variants", false, "show per-variant A/B test results")
 
 	logCmd.Flags().Int("limit", 20, "number of events to show")
 

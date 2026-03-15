@@ -76,6 +76,49 @@ func GetCampaignStepStats(db *sql.DB, campaignID int64) ([]StepStats, error) {
 	return stats, nil
 }
 
+// VariantStats is a row from GetCampaignVariantStats.
+type VariantStats struct {
+	Step         int     `json:"step"`
+	Variant      int     `json:"variant"`
+	Sent         int     `json:"sent"`
+	Replies      int     `json:"replies"`
+	ReplyRate    float64 `json:"reply_rate"`
+	Unsubscribes int     `json:"unsubscribes"`
+	Bounces      int     `json:"bounces"`
+}
+
+// GetCampaignVariantStats returns per-step, per-variant stats for a campaign.
+func GetCampaignVariantStats(db *sql.DB, campaignID int64) ([]VariantStats, error) {
+	rows, err := db.Query(`
+		SELECT ss.step_number, ss.variant_index,
+			COUNT(DISTINCT CASE WHEN ss.status = 'sent' THEN ss.id END) as sent,
+			COUNT(DISTINCT CASE WHEN e.type = 'reply' THEN e.id END) as replies,
+			COUNT(DISTINCT CASE WHEN e.type = 'unsubscribe' THEN e.id END) as unsubscribes,
+			COUNT(DISTINCT CASE WHEN e.type = 'bounce' THEN e.id END) as bounces
+		FROM scheduled_sends ss
+		LEFT JOIN events e ON e.campaign_id = ss.campaign_id
+			AND e.lead_id = ss.lead_id
+			AND e.type IN ('reply', 'unsubscribe', 'bounce')
+		WHERE ss.campaign_id = ?
+		GROUP BY ss.step_number, ss.variant_index
+		ORDER BY ss.step_number, ss.variant_index`, campaignID)
+	if err != nil {
+		return nil, fmt.Errorf("querying variant stats: %w", err)
+	}
+	defer rows.Close()
+
+	var stats []VariantStats
+	for rows.Next() {
+		var s VariantStats
+		rows.Scan(&s.Step, &s.Variant, &s.Sent, &s.Replies, &s.Unsubscribes, &s.Bounces)
+		if s.Sent > 0 {
+			s.ReplyRate = float64(s.Replies) / float64(s.Sent) * 100
+		}
+		stats = append(stats, s)
+	}
+	return stats, nil
+}
+
 // LeadStatsRow is a row from GetCampaignLeadStats.
 type LeadStatsRow struct {
 	Email     string  `json:"email"`
