@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -146,6 +147,97 @@ func TestGetDailyLimitWarnings_NoWarnings(t *testing.T) {
 	}
 	if len(warnings) != 0 {
 		t.Errorf("expected 0 warnings, got %d", len(warnings))
+	}
+}
+
+func TestUpdateCampaign_Sequence(t *testing.T) {
+	db := testDB(t)
+
+	origYAML := `name: Original
+defaults:
+  from_name: Tester
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello {{first_name}} at {{company}}"
+`
+	// Set up campaign with leads
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content)
+		VALUES ('seq-update-test', 'draft', 'old.yml', ?)`, origYAML)
+	db.Exec(`INSERT INTO leads (email, first_name, company, domain)
+		VALUES ('alice@acme.com', 'Alice', 'Acme', 'acme.com')`)
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+
+	// Write new sequence to temp file
+	newYAML := `name: Updated
+defaults:
+  from_name: Tester
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hey {{first_name}}"
+    body: "New body for {{first_name}} at {{company}}"
+  - step: 2
+    delay: 3
+    subject: ""
+    body: "Follow up {{first_name}}"
+`
+	tmpFile := t.TempDir() + "/new-seq.yml"
+	if err := os.WriteFile(tmpFile, []byte(newYAML), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := UpdateCampaign(db, "seq-update-test", UpdateCampaignOpts{
+		SequenceFile: &tmpFile,
+	})
+	if err != nil {
+		t.Fatalf("UpdateCampaign with sequence: %v", err)
+	}
+
+	// Verify sequence_content was updated
+	var content string
+	db.QueryRow("SELECT sequence_content FROM campaigns WHERE name = 'seq-update-test'").Scan(&content)
+	if !strings.Contains(content, "New body") {
+		t.Errorf("expected updated sequence content, got: %s", content)
+	}
+	if !strings.Contains(content, "Follow up") {
+		t.Errorf("expected step 2 in updated content, got: %s", content)
+	}
+}
+
+func TestUpdateCampaign_Sequence_BadPlaceholder(t *testing.T) {
+	db := testDB(t)
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content)
+		VALUES ('seq-bad-test', 'draft', 'old.yml', 'name: X')`)
+	db.Exec(`INSERT INTO leads (email, first_name, company, domain)
+		VALUES ('alice@acme.com', 'Alice', 'Acme', 'acme.com')`)
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+
+	// New sequence uses {{title}} which no lead has
+	badYAML := `name: Bad
+defaults:
+  from_name: Tester
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{title}}"
+    body: "Hello {{title}}"
+`
+	tmpFile := t.TempDir() + "/bad-seq.yml"
+	os.WriteFile(tmpFile, []byte(badYAML), 0644)
+
+	err := UpdateCampaign(db, "seq-bad-test", UpdateCampaignOpts{
+		SequenceFile: &tmpFile,
+	})
+	if err == nil {
+		t.Fatal("expected error for bad placeholder, got nil")
+	}
+	if !strings.Contains(err.Error(), "title") {
+		t.Errorf("expected error to mention 'title', got: %v", err)
 	}
 }
 

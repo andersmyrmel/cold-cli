@@ -119,7 +119,7 @@ cold-cli campaign pause <name|id>          # stop sending
 cold-cli campaign resume <name|id>         # resume
 cold-cli campaign status <name|id>         # details + reply rate + next/last send
 cold-cli campaign list                     # list all campaigns (with send window + days)
-cold-cli campaign update <name|id>         # update send window, timezone, gaps
+cold-cli campaign update <name|id>         # update sequence, send window, timezone, gaps
 cold-cli campaign delete <name|id>         # delete campaign and all data
 
 cold-cli tick                              # process replies, bounces, send due emails

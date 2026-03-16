@@ -980,6 +980,7 @@ type UpdateCampaignOpts struct {
 	Timezone        *string
 	MinGapSeconds   *int
 	MaxGapSeconds   *int
+	SequenceFile    *string // path to new sequence YAML
 }
 
 // UpdateCampaign updates campaign settings with validation.
@@ -1015,6 +1016,55 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 		return fmt.Errorf("looking up campaign: %w", err)
 	}
 
+	// Validate and prepare sequence update if requested
+	var newSeqFile string
+	var newSeqContent string
+	if opts.SequenceFile != nil {
+		seq, err := ParseSequence(*opts.SequenceFile)
+		if err != nil {
+			return err
+		}
+		content, err := os.ReadFile(*opts.SequenceFile)
+		if err != nil {
+			return fmt.Errorf("reading sequence file: %w", err)
+		}
+
+		// Validate placeholders against existing campaign leads
+		placeholders := seq.CollectPlaceholders()
+		if len(placeholders) > 0 {
+			rows, err := db.Query(`
+				SELECT l.email, l.first_name, l.last_name, l.company, l.domain
+				FROM leads l
+				JOIN campaign_leads cl ON cl.lead_id = l.id
+				WHERE cl.campaign_id = ?`, campaignID)
+			if err != nil {
+				return fmt.Errorf("loading campaign leads: %w", err)
+			}
+			defer rows.Close()
+
+			var leads []LeadRecord
+			for rows.Next() {
+				var email, firstName, lastName, company, domain string
+				rows.Scan(&email, &firstName, &lastName, &company, &domain)
+				leads = append(leads, LeadRecord{
+					Fields: map[string]string{
+						"email":      email,
+						"first_name": firstName,
+						"last_name":  lastName,
+						"company":    company,
+						"domain":     domain,
+					},
+				})
+			}
+			if err := ValidateLeadFields(leads, placeholders); err != nil {
+				return fmt.Errorf("new sequence has placeholders that existing leads can't fill:\n%w", err)
+			}
+		}
+
+		newSeqFile = *opts.SequenceFile
+		newSeqContent = string(content)
+	}
+
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("starting transaction: %w", err)
@@ -1042,6 +1092,10 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 	}
 	if opts.MaxGapSeconds != nil {
 		updates = append(updates, struct{ col string; val any }{"max_gap_seconds", *opts.MaxGapSeconds})
+	}
+	if opts.SequenceFile != nil {
+		updates = append(updates, struct{ col string; val any }{"sequence_file", newSeqFile})
+		updates = append(updates, struct{ col string; val any }{"sequence_content", newSeqContent})
 	}
 
 	for _, u := range updates {

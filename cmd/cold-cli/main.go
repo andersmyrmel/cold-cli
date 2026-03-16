@@ -209,6 +209,28 @@ var accountAddCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Added account %s (id=%d, daily_limit=%d)\n", result.Email, result.ID, result.DailyLimit)
+
+		// Auto-check domain deliverability
+		parts := strings.SplitN(email, "@", 2)
+		if len(parts) == 2 {
+			diag, err := internal.CheckDomain(parts[1])
+			if err == nil {
+				fmt.Println()
+				fmt.Printf("Domain check for %s: %d/%d\n", parts[1], diag.Score, diag.MaxScore)
+				for _, c := range diag.Checks {
+					if !c.Passed {
+						fmt.Printf("  ! %-6s %s\n", c.Name, c.Detail)
+						if c.Fix != "" {
+							fmt.Printf("           Fix: %s\n", c.Fix)
+						}
+					}
+				}
+				if diag.Score == diag.MaxScore {
+					fmt.Println("  All checks passed.")
+				}
+			}
+		}
+
 		return nil
 	},
 }
@@ -658,7 +680,7 @@ var campaignDeleteCmd = &cobra.Command{
 
 var campaignUpdateCmd = &cobra.Command{
 	Use:   "update <name|id>",
-	Short: "Update campaign settings (send window, days, gaps)",
+	Short: "Update campaign settings (sequence, send window, days, gaps)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		db, err := openDB()
@@ -705,9 +727,14 @@ var campaignUpdateCmd = &cobra.Command{
 			opts.MaxGapSeconds = &v
 			changed = true
 		}
+		if cmd.Flags().Changed("sequence") {
+			v, _ := cmd.Flags().GetString("sequence")
+			opts.SequenceFile = &v
+			changed = true
+		}
 
 		if !changed {
-			return fmt.Errorf("no settings to update — use flags like --send-days, --send-window-start, etc.")
+			return fmt.Errorf("no settings to update — use flags like --sequence, --send-days, --send-window-start, etc.")
 		}
 
 		if err := internal.UpdateCampaign(db, name, opts); err != nil {
@@ -1277,6 +1304,7 @@ func init() {
 	campaignCreateCmd.Flags().String("accounts", "", "comma-separated account emails")
 	campaignCreateCmd.Flags().String("start-date", "", "start date (YYYY-MM-DD); default: tomorrow")
 	campaignPreviewCmd.Flags().Bool("render", false, "show rendered email content for the first lead")
+	campaignUpdateCmd.Flags().String("sequence", "", "path to new sequence YAML file")
 	campaignUpdateCmd.Flags().String("send-window-start", "", "send window start (HH:MM)")
 	campaignUpdateCmd.Flags().String("send-window-end", "", "send window end (HH:MM)")
 	campaignUpdateCmd.Flags().String("send-days", "", "send days (0=Sun,1=Mon,...,6=Sat)")
