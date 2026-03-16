@@ -22,15 +22,36 @@ type AddAccountResult struct {
 }
 
 // AddAccount inserts a new sending account into the database.
+// If the account was previously removed, it is reactivated with the new settings.
 func AddAccount(db *sql.DB, email string, dailyLimit int, configDir string) (*AddAccountResult, error) {
+	// Check for existing removed account
+	var existingID int64
+	var existingStatus string
+	err := db.QueryRow("SELECT id, status FROM accounts WHERE email = ?", email).Scan(&existingID, &existingStatus)
+	if err == nil {
+		if existingStatus == "removed" {
+			// Reactivate removed account
+			_, err := db.Exec("UPDATE accounts SET status = 'active', daily_limit = ?, gws_config_dir = ? WHERE id = ?",
+				dailyLimit, configDir, existingID)
+			if err != nil {
+				return nil, fmt.Errorf("reactivating account: %w", err)
+			}
+			return &AddAccountResult{
+				ID:           existingID,
+				Email:        email,
+				DailyLimit:   dailyLimit,
+				Status:       "active",
+				GWSConfigDir: configDir,
+			}, nil
+		}
+		return nil, fmt.Errorf("account %s already exists (status: %s)", email, existingStatus)
+	}
+
 	result, err := db.Exec(
 		"INSERT INTO accounts (email, daily_limit, gws_config_dir) VALUES (?, ?, ?)",
 		email, dailyLimit, configDir,
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
-			return nil, fmt.Errorf("account %s already exists", email)
-		}
 		return nil, fmt.Errorf("adding account: %w", err)
 	}
 
@@ -130,6 +151,34 @@ func RemoveAccount(db *sql.DB, email string) (*PauseAccountResult, error) {
 	}
 
 	return &PauseAccountResult{Email: email, CancelledSends: cancelled}, nil
+}
+
+// UpdateAccountOpts holds fields to update on an account.
+type UpdateAccountOpts struct {
+	DailyLimit *int
+}
+
+// UpdateAccount modifies account settings.
+func UpdateAccount(db *sql.DB, email string, opts UpdateAccountOpts) error {
+	var id int64
+	var status string
+	err := db.QueryRow("SELECT id, status FROM accounts WHERE email = ?", email).Scan(&id, &status)
+	if err != nil {
+		return fmt.Errorf("account %s not found", email)
+	}
+	if status == "removed" {
+		return fmt.Errorf("account %s has been removed — re-add it first", email)
+	}
+
+	if opts.DailyLimit != nil {
+		if *opts.DailyLimit < 1 {
+			return fmt.Errorf("daily limit must be at least 1")
+		}
+		if _, err := db.Exec("UPDATE accounts SET daily_limit = ? WHERE id = ?", *opts.DailyLimit, id); err != nil {
+			return fmt.Errorf("updating daily limit: %w", err)
+		}
+	}
+	return nil
 }
 
 // DomainCheck is the result of checking one DNS aspect.

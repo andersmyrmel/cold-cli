@@ -24,6 +24,9 @@ cold-cli doctor
 # Add a sending account (opens browser for Google OAuth)
 cold-cli account add you@company.com
 
+# Scaffold example sequence + leads files (optional)
+cold-cli campaign init
+
 # Create a campaign
 cold-cli campaign create \
   --name "q1-outreach" \
@@ -98,22 +101,26 @@ cold-cli init                              # set up ~/.cold-cli/ directory, data
 cold-cli doctor [domain...]                # check MX, SPF, DKIM, DMARC, domain age
 
 cold-cli account add <email>               # add sending account with OAuth
+cold-cli account add <email> --no-login    # add without OAuth (already authed)
 cold-cli account list                      # list accounts
+cold-cli account update <email>            # update settings (--daily-limit)
 cold-cli account pause <email>             # deactivate, cancel pending sends
 cold-cli account resume <email>            # reactivate a paused account
-cold-cli account remove <email>            # permanently deactivate
+cold-cli account remove <email>            # deactivate (re-add later with account add)
 
-cold-cli campaign create --name --sequence --leads --accounts
+cold-cli campaign init [directory]         # scaffold example sequence.yml + leads.csv
+cold-cli campaign create --name --sequence --leads --accounts [--start-date YYYY-MM-DD]
 cold-cli campaign clone <source> --name <new> --leads <csv>
-cold-cli campaign add-leads <name> --leads <csv>
-cold-cli campaign preview <name>           # see full schedule before activating
-cold-cli campaign activate <name>          # start sending
-cold-cli campaign pause <name>             # stop sending
-cold-cli campaign resume <name>            # resume
-cold-cli campaign status <name>            # details + reply rate + next/last send
-cold-cli campaign list                     # list all campaigns
-cold-cli campaign update <name>            # update send window, timezone, gaps
-cold-cli campaign delete <name>            # delete campaign and all data
+cold-cli campaign add-leads <name|id> --leads <csv>
+cold-cli campaign preview <name|id>        # see full schedule before activating
+cold-cli campaign preview <name|id> --render  # see rendered emails for first lead
+cold-cli campaign activate <name|id>       # start sending
+cold-cli campaign pause <name|id>          # stop sending
+cold-cli campaign resume <name|id>         # resume
+cold-cli campaign status <name|id>         # details + reply rate + next/last send
+cold-cli campaign list                     # list all campaigns (with send window + days)
+cold-cli campaign update <name|id>         # update send window, timezone, gaps
+cold-cli campaign delete <name|id>         # delete campaign and all data
 
 cold-cli tick                              # process replies, bounces, send due emails
 cold-cli tick --dry-run                    # show what would happen

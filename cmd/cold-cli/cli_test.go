@@ -857,7 +857,7 @@ func TestCLI_CampaignUpdate_NotFound(t *testing.T) {
 	}
 }
 
-func TestCLI_CampaignPreview_ShowsNote(t *testing.T) {
+func TestCLI_CampaignPreview_ShowsSchedule(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
@@ -868,8 +868,8 @@ func TestCLI_CampaignPreview_ShowsNote(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("preview failed (exit %d): %s", code, out)
 	}
-	if !strings.Contains(out, "daily limits") {
-		t.Errorf("expected daily limits note in preview: %s", out)
+	if !strings.Contains(out, "SEND AT") || !strings.Contains(out, "STEP") {
+		t.Errorf("expected schedule table in preview: %s", out)
 	}
 }
 
@@ -927,5 +927,154 @@ func TestCLI_CampaignHelp(t *testing.T) {
 		if !strings.Contains(out, sub) {
 			t.Errorf("campaign help missing subcommand %q: %s", sub, out)
 		}
+	}
+}
+
+// --- campaign init tests ---
+
+func TestCLI_CampaignInit(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	dir := t.TempDir()
+	out, code := runCLI(t, bin, env, "campaign", "init", dir)
+	if code != 0 {
+		t.Fatalf("campaign init failed (exit %d): %s", code, out)
+	}
+
+	// Verify sequence.yml was created
+	if _, err := os.Stat(filepath.Join(dir, "sequence.yml")); err != nil {
+		t.Error("sequence.yml not created")
+	}
+	// Verify leads.csv was created
+	if _, err := os.Stat(filepath.Join(dir, "leads.csv")); err != nil {
+		t.Error("leads.csv not created")
+	}
+}
+
+// --- account update tests ---
+
+func TestCLI_AccountUpdate(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "account", "update", "sender@x.com", "--daily-limit", "25")
+	if code != 0 {
+		t.Fatalf("account update failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "Updated") {
+		t.Errorf("expected 'Updated' in output, got: %s", out)
+	}
+}
+
+// --- campaign preview/status by ID tests ---
+
+func TestCLI_CampaignPreviewByID(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "by-id-preview", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	// Preview by numeric ID instead of name
+	out, code := runCLI(t, bin, env, "campaign", "preview", "1")
+	if code != 0 {
+		t.Fatalf("preview by ID failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "john@acme.com") {
+		t.Errorf("expected john in preview: %s", out)
+	}
+	if !strings.Contains(out, "jane@foo.com") {
+		t.Errorf("expected jane in preview: %s", out)
+	}
+}
+
+func TestCLI_CampaignStatusByID(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "by-id-status", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	// Status by numeric ID instead of name
+	out, code := runCLI(t, bin, env, "campaign", "status", "1")
+	if code != 0 {
+		t.Fatalf("status by ID failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "draft") {
+		t.Errorf("expected draft status: %s", out)
+	}
+	if !strings.Contains(out, "by-id-status") {
+		t.Errorf("expected campaign name in output: %s", out)
+	}
+}
+
+// --- campaign start-date tests ---
+
+func TestCLI_CampaignStartDate(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "create",
+		"--name", "start-date-test",
+		"--sequence", seqFile,
+		"--leads", leadsFile,
+		"--accounts", "sender@x.com",
+		"--start-date", "2026-04-01")
+	if code != 0 {
+		t.Fatalf("campaign create with start-date failed (exit %d): %s", code, out)
+	}
+
+	// Preview to see scheduled send dates
+	out, code = runCLI(t, bin, env, "campaign", "preview", "start-date-test")
+	if code != 0 {
+		t.Fatalf("preview failed (exit %d): %s", code, out)
+	}
+	// Send dates should be in April 2026, not March
+	if !strings.Contains(out, "2026-04") {
+		t.Errorf("expected send dates in April 2026, got: %s", out)
+	}
+	if strings.Contains(out, "2026-03") {
+		t.Errorf("expected no send dates in March 2026, but found them: %s", out)
+	}
+}
+
+// --- campaign preview --render tests ---
+
+func TestCLI_CampaignPreviewRender(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "render-test", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "preview", "render-test", "--render")
+	if code != 0 {
+		t.Fatalf("preview --render failed (exit %d): %s", code, out)
+	}
+
+	// Should contain rendered subject with actual name, not placeholder
+	if !strings.Contains(out, "Subject:") {
+		t.Errorf("expected 'Subject:' in rendered preview: %s", out)
+	}
+	// The first lead (alphabetically by send_at) should have placeholders filled in.
+	// setupCampaignTestFiles creates leads john@acme.com (John) and jane@foo.com (Jane).
+	// Check that at least one rendered name appears and no raw placeholders remain.
+	hasRenderedName := strings.Contains(out, "John") || strings.Contains(out, "Jane")
+	if !hasRenderedName {
+		t.Errorf("expected rendered first_name (John or Jane) in output: %s", out)
+	}
+	hasRenderedCompany := strings.Contains(out, "Acme") || strings.Contains(out, "Foo")
+	if !hasRenderedCompany {
+		t.Errorf("expected rendered company (Acme or Foo) in output: %s", out)
+	}
+	if strings.Contains(out, "{{first_name}}") {
+		t.Errorf("output still contains raw {{first_name}} placeholder: %s", out)
+	}
+	if strings.Contains(out, "{{company}}") {
+		t.Errorf("output still contains raw {{company}} placeholder: %s", out)
 	}
 }

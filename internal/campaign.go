@@ -4,9 +4,37 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// ResolveCampaignName accepts a campaign name or numeric ID and returns the campaign name.
+// This lets users reference campaigns by either their name or the ID shown in "campaign list".
+func ResolveCampaignName(db *sql.DB, nameOrID string) (string, error) {
+	// Try as numeric ID first
+	if id, err := strconv.ParseInt(nameOrID, 10, 64); err == nil {
+		var name string
+		err := db.QueryRow("SELECT name FROM campaigns WHERE id = ?", id).Scan(&name)
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("campaign with ID %d not found", id)
+		}
+		if err != nil {
+			return "", fmt.Errorf("looking up campaign by ID: %w", err)
+		}
+		return name, nil
+	}
+	// Otherwise treat as name — verify it exists
+	var name string
+	err := db.QueryRow("SELECT name FROM campaigns WHERE name = ?", nameOrID).Scan(&name)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("campaign %q not found", nameOrID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("looking up campaign: %w", err)
+	}
+	return name, nil
+}
 
 // CreateCampaignOpts holds options for CreateCampaign.
 type CreateCampaignOpts struct {
@@ -14,6 +42,7 @@ type CreateCampaignOpts struct {
 	SequenceFile  string
 	LeadsFile     string
 	AccountEmails []string
+	StartDate     string // optional "YYYY-MM-DD"; empty = now
 }
 
 // CreateCampaignResult is returned by CreateCampaign.
@@ -148,6 +177,17 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 		return nil, fmt.Errorf("no eligible leads (all blacklisted or bounced)")
 	}
 
+	startTime := time.Now().In(tz)
+	if opts.StartDate != "" {
+		parsed, err := time.ParseInLocation("2006-01-02", opts.StartDate, tz)
+		if err != nil {
+			return nil, fmt.Errorf("invalid start date %q (expected YYYY-MM-DD): %w", opts.StartDate, err)
+		}
+		// Use window start on the given date
+		ws, _ := parseTimeOfDay(cfg.SendWindowStart)
+		startTime = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), ws.hour, ws.min, 0, 0, tz)
+	}
+
 	schedRows, err := ComputeSchedule(ScheduleConfig{
 		CampaignID:      campaignID,
 		AccountIDs:      accountIDs,
@@ -159,7 +199,7 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 		Timezone:        tz,
 		MinGapSeconds:   cfg.MinGapSeconds,
 		MaxGapSeconds:   cfg.MaxGapSeconds,
-		StartTime:       time.Now().In(tz),
+		StartTime:       startTime,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("computing schedule: %w", err)
@@ -232,6 +272,148 @@ func GetCampaignPreview(db *sql.DB, name string) (campaignID int64, status strin
 	}
 
 	return campaignID, status, preview, nil
+}
+
+// DailyLimitWarning describes a day where scheduled sends exceed an account's daily limit.
+type DailyLimitWarning struct {
+	Date      string `json:"date"`
+	Account   string `json:"account"`
+	Scheduled int    `json:"scheduled"`
+	Limit     int    `json:"limit"`
+	Overflow  int    `json:"overflow"`
+}
+
+// GetDailyLimitWarnings checks all pending sends across all active campaigns for each account
+// and returns warnings for days that exceed the account's daily limit.
+func GetDailyLimitWarnings(db *sql.DB) ([]DailyLimitWarning, error) {
+	rows, err := db.Query(`
+		SELECT DATE(ss.send_at) as send_date, a.email, COUNT(*) as cnt, a.daily_limit
+		FROM scheduled_sends ss
+		JOIN accounts a ON ss.account_id = a.id
+		JOIN campaigns c ON ss.campaign_id = c.id
+		WHERE ss.status = 'pending'
+		  AND c.status IN ('active', 'draft')
+		GROUP BY DATE(ss.send_at), a.id
+		HAVING cnt > a.daily_limit
+		ORDER BY send_date, a.email`)
+	if err != nil {
+		return nil, fmt.Errorf("querying daily limits: %w", err)
+	}
+	defer rows.Close()
+
+	var warnings []DailyLimitWarning
+	for rows.Next() {
+		var w DailyLimitWarning
+		if err := rows.Scan(&w.Date, &w.Account, &w.Scheduled, &w.Limit); err != nil {
+			return nil, fmt.Errorf("scanning warning: %w", err)
+		}
+		w.Overflow = w.Scheduled - w.Limit
+		warnings = append(warnings, w)
+	}
+	return warnings, nil
+}
+
+// RenderedEmail is a preview of an actual email with templates filled in.
+type RenderedEmail struct {
+	StepNumber   int    `json:"step_number"`
+	VariantIndex int    `json:"variant_index"`
+	LeadEmail    string `json:"lead_email"`
+	AccountEmail string `json:"account_email"`
+	Subject      string `json:"subject"`
+	Body         string `json:"body"`
+}
+
+// GetCampaignRenderedPreview returns rendered emails for the first lead in a campaign.
+func GetCampaignRenderedPreview(db *sql.DB, name string) ([]RenderedEmail, error) {
+	var campaignID int64
+	var seqContent string
+	err := db.QueryRow("SELECT id, sequence_content FROM campaigns WHERE name = ?", name).
+		Scan(&campaignID, &seqContent)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("campaign %q not found", name)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("looking up campaign: %w", err)
+	}
+
+	if seqContent == "" {
+		return nil, fmt.Errorf("campaign has no stored sequence content")
+	}
+
+	seq, err := ParseSequenceFromBytes([]byte(seqContent))
+	if err != nil {
+		return nil, fmt.Errorf("parsing sequence: %w", err)
+	}
+
+	// Get the first lead's scheduled sends
+	rows, err := db.Query(`
+		SELECT ss.step_number, ss.variant_index, l.email, a.email, l.id
+		FROM scheduled_sends ss
+		JOIN leads l ON ss.lead_id = l.id
+		JOIN accounts a ON ss.account_id = a.id
+		WHERE ss.campaign_id = ?
+		ORDER BY ss.send_at, ss.step_number
+		LIMIT 1`, campaignID)
+	if err != nil {
+		return nil, fmt.Errorf("querying first lead: %w", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return nil, fmt.Errorf("campaign has no scheduled sends")
+	}
+
+	var firstLeadID int64
+	var firstLeadEmail, firstAccountEmail string
+	var stepNum, varIdx int
+	if err := rows.Scan(&stepNum, &varIdx, &firstLeadEmail, &firstAccountEmail, &firstLeadID); err != nil {
+		return nil, fmt.Errorf("scanning first lead: %w", err)
+	}
+	rows.Close()
+
+	// Load lead fields (custom_fields JSON + standard fields)
+	var firstName, lastName, company, domain, customJSON string
+	db.QueryRow("SELECT first_name, last_name, company, domain, custom_fields FROM leads WHERE id = ?",
+		firstLeadID).Scan(&firstName, &lastName, &company, &domain, &customJSON)
+
+	fields := map[string]string{
+		"email":      firstLeadEmail,
+		"first_name": firstName,
+		"last_name":  lastName,
+		"company":    company,
+		"domain":     domain,
+	}
+
+	// Get all sends for this lead in this campaign
+	sendRows, err := db.Query(`
+		SELECT ss.step_number, ss.variant_index, a.email
+		FROM scheduled_sends ss
+		JOIN accounts a ON ss.account_id = a.id
+		WHERE ss.campaign_id = ? AND ss.lead_id = ?
+		ORDER BY ss.step_number`, campaignID, firstLeadID)
+	if err != nil {
+		return nil, fmt.Errorf("querying lead sends: %w", err)
+	}
+	defer sendRows.Close()
+
+	var rendered []RenderedEmail
+	for sendRows.Next() {
+		var sn, vi int
+		var accEmail string
+		sendRows.Scan(&sn, &vi, &accEmail)
+
+		params := BuildEmailForSend(seq, sn, vi, fields, accEmail)
+		rendered = append(rendered, RenderedEmail{
+			StepNumber:   sn,
+			VariantIndex: vi,
+			LeadEmail:    firstLeadEmail,
+			AccountEmail: accEmail,
+			Subject:      params.Subject,
+			Body:         params.Body,
+		})
+	}
+
+	return rendered, nil
 }
 
 // CampaignStateTransition changes a campaign's status with validation.
@@ -359,11 +541,13 @@ func GetCampaignStatus(db *sql.DB, name string) (*CampaignStatusInfo, error) {
 
 // CampaignListRow is a row from ListCampaigns.
 type CampaignListRow struct {
-	ID     int64  `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Leads  int    `json:"leads"`
-	Sends  int    `json:"sends"`
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Leads      int    `json:"leads"`
+	Sends      int    `json:"sends"`
+	SendWindow string `json:"send_window"`
+	SendDays   string `json:"send_days"`
 }
 
 // ListCampaigns returns all campaigns with lead and send counts.
@@ -371,7 +555,8 @@ func ListCampaigns(db *sql.DB) ([]CampaignListRow, error) {
 	rows, err := db.Query(`
 		SELECT c.id, c.name, c.status,
 			(SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = c.id) as leads,
-			(SELECT COUNT(*) FROM scheduled_sends WHERE campaign_id = c.id) as sends
+			(SELECT COUNT(*) FROM scheduled_sends WHERE campaign_id = c.id) as sends,
+			c.send_window_start, c.send_window_end, c.send_days
 		FROM campaigns c
 		ORDER BY c.id DESC`)
 	if err != nil {
@@ -382,10 +567,47 @@ func ListCampaigns(db *sql.DB) ([]CampaignListRow, error) {
 	var campaigns []CampaignListRow
 	for rows.Next() {
 		var c CampaignListRow
-		rows.Scan(&c.ID, &c.Name, &c.Status, &c.Leads, &c.Sends)
+		var windowStart, windowEnd, sendDays string
+		rows.Scan(&c.ID, &c.Name, &c.Status, &c.Leads, &c.Sends, &windowStart, &windowEnd, &sendDays)
+		c.SendWindow = windowStart + "-" + windowEnd
+		c.SendDays = FormatSendDays(sendDays)
 		campaigns = append(campaigns, c)
 	}
 	return campaigns, nil
+}
+
+// FormatSendDays converts "1,2,3,4,5" to "Mon-Fri" or similar human-readable format.
+func FormatSendDays(s string) string {
+	dayNames := map[string]string{
+		"0": "Sun", "1": "Mon", "2": "Tue", "3": "Wed",
+		"4": "Thu", "5": "Fri", "6": "Sat",
+	}
+	parts := strings.Split(s, ",")
+	var names []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if name, ok := dayNames[p]; ok {
+			names = append(names, name)
+		}
+	}
+
+	// Detect common ranges
+	if len(names) > 2 {
+		days, _ := ParseSendDays(s)
+		if isContiguousRange(days) {
+			return names[0] + "-" + names[len(names)-1]
+		}
+	}
+	return strings.Join(names, ",")
+}
+
+func isContiguousRange(days []time.Weekday) bool {
+	for i := 1; i < len(days); i++ {
+		if days[i] != days[i-1]+1 {
+			return false
+		}
+	}
+	return true
 }
 
 // DeleteCampaign deletes a campaign and all associated data.

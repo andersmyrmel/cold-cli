@@ -25,6 +25,10 @@ internal/                 — single flat package, all application logic
   template.go             — {{placeholder}} string replacement via strings.ReplaceAll
   csv.go                  — lead CSV import, BOM stripping, field validation
   config.go               — YAML config loading
+  campaign.go             — campaign CRUD, preview, rendered preview, daily limit warnings
+  account.go              — account CRUD, update, domain diagnostics
+  lead.go                 — lead pause/blacklist/list
+  stats.go                — campaign/step/variant/lead stats, event log
 ```
 
 ## Key Design Decisions

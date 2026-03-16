@@ -264,6 +264,105 @@ func TestRemoveAccount(t *testing.T) {
 	}
 }
 
+func TestReAddRemovedAccount(t *testing.T) {
+	db := testDB(t)
+
+	// Add and remove
+	_, err := AddAccount(db, "sender@x.com", 50, "/tmp/gws")
+	if err != nil {
+		t.Fatalf("AddAccount error: %v", err)
+	}
+	_, err = RemoveAccount(db, "sender@x.com")
+	if err != nil {
+		t.Fatalf("RemoveAccount error: %v", err)
+	}
+
+	// Re-add should succeed and reactivate
+	result, err := AddAccount(db, "sender@x.com", 30, "/tmp/gws2")
+	if err != nil {
+		t.Fatalf("Re-add error: %v", err)
+	}
+	if result.Status != "active" {
+		t.Errorf("expected active, got %s", result.Status)
+	}
+	if result.DailyLimit != 30 {
+		t.Errorf("expected daily_limit 30, got %d", result.DailyLimit)
+	}
+
+	// Verify in DB
+	var status string
+	var limit int
+	db.QueryRow("SELECT status, daily_limit FROM accounts WHERE email = 'sender@x.com'").Scan(&status, &limit)
+	if status != "active" {
+		t.Errorf("expected active in DB, got %s", status)
+	}
+	if limit != 30 {
+		t.Errorf("expected 30 in DB, got %d", limit)
+	}
+}
+
+func TestUpdateAccount(t *testing.T) {
+	db := testDB(t)
+	AddAccount(db, "sender@x.com", 50, "/tmp/gws")
+
+	// Update daily limit
+	newLimit := 25
+	err := UpdateAccount(db, "sender@x.com", UpdateAccountOpts{DailyLimit: &newLimit})
+	if err != nil {
+		t.Fatalf("UpdateAccount error: %v", err)
+	}
+
+	var limit int
+	db.QueryRow("SELECT daily_limit FROM accounts WHERE email = 'sender@x.com'").Scan(&limit)
+	if limit != 25 {
+		t.Errorf("expected 25, got %d", limit)
+	}
+
+	// Invalid limit
+	badLimit := 0
+	err = UpdateAccount(db, "sender@x.com", UpdateAccountOpts{DailyLimit: &badLimit})
+	if err == nil {
+		t.Error("expected error for zero daily limit")
+	}
+
+	// Non-existent account
+	err = UpdateAccount(db, "nope@x.com", UpdateAccountOpts{DailyLimit: &newLimit})
+	if err == nil {
+		t.Error("expected error for non-existent account")
+	}
+}
+
+func TestDailyLimitWarnings(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 2)")
+	db.Exec("INSERT INTO campaigns (name, sequence_file, status) VALUES ('c1', 'seq.yml', 'active')")
+	db.Exec("INSERT INTO leads (email, domain) VALUES ('a@x.com', 'x.com')")
+	db.Exec("INSERT INTO leads (email, domain) VALUES ('b@x.com', 'x.com')")
+	db.Exec("INSERT INTO leads (email, domain) VALUES ('c@x.com', 'x.com')")
+
+	// 3 sends on same day, limit is 2
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status) VALUES (1, 1, 1, 1, '2025-01-15 09:00:00', 'pending')")
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status) VALUES (1, 2, 1, 1, '2025-01-15 09:05:00', 'pending')")
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status) VALUES (1, 3, 1, 1, '2025-01-15 09:10:00', 'pending')")
+
+	warnings, err := GetDailyLimitWarnings(db)
+	if err != nil {
+		t.Fatalf("GetDailyLimitWarnings error: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d", len(warnings))
+	}
+	if warnings[0].Scheduled != 3 {
+		t.Errorf("expected 3 scheduled, got %d", warnings[0].Scheduled)
+	}
+	if warnings[0].Limit != 2 {
+		t.Errorf("expected limit 2, got %d", warnings[0].Limit)
+	}
+	if warnings[0].Overflow != 1 {
+		t.Errorf("expected overflow 1, got %d", warnings[0].Overflow)
+	}
+}
+
 func TestListLeads(t *testing.T) {
 	db := testDB(t)
 	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('a@acme.com', 'Alice', 'Acme', 'acme.com')")

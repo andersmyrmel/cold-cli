@@ -176,7 +176,10 @@ var accountAddCmd = &cobra.Command{
 		}
 
 		dailyLimit, _ := cmd.Flags().GetInt("daily-limit")
-		skipAuth, _ := cmd.Flags().GetBool("skip-auth")
+		skipAuth, _ := cmd.Flags().GetBool("no-login")
+		if !skipAuth {
+			skipAuth, _ = cmd.Flags().GetBool("skip-auth")
+		}
 
 		configDir := internal.GWSConfigDirForAccount(email)
 
@@ -287,6 +290,47 @@ var accountResumeCmd = &cobra.Command{
 			return printJSON(map[string]any{"email": email, "status": "active"})
 		}
 		fmt.Printf("Resumed account %s\n", email)
+		return nil
+	},
+}
+
+var accountUpdateCmd = &cobra.Command{
+	Use:   "update <email>",
+	Short: "Update account settings (daily limit)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		email := strings.TrimSpace(args[0])
+		opts := internal.UpdateAccountOpts{}
+		changed := false
+
+		if cmd.Flags().Changed("daily-limit") {
+			v, _ := cmd.Flags().GetInt("daily-limit")
+			opts.DailyLimit = &v
+			changed = true
+		}
+
+		if !changed {
+			return fmt.Errorf("no settings to update -- use --daily-limit")
+		}
+
+		if err := internal.UpdateAccount(db, email, opts); err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(map[string]any{"email": email, "updated": true})
+		}
+
+		fmt.Printf("Updated account %s\n", email)
+		if opts.DailyLimit != nil {
+			fmt.Printf("  daily limit: %d\n", *opts.DailyLimit)
+		}
 		return nil
 	},
 }
@@ -431,6 +475,7 @@ var campaignCreateCmd = &cobra.Command{
 		seqFile, _ := cmd.Flags().GetString("sequence")
 		leadsFile, _ := cmd.Flags().GetString("leads")
 		accountsFlag, _ := cmd.Flags().GetString("accounts")
+		startDate, _ := cmd.Flags().GetString("start-date")
 
 		if name == "" || seqFile == "" || leadsFile == "" || accountsFlag == "" {
 			return fmt.Errorf("all flags required: --name, --sequence, --leads, --accounts")
@@ -447,6 +492,7 @@ var campaignCreateCmd = &cobra.Command{
 			SequenceFile:  seqFile,
 			LeadsFile:     leadsFile,
 			AccountEmails: strings.Split(accountsFlag, ","),
+			StartDate:     startDate,
 		})
 		if err != nil {
 			return err
@@ -467,7 +513,7 @@ var campaignCreateCmd = &cobra.Command{
 }
 
 var campaignPreviewCmd = &cobra.Command{
-	Use:   "preview <name>",
+	Use:   "preview <name|id>",
 	Short: "Preview the full send schedule for a campaign",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -477,14 +523,41 @@ var campaignPreviewCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		_, status, preview, err := internal.GetCampaignPreview(db, args[0])
+		name, err := internal.ResolveCampaignName(db, args[0])
+		if err != nil {
+			return err
+		}
+
+		render, _ := cmd.Flags().GetBool("render")
+
+		if render {
+			rendered, err := internal.GetCampaignRenderedPreview(db, name)
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				return printJSON(map[string]any{"campaign": name, "emails": rendered})
+			}
+			for i, e := range rendered {
+				if i > 0 {
+					fmt.Println(strings.Repeat("-", 60))
+				}
+				fmt.Printf("Step %d (variant %d) | %s -> %s\n", e.StepNumber, e.VariantIndex, e.AccountEmail, e.LeadEmail)
+				fmt.Printf("Subject: %s\n\n", e.Subject)
+				fmt.Println(e.Body)
+				fmt.Println()
+			}
+			return nil
+		}
+
+		_, status, preview, err := internal.GetCampaignPreview(db, name)
 		if err != nil {
 			return err
 		}
 
 		if jsonOutput {
 			return printJSON(map[string]any{
-				"campaign": args[0],
+				"campaign": name,
 				"status":   status,
 				"total":    len(preview),
 				"schedule": preview,
@@ -492,12 +565,11 @@ var campaignPreviewCmd = &cobra.Command{
 		}
 
 		if len(preview) == 0 {
-			fmt.Printf("Campaign %q has no scheduled sends.\n", args[0])
+			fmt.Printf("Campaign %q has no scheduled sends.\n", name)
 			return nil
 		}
 
-		fmt.Printf("Campaign: %s (status: %s, %d sends)\n", args[0], status, len(preview))
-		fmt.Println("Note: daily limits and send windows are enforced at send time, not shown here.")
+		fmt.Printf("Campaign: %s (status: %s, %d sends)\n", name, status, len(preview))
 		fmt.Println()
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "SEND AT\tSTEP\tVARIANT\tLEAD\tACCOUNT\tSTATUS")
@@ -505,7 +577,19 @@ var campaignPreviewCmd = &cobra.Command{
 			fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\t%s\n",
 				r.SendAt, r.StepNumber, r.VariantIndex, r.LeadEmail, r.AccountEmail, r.Status)
 		}
-		return w.Flush()
+		w.Flush()
+
+		// Show daily limit overflow warnings
+		warnings, err := internal.GetDailyLimitWarnings(db)
+		if err == nil && len(warnings) > 0 {
+			fmt.Println()
+			for _, warn := range warnings {
+				fmt.Printf("  ! %s: %d sends scheduled for %s, limit is %d -- %d will defer\n",
+					warn.Date, warn.Scheduled, warn.Account, warn.Limit, warn.Overflow)
+			}
+		}
+
+		return nil
 	},
 }
 
@@ -534,16 +618,16 @@ var campaignListCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tNAME\tSTATUS\tLEADS\tSENDS")
+		fmt.Fprintln(w, "ID\tNAME\tSTATUS\tLEADS\tSENDS\tWINDOW\tDAYS")
 		for _, c := range campaigns {
-			fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%d\n", c.ID, c.Name, c.Status, c.Leads, c.Sends)
+			fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%d\t%s\t%s\n", c.ID, c.Name, c.Status, c.Leads, c.Sends, c.SendWindow, c.SendDays)
 		}
 		return w.Flush()
 	},
 }
 
 var campaignDeleteCmd = &cobra.Command{
-	Use:   "delete <name>",
+	Use:   "delete <name|id>",
 	Short: "Delete a campaign and all associated data",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -553,22 +637,27 @@ var campaignDeleteCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		id, err := internal.DeleteCampaign(db, args[0])
+		name, err := internal.ResolveCampaignName(db, args[0])
+		if err != nil {
+			return err
+		}
+
+		id, err := internal.DeleteCampaign(db, name)
 		if err != nil {
 			return err
 		}
 
 		if jsonOutput {
-			return printJSON(map[string]any{"name": args[0], "id": id, "deleted": true})
+			return printJSON(map[string]any{"name": name, "id": id, "deleted": true})
 		}
 
-		fmt.Printf("Deleted campaign %q (id=%d)\n", args[0], id)
+		fmt.Printf("Deleted campaign %q (id=%d)\n", name, id)
 		return nil
 	},
 }
 
 var campaignUpdateCmd = &cobra.Command{
-	Use:   "update <name>",
+	Use:   "update <name|id>",
 	Short: "Update campaign settings (send window, days, gaps)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -577,6 +666,11 @@ var campaignUpdateCmd = &cobra.Command{
 			return err
 		}
 		defer db.Close()
+
+		name, err := internal.ResolveCampaignName(db, args[0])
+		if err != nil {
+			return err
+		}
 
 		opts := internal.UpdateCampaignOpts{}
 		changed := false
@@ -616,21 +710,21 @@ var campaignUpdateCmd = &cobra.Command{
 			return fmt.Errorf("no settings to update — use flags like --send-days, --send-window-start, etc.")
 		}
 
-		if err := internal.UpdateCampaign(db, args[0], opts); err != nil {
+		if err := internal.UpdateCampaign(db, name, opts); err != nil {
 			return err
 		}
 
 		if jsonOutput {
-			return printJSON(map[string]any{"name": args[0], "updated": true})
+			return printJSON(map[string]any{"name": name, "updated": true})
 		}
 
-		fmt.Printf("Updated campaign %q\n", args[0])
+		fmt.Printf("Updated campaign %q\n", name)
 		return nil
 	},
 }
 
 var campaignCloneCmd = &cobra.Command{
-	Use:   "clone <source-name>",
+	Use:   "clone <source-name|id>",
 	Short: "Clone a campaign with new leads (copies sequence + settings)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -648,13 +742,18 @@ var campaignCloneCmd = &cobra.Command{
 		}
 		defer db.Close()
 
+		sourceName, err := internal.ResolveCampaignName(db, args[0])
+		if err != nil {
+			return err
+		}
+
 		var accounts []string
 		if accountsFlag != "" {
 			accounts = strings.Split(accountsFlag, ",")
 		}
 
 		result, err := internal.CloneCampaign(db, internal.CloneCampaignOpts{
-			SourceName: args[0],
+			SourceName: sourceName,
 			NewName:    name,
 			LeadsFile:  leadsFile,
 			Accounts:   accounts,
@@ -667,7 +766,7 @@ var campaignCloneCmd = &cobra.Command{
 			return printJSON(result)
 		}
 
-		fmt.Printf("Cloned %q → %q (id=%d)\n", args[0], result.Name, result.ID)
+		fmt.Printf("Cloned %q -> %q (id=%d)\n", sourceName, result.Name, result.ID)
 		fmt.Printf("  leads:    %d\n", result.Leads)
 		fmt.Printf("  sends:    %d\n", result.ScheduledSends)
 		fmt.Printf("  accounts: %d\n", result.Accounts)
@@ -678,7 +777,7 @@ var campaignCloneCmd = &cobra.Command{
 }
 
 var campaignAddLeadsCmd = &cobra.Command{
-	Use:   "add-leads <name>",
+	Use:   "add-leads <name|id>",
 	Short: "Add new leads to an existing campaign",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -693,7 +792,12 @@ var campaignAddLeadsCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		result, err := internal.AddLeadsToCampaign(db, args[0], leadsFile)
+		name, err := internal.ResolveCampaignName(db, args[0])
+		if err != nil {
+			return err
+		}
+
+		result, err := internal.AddLeadsToCampaign(db, name, leadsFile)
 		if err != nil {
 			return err
 		}
@@ -711,21 +815,21 @@ var campaignAddLeadsCmd = &cobra.Command{
 }
 
 var campaignActivateCmd = &cobra.Command{
-	Use:   "activate <name>",
+	Use:   "activate <name|id>",
 	Short: "Activate a draft campaign so tick will process it",
 	Args:  cobra.ExactArgs(1),
 	RunE:  campaignStateCmd("activate", "draft", "active"),
 }
 
 var campaignPauseCmd = &cobra.Command{
-	Use:   "pause <name>",
+	Use:   "pause <name|id>",
 	Short: "Pause an active campaign",
 	Args:  cobra.ExactArgs(1),
 	RunE:  campaignStateCmd("pause", "active", "paused"),
 }
 
 var campaignResumeCmd = &cobra.Command{
-	Use:   "resume <name>",
+	Use:   "resume <name|id>",
 	Short: "Resume a paused campaign",
 	Args:  cobra.ExactArgs(1),
 	RunE:  campaignStateCmd("resume", "paused", "active"),
@@ -739,21 +843,26 @@ func campaignStateCmd(action, from, to string) func(cmd *cobra.Command, args []s
 		}
 		defer db.Close()
 
-		if err := internal.CampaignStateTransition(db, args[0], action, from, to); err != nil {
+		name, err := internal.ResolveCampaignName(db, args[0])
+		if err != nil {
+			return err
+		}
+
+		if err := internal.CampaignStateTransition(db, name, action, from, to); err != nil {
 			return err
 		}
 
 		if jsonOutput {
-			return printJSON(map[string]any{"name": args[0], "status": to})
+			return printJSON(map[string]any{"name": name, "status": to})
 		}
 
-		fmt.Printf("Campaign %q is now %s.\n", args[0], to)
+		fmt.Printf("Campaign %q is now %s.\n", name, to)
 		return nil
 	}
 }
 
 var campaignStatusCmd = &cobra.Command{
-	Use:   "status <name>",
+	Use:   "status <name|id>",
 	Short: "Show campaign details and send counts by status",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -763,7 +872,12 @@ var campaignStatusCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		info, err := internal.GetCampaignStatus(db, args[0])
+		name, err := internal.ResolveCampaignName(db, args[0])
+		if err != nil {
+			return err
+		}
+
+		info, err := internal.GetCampaignStatus(db, name)
 		if err != nil {
 			return err
 		}
@@ -906,12 +1020,12 @@ var statsCmd = &cobra.Command{
 		perVariants, _ := cmd.Flags().GetBool("variants")
 
 		if len(args) == 1 {
-			name := args[0]
-			var campaignID int64
-			err := db.QueryRow("SELECT id FROM campaigns WHERE name = ?", name).Scan(&campaignID)
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("campaign %q not found", name)
+			name, err := internal.ResolveCampaignName(db, args[0])
+			if err != nil {
+				return err
 			}
+			var campaignID int64
+			err = db.QueryRow("SELECT id FROM campaigns WHERE name = ?", name).Scan(&campaignID)
 			if err != nil {
 				return fmt.Errorf("looking up campaign: %w", err)
 			}
@@ -1017,7 +1131,11 @@ var logCmd = &cobra.Command{
 		limit, _ := cmd.Flags().GetInt("limit")
 		var campaignName string
 		if len(args) == 1 {
-			campaignName = args[0]
+			resolved, err := internal.ResolveCampaignName(db, args[0])
+			if err != nil {
+				return err
+			}
+			campaignName = resolved
 		}
 
 		events, err := internal.GetEventLog(db, campaignName, limit)
@@ -1044,12 +1162,110 @@ var logCmd = &cobra.Command{
 	},
 }
 
+var campaignInitCmd = &cobra.Command{
+	Use:   "init [directory]",
+	Short: "Scaffold example sequence.yml and leads.csv files",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dir := "."
+		if len(args) == 1 {
+			dir = args[0]
+		}
+
+		seqPath := filepath.Join(dir, "sequence.yml")
+		leadsPath := filepath.Join(dir, "leads.csv")
+
+		// Check for existing files
+		for _, p := range []string{seqPath, leadsPath} {
+			if _, err := os.Stat(p); err == nil {
+				return fmt.Errorf("%s already exists — remove it first or use a different directory", p)
+			}
+		}
+
+		if dir != "." {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return fmt.Errorf("creating directory: %w", err)
+			}
+		}
+
+		seqContent := `name: example-sequence
+
+defaults:
+  from_name: Your Name
+
+steps:
+  - step: 1
+    delay: 0
+    subject: "Quick question, {{first_name}}"
+    body: |
+      Hi {{first_name}},
+
+      I noticed {{company}} and wanted to reach out.
+
+      Would you be open to a quick chat this week?
+
+      Best,
+      Your Name
+
+  - step: 2
+    delay: 3
+    subject: ""
+    body: |
+      Hi {{first_name}},
+
+      Just bumping this to the top of your inbox. Would love to connect.
+
+      Best,
+      Your Name
+
+  - step: 3
+    delay: 5
+    subject: ""
+    body: |
+      Hi {{first_name}},
+
+      Last follow-up. If the timing isn't right, no worries at all.
+
+      Best,
+      Your Name
+`
+		if err := os.WriteFile(seqPath, []byte(seqContent), 0644); err != nil {
+			return fmt.Errorf("writing sequence file: %w", err)
+		}
+
+		leadsContent := `email,first_name,last_name,company
+alice@example.com,Alice,Smith,Acme Corp
+bob@example.com,Bob,Jones,Widget Inc
+`
+		if err := os.WriteFile(leadsPath, []byte(leadsContent), 0644); err != nil {
+			return fmt.Errorf("writing leads file: %w", err)
+		}
+
+		if jsonOutput {
+			return printJSON(map[string]any{
+				"sequence": seqPath,
+				"leads":    leadsPath,
+			})
+		}
+
+		fmt.Printf("Created example files:\n")
+		fmt.Printf("  %s  — edit your email sequence here\n", seqPath)
+		fmt.Printf("  %s     — add your leads here\n", leadsPath)
+		fmt.Printf("\nThen create a campaign:\n")
+		fmt.Printf("  cold-cli campaign create --name my-campaign --sequence %s --leads %s --accounts you@gmail.com\n", seqPath, leadsPath)
+		return nil
+	},
+}
+
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 
 	accountAddCmd.Flags().Int("daily-limit", 50, "maximum emails per day for this account")
-	accountAddCmd.Flags().Bool("skip-auth", false, "skip gws OAuth login (for testing or pre-authed accounts)")
-	accountCmd.AddCommand(accountAddCmd, accountListCmd, accountPauseCmd, accountResumeCmd, accountRemoveCmd)
+	accountAddCmd.Flags().Bool("no-login", false, "skip OAuth login (use when gws is already authenticated)")
+	accountAddCmd.Flags().Bool("skip-auth", false, "skip OAuth login (alias for --no-login)")
+	accountAddCmd.Flags().MarkHidden("skip-auth")
+	accountUpdateCmd.Flags().Int("daily-limit", 0, "maximum emails per day for this account")
+	accountCmd.AddCommand(accountAddCmd, accountListCmd, accountPauseCmd, accountResumeCmd, accountRemoveCmd, accountUpdateCmd)
 	leadListCmd.Flags().String("domain", "", "filter by domain")
 	leadListCmd.Flags().String("status", "", "filter by status (active, blacklisted, bounced)")
 	leadListCmd.Flags().Int("limit", 50, "max leads to show")
@@ -1059,6 +1275,8 @@ func init() {
 	campaignCreateCmd.Flags().String("sequence", "", "path to sequence YAML file")
 	campaignCreateCmd.Flags().String("leads", "", "path to leads CSV file")
 	campaignCreateCmd.Flags().String("accounts", "", "comma-separated account emails")
+	campaignCreateCmd.Flags().String("start-date", "", "start date (YYYY-MM-DD); default: tomorrow")
+	campaignPreviewCmd.Flags().Bool("render", false, "show rendered email content for the first lead")
 	campaignUpdateCmd.Flags().String("send-window-start", "", "send window start (HH:MM)")
 	campaignUpdateCmd.Flags().String("send-window-end", "", "send window end (HH:MM)")
 	campaignUpdateCmd.Flags().String("send-days", "", "send days (0=Sun,1=Mon,...,6=Sat)")
@@ -1069,7 +1287,7 @@ func init() {
 	campaignCloneCmd.Flags().String("leads", "", "path to leads CSV file")
 	campaignCloneCmd.Flags().String("accounts", "", "comma-separated account emails (default: reuse source accounts)")
 	campaignAddLeadsCmd.Flags().String("leads", "", "path to leads CSV file")
-	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignUpdateCmd, campaignCloneCmd, campaignAddLeadsCmd)
+	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignUpdateCmd, campaignCloneCmd, campaignAddLeadsCmd, campaignInitCmd)
 
 	tickCmd.Flags().Bool("dry-run", false, "show what would be sent without actually sending")
 

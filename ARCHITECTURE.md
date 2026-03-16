@@ -266,13 +266,15 @@ Auto-detects domains from registered accounts if no domain specified.
 cold-cli init
 cold-cli doctor [domain...]
 
-cold-cli account add/list/pause/resume/remove
+cold-cli account add/list/pause/resume/remove/update
 
-cold-cli campaign create --name --sequence --leads --accounts
+cold-cli campaign init [directory]
+cold-cli campaign create --name --sequence --leads --accounts [--start-date YYYY-MM-DD]
 cold-cli campaign clone <source> --name <new> --leads <csv>
-cold-cli campaign add-leads <name> --leads <csv>
-cold-cli campaign preview/activate/pause/resume/status <name>
-cold-cli campaign list/update/delete <name>
+cold-cli campaign add-leads <name|id> --leads <csv>
+cold-cli campaign preview <name|id> [--render]
+cold-cli campaign activate/pause/resume/status <name|id>
+cold-cli campaign list/update/delete <name|id>
 
 cold-cli tick [--dry-run]
 
@@ -294,8 +296,9 @@ All commands support `--json` for agent consumption. No interactive prompts, eve
                     ├─────────────────────────┤
                     │ init / doctor            │
                     │ account add/list/pause/  │
-                    │   resume/remove          │
-                    │ campaign create/clone/   │
+                    │   resume/remove/update   │
+                    │ campaign init/create/    │
+                    │   clone/                 │
                     │   add-leads/preview/     │
                     │   activate/pause/resume/ │
                     │   status/list/update/del │
@@ -373,3 +376,6 @@ All commands support `--json` for agent consumption. No interactive prompts, eve
 | 21 | Tick logging | log/slog JSON to ~/.cold-cli/tick.log | Works with cron, no redirection needed |
 | 22 | List-Unsubscribe header | Opt-in (off by default) | Cold email should look like 1-to-1, not marketing |
 | 23 | Domain diagnostics | DNS + WHOIS, no external APIs | Works offline, no rate limits on DNS |
+| 24 | Campaign resolution | Accept name or numeric ID | Users instinctively use IDs from `campaign list` |
+| 25 | Preview warnings | Show daily limit overflow inline | Only warn when sends exceed limit, no noise otherwise |
+| 26 | Account re-add | Reactivate removed accounts on `add` | Remove shouldn't be a permanent one-way door |
