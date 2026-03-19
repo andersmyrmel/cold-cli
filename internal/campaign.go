@@ -972,6 +972,47 @@ func insertLeadsAndSchedule(tx *sql.Tx, campaignID int64, accountIDs []int64,
 	return len(leadsForSchedule), len(schedRows), nil
 }
 
+// RetryCampaignResult is returned by RetryCampaign.
+type RetryCampaignResult struct {
+	Campaign string `json:"campaign"`
+	Retried  int    `json:"retried"`
+}
+
+// RetryCampaign resets failed sends back to pending with send_at = now.
+// If step is non-nil, only retry failed sends for that specific step.
+func RetryCampaign(db *sql.DB, name string, step *int) (*RetryCampaignResult, error) {
+	var campaignID int64
+	err := db.QueryRow("SELECT id FROM campaigns WHERE name = ?", name).Scan(&campaignID)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("campaign %q not found", name)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("looking up campaign: %w", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	var res sql.Result
+	if step != nil {
+		res, err = db.Exec(`UPDATE scheduled_sends SET status = 'pending', send_at = ?
+			WHERE campaign_id = ? AND status = 'failed' AND step_number = ?`,
+			now, campaignID, *step)
+	} else {
+		res, err = db.Exec(`UPDATE scheduled_sends SET status = 'pending', send_at = ?
+			WHERE campaign_id = ? AND status = 'failed'`,
+			now, campaignID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("retrying sends: %w", err)
+	}
+
+	affected, _ := res.RowsAffected()
+	return &RetryCampaignResult{
+		Campaign: name,
+		Retried:  int(affected),
+	}, nil
+}
+
 // UpdateCampaignOpts holds fields to update. Zero values are ignored.
 type UpdateCampaignOpts struct {
 	SendWindowStart *string

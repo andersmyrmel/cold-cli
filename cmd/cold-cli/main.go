@@ -841,6 +841,46 @@ var campaignAddLeadsCmd = &cobra.Command{
 	},
 }
 
+var campaignRetryCmd = &cobra.Command{
+	Use:   "retry <name|id>",
+	Short: "Reset failed sends back to pending so they get retried",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		name, err := internal.ResolveCampaignName(db, args[0])
+		if err != nil {
+			return err
+		}
+
+		var step *int
+		if cmd.Flags().Changed("step") {
+			v, _ := cmd.Flags().GetInt("step")
+			step = &v
+		}
+
+		result, err := internal.RetryCampaign(db, name, step)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		if result.Retried == 0 {
+			fmt.Printf("No failed sends to retry in campaign %q.\n", name)
+		} else {
+			fmt.Printf("Retried %d failed sends in campaign %q.\n", result.Retried, name)
+		}
+		return nil
+	},
+}
+
 var campaignActivateCmd = &cobra.Command{
 	Use:   "activate <name|id>",
 	Short: "Activate a draft campaign so tick will process it",
@@ -1315,7 +1355,8 @@ func init() {
 	campaignCloneCmd.Flags().String("leads", "", "path to leads CSV file")
 	campaignCloneCmd.Flags().String("accounts", "", "comma-separated account emails (default: reuse source accounts)")
 	campaignAddLeadsCmd.Flags().String("leads", "", "path to leads CSV file")
-	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignUpdateCmd, campaignCloneCmd, campaignAddLeadsCmd, campaignInitCmd)
+	campaignRetryCmd.Flags().Int("step", 0, "only retry failed sends for this step number")
+	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignUpdateCmd, campaignCloneCmd, campaignAddLeadsCmd, campaignInitCmd, campaignRetryCmd)
 
 	tickCmd.Flags().Bool("dry-run", false, "show what would be sent without actually sending")
 

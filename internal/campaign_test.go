@@ -241,6 +241,83 @@ steps:
 	}
 }
 
+func TestRetryCampaign_AllFailed(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file) VALUES ('retry-test', 'active', 'seq.yml')`)
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('a@b.com', 'A', 'B', 'b.com')")
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('c@d.com', 'C', 'D', 'd.com')")
+
+	pastTime := time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 1, ?, 'failed')`, pastTime)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 2, 1, 1, ?, 'failed')`, pastTime)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 2, ?, 'pending')`, pastTime)
+
+	result, err := RetryCampaign(db, "retry-test", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Retried != 2 {
+		t.Errorf("expected 2 retried, got %d", result.Retried)
+	}
+
+	// Verify statuses
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM scheduled_sends WHERE campaign_id = 1 AND status = 'pending'").Scan(&count)
+	if count != 3 {
+		t.Errorf("expected 3 pending (2 retried + 1 original), got %d", count)
+	}
+}
+
+func TestRetryCampaign_FilterByStep(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file) VALUES ('retry-step', 'active', 'seq.yml')`)
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('a@b.com', 'A', 'B', 'b.com')")
+
+	pastTime := time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 1, ?, 'failed')`, pastTime)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 2, ?, 'failed')`, pastTime)
+
+	step := 1
+	result, err := RetryCampaign(db, "retry-step", &step)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Retried != 1 {
+		t.Errorf("expected 1 retried (step 1 only), got %d", result.Retried)
+	}
+
+	// Step 1 should be pending, step 2 should still be failed
+	var s1, s2 string
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE step_number = 1").Scan(&s1)
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE step_number = 2").Scan(&s2)
+	if s1 != "pending" {
+		t.Errorf("step 1 should be 'pending', got %q", s1)
+	}
+	if s2 != "failed" {
+		t.Errorf("step 2 should still be 'failed', got %q", s2)
+	}
+}
+
+func TestRetryCampaign_NoFailed(t *testing.T) {
+	db := testDB(t)
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file) VALUES ('no-fails', 'active', 'seq.yml')`)
+
+	result, err := RetryCampaign(db, "no-fails", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Retried != 0 {
+		t.Errorf("expected 0 retried, got %d", result.Retried)
+	}
+}
+
 func TestFormatSendDays(t *testing.T) {
 	tests := []struct {
 		input string

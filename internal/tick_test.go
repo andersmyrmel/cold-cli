@@ -424,11 +424,20 @@ func TestTick_SendWindowEnforcement(t *testing.T) {
 		t.Fatalf("tick error: %v", err)
 	}
 
-	if result.Skipped != 1 {
-		t.Errorf("expected 1 skipped (outside window), got %d", result.Skipped)
-	}
+	// Outside window: send stays pending (not counted as skipped or failed)
 	if result.Sent != 0 {
 		t.Errorf("expected 0 sent, got %d", result.Sent)
+	}
+	if result.Skipped != 0 {
+		t.Errorf("expected 0 skipped (window skip leaves pending), got %d", result.Skipped)
+	}
+
+	// Verify send is still pending in DB
+	var status string
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE campaign_id = ? AND lead_id = ?",
+		campaignID, leadIDs[0]).Scan(&status)
+	if status != "pending" {
+		t.Errorf("expected status 'pending' (outside window), got %q", status)
 	}
 }
 
@@ -470,11 +479,20 @@ func TestTick_SendDayEnforcement(t *testing.T) {
 		t.Fatalf("tick error: %v", err)
 	}
 
-	if result.Skipped != 1 {
-		t.Errorf("expected 1 skipped (Saturday, send_days=weekdays), got %d", result.Skipped)
-	}
+	// Outside send days: send stays pending (not counted as skipped or failed)
 	if result.Sent != 0 {
 		t.Errorf("expected 0 sent, got %d", result.Sent)
+	}
+	if result.Skipped != 0 {
+		t.Errorf("expected 0 skipped (day skip leaves pending), got %d", result.Skipped)
+	}
+
+	// Verify send is still pending in DB
+	var status string
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE campaign_id = ? AND lead_id = ?",
+		campaignID, leadIDs[0]).Scan(&status)
+	if status != "pending" {
+		t.Errorf("expected status 'pending' (Saturday), got %q", status)
 	}
 }
 

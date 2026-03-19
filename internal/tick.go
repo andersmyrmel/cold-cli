@@ -120,9 +120,8 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			continue
 		}
 
-		// Check send window and send day
+		// Check send window and send day — if outside, leave as pending for next tick
 		if !isInSendWindow(cfg.DB, send.CampaignID, now) {
-			result.Skipped++
 			continue
 		}
 
