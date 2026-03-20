@@ -121,6 +121,8 @@ cold-cli campaign status <name|id>         # details + reply rate + next/last se
 cold-cli campaign list                     # list all campaigns (with send window + days)
 cold-cli campaign update <name|id>         # update sequence, send window, timezone, gaps
 cold-cli campaign delete <name|id>         # delete campaign and all data
+cold-cli campaign retry <name|id>          # reset failed sends back to pending
+cold-cli campaign retry <name|id> --step N # retry only failed sends for step N
 
 cold-cli tick                              # process replies, bounces, send due emails
 cold-cli tick --dry-run                    # show what would happen

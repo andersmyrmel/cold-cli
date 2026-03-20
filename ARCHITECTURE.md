@@ -54,6 +54,7 @@ accounts
 
 campaigns
 ├─ id, name, status, sequence_file, sequence_content
+├─ sequence_content (YAML stored at creation time)
 ├─ stop_on_reply, stop_on_domain_reply
 ├─ send_window_start/end, send_days, timezone
 ├─ min_gap_seconds, max_gap_seconds
@@ -274,7 +275,7 @@ cold-cli campaign clone <source> --name <new> --leads <csv>
 cold-cli campaign add-leads <name|id> --leads <csv>
 cold-cli campaign preview <name|id> [--render]
 cold-cli campaign activate/pause/resume/status <name|id>
-cold-cli campaign list/update/delete <name|id>
+cold-cli campaign list/update/delete/retry <name|id>
 
 cold-cli tick [--dry-run]
 
@@ -301,7 +302,8 @@ All commands support `--json` for agent consumption. No interactive prompts, eve
                     │   clone/                 │
                     │   add-leads/preview/     │
                     │   activate/pause/resume/ │
-                    │   status/list/update/del │
+                    │   status/list/update/del/│
+│   retry                  │
                     │ tick [--dry-run]         │
                     │ stats [--leads/variants] │
                     │ log [--limit]            │
