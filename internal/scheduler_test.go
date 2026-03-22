@@ -745,7 +745,7 @@ steps:
 	// CSV with 3 leads: 1 existing (should skip), 2 new
 	csvPath := writeTempCSV(t, "email,first_name\nexisting@acme.com,Existing\nalice@new.com,Alice\nbob@new.com,Bob\n")
 
-	result, err := AddLeadsToCampaign(db, "test-add", csvPath)
+	result, err := AddLeadsToCampaign(db, "test-add", csvPath, "")
 	if err != nil {
 		t.Fatalf("AddLeadsToCampaign error: %v", err)
 	}
@@ -844,7 +844,7 @@ steps:
 
 	csvPath := writeTempCSV(t, "email,first_name\nbad@acme.com,Bad\ngood@acme.com,Good\n")
 
-	result, err := AddLeadsToCampaign(db, "test-bl", csvPath)
+	result, err := AddLeadsToCampaign(db, "test-bl", csvPath, "")
 	if err != nil {
 		t.Fatalf("AddLeadsToCampaign error: %v", err)
 	}
@@ -854,6 +854,37 @@ steps:
 	}
 	if result.LeadsSkipped != 1 {
 		t.Errorf("expected 1 skipped, got %d", result.LeadsSkipped)
+	}
+}
+
+func TestAddLeadsToCampaign_Inline(t *testing.T) {
+	db := testDB(t)
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	seqYAML := `name: Test
+defaults:
+  from_name: "Test"
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello"
+`
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content,
+		send_window_start, send_window_end, send_days, timezone)
+		VALUES ('test-inline-add', 'draft', 'seq.yml', ?, '00:00', '23:59', '0,1,2,3,4,5,6', 'UTC')`, seqYAML)
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+
+	result, err := AddLeadsToCampaign(db, "test-inline-add", "", "email,first_name\nalice@acme.com,Alice\nbob@bigco.com,Bob\n")
+	if err != nil {
+		t.Fatalf("AddLeadsToCampaign inline error: %v", err)
+	}
+
+	if result.LeadsAdded != 2 {
+		t.Errorf("expected 2 leads added, got %d", result.LeadsAdded)
+	}
+	if result.ScheduledSends != 2 {
+		t.Errorf("expected 2 scheduled sends, got %d", result.ScheduledSends)
 	}
 }
 

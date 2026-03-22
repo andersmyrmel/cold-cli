@@ -521,12 +521,20 @@ var campaignCreateCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		seqFile, _ := cmd.Flags().GetString("sequence")
+		seqInline, _ := cmd.Flags().GetString("sequence-inline")
 		leadsFile, _ := cmd.Flags().GetString("leads")
+		leadsInline, _ := cmd.Flags().GetString("leads-inline")
 		accountsFlag, _ := cmd.Flags().GetString("accounts")
 		startDate, _ := cmd.Flags().GetString("start-date")
 
-		if name == "" || seqFile == "" || leadsFile == "" || accountsFlag == "" {
-			return fmt.Errorf("all flags required: --name, --sequence, --leads, --accounts")
+		if name == "" || accountsFlag == "" {
+			return fmt.Errorf("required flags: --name, --accounts")
+		}
+		if seqFile == "" && seqInline == "" {
+			return fmt.Errorf("provide --sequence (file path) or --sequence-inline (YAML content)")
+		}
+		if leadsFile == "" && leadsInline == "" {
+			return fmt.Errorf("provide --leads (file path) or --leads-inline (CSV content)")
 		}
 
 		db, err := openDB()
@@ -536,11 +544,13 @@ var campaignCreateCmd = &cobra.Command{
 		defer db.Close()
 
 		result, err := internal.CreateCampaign(db, internal.CreateCampaignOpts{
-			Name:          name,
-			SequenceFile:  seqFile,
-			LeadsFile:     leadsFile,
-			AccountEmails: strings.Split(accountsFlag, ","),
-			StartDate:     startDate,
+			Name:           name,
+			SequenceFile:   seqFile,
+			SequenceInline: seqInline,
+			LeadsFile:      leadsFile,
+			LeadsInline:    leadsInline,
+			AccountEmails:  strings.Split(accountsFlag, ","),
+			StartDate:      startDate,
 		})
 		if err != nil {
 			return err
@@ -815,10 +825,14 @@ var campaignCloneCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		leadsFile, _ := cmd.Flags().GetString("leads")
+		leadsInline, _ := cmd.Flags().GetString("leads-inline")
 		accountsFlag, _ := cmd.Flags().GetString("accounts")
 
-		if name == "" || leadsFile == "" {
-			return fmt.Errorf("required flags: --name, --leads")
+		if name == "" {
+			return fmt.Errorf("required flag: --name")
+		}
+		if leadsFile == "" && leadsInline == "" {
+			return fmt.Errorf("provide --leads (file path) or --leads-inline (CSV content)")
 		}
 
 		db, err := openDB()
@@ -838,10 +852,11 @@ var campaignCloneCmd = &cobra.Command{
 		}
 
 		result, err := internal.CloneCampaign(db, internal.CloneCampaignOpts{
-			SourceName: sourceName,
-			NewName:    name,
-			LeadsFile:  leadsFile,
-			Accounts:   accounts,
+			SourceName:  sourceName,
+			NewName:     name,
+			LeadsFile:   leadsFile,
+			LeadsInline: leadsInline,
+			Accounts:    accounts,
 		})
 		if err != nil {
 			return err
@@ -867,8 +882,9 @@ var campaignAddLeadsCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		leadsFile, _ := cmd.Flags().GetString("leads")
-		if leadsFile == "" {
-			return fmt.Errorf("required flag: --leads")
+		leadsInline, _ := cmd.Flags().GetString("leads-inline")
+		if leadsFile == "" && leadsInline == "" {
+			return fmt.Errorf("provide --leads (file path) or --leads-inline (CSV content)")
 		}
 
 		db, err := openDB()
@@ -882,7 +898,7 @@ var campaignAddLeadsCmd = &cobra.Command{
 			return err
 		}
 
-		result, err := internal.AddLeadsToCampaign(db, name, leadsFile)
+		result, err := internal.AddLeadsToCampaign(db, name, leadsFile, leadsInline)
 		if err != nil {
 			return err
 		}
@@ -1399,7 +1415,9 @@ func init() {
 
 	campaignCreateCmd.Flags().String("name", "", "campaign name")
 	campaignCreateCmd.Flags().String("sequence", "", "path to sequence YAML file")
+	campaignCreateCmd.Flags().String("sequence-inline", "", "sequence YAML content (alternative to --sequence)")
 	campaignCreateCmd.Flags().String("leads", "", "path to leads CSV file")
+	campaignCreateCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads)")
 	campaignCreateCmd.Flags().String("accounts", "", "comma-separated account emails")
 	campaignCreateCmd.Flags().String("start-date", "", "start date (YYYY-MM-DD); default: tomorrow")
 	campaignPreviewCmd.Flags().Bool("render", false, "show rendered email content with templates filled in")
@@ -1413,8 +1431,10 @@ func init() {
 	campaignUpdateCmd.Flags().Int("max-gap", 0, "maximum seconds between sends")
 	campaignCloneCmd.Flags().String("name", "", "new campaign name")
 	campaignCloneCmd.Flags().String("leads", "", "path to leads CSV file")
+	campaignCloneCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads)")
 	campaignCloneCmd.Flags().String("accounts", "", "comma-separated account emails (default: reuse source accounts)")
 	campaignAddLeadsCmd.Flags().String("leads", "", "path to leads CSV file")
+	campaignAddLeadsCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads)")
 	campaignRetryCmd.Flags().Int("step", 0, "only retry failed sends for this step number")
 	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignRemoveLeadCmd, campaignUpdateCmd, campaignCloneCmd, campaignAddLeadsCmd, campaignInitCmd, campaignRetryCmd)
 

@@ -808,6 +808,53 @@ bob@bigco.com,Bob,BigCo
 	}
 }
 
+func TestCreateCampaign_Inline(t *testing.T) {
+	db := testDB(t)
+	tmpDir := t.TempDir()
+	t.Setenv("COLD_CLI_DATA_DIR", tmpDir)
+
+	os.WriteFile(tmpDir+"/config.yml", []byte("default_timezone: UTC\ndefault_daily_limit: 50\nmin_gap_seconds: 90\nmax_gap_seconds: 140\nsend_window_start: \"09:00\"\nsend_window_end: \"17:00\"\nsend_days: \"1,2,3,4,5\"\n"), 0644)
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	result, err := CreateCampaign(db, CreateCampaignOpts{
+		Name: "inline-test",
+		SequenceInline: `name: Inline
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello {{first_name}}"
+`,
+		LeadsInline:   "email,first_name\nalice@acme.com,Alice\nbob@bigco.com,Bob\n",
+		AccountEmails: []string{"sender@x.com"},
+	})
+	if err != nil {
+		t.Fatalf("CreateCampaign inline error: %v", err)
+	}
+
+	if result.Leads != 2 {
+		t.Errorf("expected 2 leads, got %d", result.Leads)
+	}
+	if result.ScheduledSends != 2 {
+		t.Errorf("expected 2 scheduled sends (1 step x 2 leads), got %d", result.ScheduledSends)
+	}
+
+	// Verify sequence content stored in DB
+	var seqDB string
+	db.QueryRow("SELECT sequence_content FROM campaigns WHERE name = 'inline-test'").Scan(&seqDB)
+	if !strings.Contains(seqDB, "Hi {{first_name}}") {
+		t.Error("expected sequence_content to be stored in DB")
+	}
+
+	// Verify sequence_file shows (inline)
+	var seqFile string
+	db.QueryRow("SELECT sequence_file FROM campaigns WHERE name = 'inline-test'").Scan(&seqFile)
+	if seqFile != "(inline)" {
+		t.Errorf("expected sequence_file '(inline)', got %q", seqFile)
+	}
+}
+
 func TestCreateCampaign_DuplicateName(t *testing.T) {
 	db := testDB(t)
 	tmpDir := t.TempDir()

@@ -38,11 +38,13 @@ func ResolveCampaignName(db *sql.DB, nameOrID string) (string, error) {
 
 // CreateCampaignOpts holds options for CreateCampaign.
 type CreateCampaignOpts struct {
-	Name          string
-	SequenceFile  string
-	LeadsFile     string
-	AccountEmails []string
-	StartDate     string // optional "YYYY-MM-DD"; empty = now
+	Name            string
+	SequenceFile    string
+	SequenceInline  string // inline YAML content (alternative to SequenceFile)
+	LeadsFile       string
+	LeadsInline     string // inline CSV content (alternative to LeadsFile)
+	AccountEmails   []string
+	StartDate       string // optional "YYYY-MM-DD"; empty = now
 }
 
 // CreateCampaignResult is returned by CreateCampaign.
@@ -57,17 +59,29 @@ type CreateCampaignResult struct {
 
 // CreateCampaign parses sequence+CSV, validates, computes schedule, and inserts everything.
 func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult, error) {
-	seq, err := ParseSequence(opts.SequenceFile)
+	var seq *Sequence
+	var seqContent []byte
+	var err error
+
+	if opts.SequenceInline != "" {
+		seqContent = []byte(opts.SequenceInline)
+		seq, err = ParseSequenceFromBytes(seqContent)
+	} else {
+		seq, err = ParseSequence(opts.SequenceFile)
+		if err == nil {
+			seqContent, err = os.ReadFile(opts.SequenceFile)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	seqContent, err := os.ReadFile(opts.SequenceFile)
-	if err != nil {
-		return nil, fmt.Errorf("reading sequence file: %w", err)
+	var records []LeadRecord
+	if opts.LeadsInline != "" {
+		records, _, err = ParseLeadsCSVFromReader(strings.NewReader(opts.LeadsInline))
+	} else {
+		records, _, err = ParseLeadsCSV(opts.LeadsFile)
 	}
-
-	records, _, err := ParseLeadsCSV(opts.LeadsFile)
 	if err != nil {
 		return nil, err
 	}
@@ -112,11 +126,16 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 	}
 	defer tx.Rollback()
 
+	seqFile := opts.SequenceFile
+	if seqFile == "" {
+		seqFile = "(inline)"
+	}
+
 	result, err := tx.Exec(`
 		INSERT INTO campaigns (name, status, sequence_file, sequence_content, send_window_start, send_window_end,
 			send_days, timezone, min_gap_seconds, max_gap_seconds)
 		VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?)`,
-		opts.Name, opts.SequenceFile, string(seqContent),
+		opts.Name, seqFile, string(seqContent),
 		cfg.SendWindowStart, cfg.SendWindowEnd,
 		cfg.SendDays, cfg.DefaultTimezone,
 		cfg.MinGapSeconds, cfg.MaxGapSeconds,
@@ -664,10 +683,11 @@ func DeleteCampaign(db *sql.DB, name string) (int64, error) {
 
 // CloneCampaignOpts holds options for CloneCampaign.
 type CloneCampaignOpts struct {
-	SourceName string
-	NewName    string
-	LeadsFile  string
-	Accounts   []string // optional: override accounts; empty = reuse source accounts
+	SourceName  string
+	NewName     string
+	LeadsFile   string
+	LeadsInline string // inline CSV content (alternative to LeadsFile)
+	Accounts    []string // optional: override accounts; empty = reuse source accounts
 }
 
 // CloneCampaign creates a new campaign by copying settings from an existing one with new leads.
@@ -710,7 +730,12 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 	}
 
 	// Parse leads
-	records, _, err := ParseLeadsCSV(opts.LeadsFile)
+	var records []LeadRecord
+	if opts.LeadsInline != "" {
+		records, _, err = ParseLeadsCSVFromReader(strings.NewReader(opts.LeadsInline))
+	} else {
+		records, _, err = ParseLeadsCSV(opts.LeadsFile)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -821,7 +846,8 @@ type AddLeadsResult struct {
 }
 
 // AddLeadsToCampaign adds new leads to an existing campaign and schedules their sends.
-func AddLeadsToCampaign(db *sql.DB, campaignName, leadsFile string) (*AddLeadsResult, error) {
+// Pass leadsFile for file path, or leadsInline for inline CSV content (one should be non-empty).
+func AddLeadsToCampaign(db *sql.DB, campaignName, leadsFile, leadsInline string) (*AddLeadsResult, error) {
 	// Load campaign
 	var campID int64
 	var seqFile, seqContent, windowStart, windowEnd, sendDaysStr, tzName string
@@ -849,7 +875,12 @@ func AddLeadsToCampaign(db *sql.DB, campaignName, leadsFile string) (*AddLeadsRe
 	}
 
 	// Parse leads
-	records, _, err := ParseLeadsCSV(leadsFile)
+	var records []LeadRecord
+	if leadsInline != "" {
+		records, _, err = ParseLeadsCSVFromReader(strings.NewReader(leadsInline))
+	} else {
+		records, _, err = ParseLeadsCSV(leadsFile)
+	}
 	if err != nil {
 		return nil, err
 	}
