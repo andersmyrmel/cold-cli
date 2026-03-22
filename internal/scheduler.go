@@ -246,16 +246,35 @@ func isDaySendable(day time.Weekday, sendDays []time.Weekday) bool {
 	return false
 }
 
-// ParseSendDays converts a comma-separated day string like "1,2,3,4,5" to weekday slice.
-// 0=Sunday, 1=Monday, ..., 6=Saturday.
+// ParseSendDays converts a comma-separated day string to weekday slice.
+// Accepts numbers (0=Sun,1=Mon,...,6=Sat) or names (sun,mon,...,sat).
 func ParseSendDays(s string) ([]time.Weekday, error) {
+	nameToDay := map[string]time.Weekday{
+		"sun": time.Sunday, "sunday": time.Sunday,
+		"mon": time.Monday, "monday": time.Monday,
+		"tue": time.Tuesday, "tuesday": time.Tuesday,
+		"wed": time.Wednesday, "wednesday": time.Wednesday,
+		"thu": time.Thursday, "thursday": time.Thursday,
+		"fri": time.Friday, "friday": time.Friday,
+		"sat": time.Saturday, "saturday": time.Saturday,
+	}
+
 	parts := strings.Split(s, ",")
 	var days []time.Weekday
 	for _, p := range parts {
 		p = strings.TrimSpace(p)
+		lower := strings.ToLower(p)
+
+		// Try name first
+		if d, ok := nameToDay[lower]; ok {
+			days = append(days, d)
+			continue
+		}
+
+		// Try number
 		var d int
 		if _, err := fmt.Sscanf(p, "%d", &d); err != nil {
-			return nil, fmt.Errorf("invalid day %q", p)
+			return nil, fmt.Errorf("invalid day %q (use 0-6 or day names like mon,tue,wed)", p)
 		}
 		if d < 0 || d > 6 {
 			return nil, fmt.Errorf("day %d out of range (0-6)", d)

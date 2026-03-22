@@ -323,8 +323,8 @@ type RenderedEmail struct {
 	Body         string `json:"body"`
 }
 
-// GetCampaignRenderedPreview returns rendered emails for the first lead in a campaign.
-func GetCampaignRenderedPreview(db *sql.DB, name string) ([]RenderedEmail, error) {
+// GetCampaignRenderedPreview returns rendered emails for a specific lead (or the first lead) in a campaign.
+func GetCampaignRenderedPreview(db *sql.DB, name string, leadEmail string) ([]RenderedEmail, error) {
 	var campaignID int64
 	var seqContent string
 	err := db.QueryRow("SELECT id, sequence_content FROM campaigns WHERE name = ?", name).
@@ -345,21 +345,40 @@ func GetCampaignRenderedPreview(db *sql.DB, name string) ([]RenderedEmail, error
 		return nil, fmt.Errorf("parsing sequence: %w", err)
 	}
 
-	// Get the first lead's scheduled sends
-	rows, err := db.Query(`
-		SELECT ss.step_number, ss.variant_index, l.email, a.email, l.id
-		FROM scheduled_sends ss
-		JOIN leads l ON ss.lead_id = l.id
-		JOIN accounts a ON ss.account_id = a.id
-		WHERE ss.campaign_id = ?
-		ORDER BY ss.send_at, ss.step_number
-		LIMIT 1`, campaignID)
+	// Get the target lead's scheduled sends (specific lead or first lead)
+	var leadQuery string
+	var leadArgs []any
+	if leadEmail != "" {
+		leadQuery = `
+			SELECT ss.step_number, ss.variant_index, l.email, a.email, l.id
+			FROM scheduled_sends ss
+			JOIN leads l ON ss.lead_id = l.id
+			JOIN accounts a ON ss.account_id = a.id
+			WHERE ss.campaign_id = ? AND l.email = ?
+			ORDER BY ss.send_at, ss.step_number
+			LIMIT 1`
+		leadArgs = []any{campaignID, leadEmail}
+	} else {
+		leadQuery = `
+			SELECT ss.step_number, ss.variant_index, l.email, a.email, l.id
+			FROM scheduled_sends ss
+			JOIN leads l ON ss.lead_id = l.id
+			JOIN accounts a ON ss.account_id = a.id
+			WHERE ss.campaign_id = ?
+			ORDER BY ss.send_at, ss.step_number
+			LIMIT 1`
+		leadArgs = []any{campaignID}
+	}
+	rows, err := db.Query(leadQuery, leadArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("querying first lead: %w", err)
 	}
 	defer rows.Close()
 
 	if !rows.Next() {
+		if leadEmail != "" {
+			return nil, fmt.Errorf("lead %s not found in campaign %q", leadEmail, name)
+		}
 		return nil, fmt.Errorf("campaign has no scheduled sends")
 	}
 
@@ -445,6 +464,7 @@ type CampaignStatusInfo struct {
 	Sequence   string         `json:"sequence"`
 	Timezone   string         `json:"timezone"`
 	SendWindow string         `json:"send_window"`
+	SendDays   string         `json:"send_days"`
 	Leads      int            `json:"leads"`
 	Accounts   int            `json:"accounts"`
 	TotalSends int            `json:"total_sends"`
@@ -464,11 +484,12 @@ func GetCampaignStatus(db *sql.DB, name string) (*CampaignStatusInfo, error) {
 		Timezone    string
 		WindowStart string
 		WindowEnd   string
+		SendDays    string
 		CreatedAt   string
 	}
-	err := db.QueryRow(`SELECT id, status, sequence_file, timezone, send_window_start, send_window_end, created_at
+	err := db.QueryRow(`SELECT id, status, sequence_file, timezone, send_window_start, send_window_end, send_days, created_at
 		FROM campaigns WHERE name = ?`, name).
-		Scan(&c.ID, &c.Status, &c.SeqFile, &c.Timezone, &c.WindowStart, &c.WindowEnd, &c.CreatedAt)
+		Scan(&c.ID, &c.Status, &c.SeqFile, &c.Timezone, &c.WindowStart, &c.WindowEnd, &c.SendDays, &c.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("campaign %q not found", name)
 	}
@@ -504,6 +525,7 @@ func GetCampaignStatus(db *sql.DB, name string) (*CampaignStatusInfo, error) {
 		Sequence:   c.SeqFile,
 		Timezone:   c.Timezone,
 		SendWindow: c.WindowStart + " - " + c.WindowEnd,
+		SendDays:   FormatSendDays(c.SendDays),
 		Leads:      leadCount,
 		Accounts:   accountCount,
 		TotalSends: total,

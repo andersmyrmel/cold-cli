@@ -3,4 +3,4 @@ config.yaml
 tick.lock
 .cold-cli/
 .claude/skills/
-cold-cli
+/cold-cli

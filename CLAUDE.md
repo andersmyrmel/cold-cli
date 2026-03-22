@@ -27,7 +27,7 @@ internal/                 — single flat package, all application logic
   config.go               — YAML config loading
   campaign.go             — campaign CRUD, preview, rendered preview, daily limit warnings
   account.go              — account CRUD, update, domain diagnostics
-  lead.go                 — lead pause/blacklist/list
+  lead.go                 — lead pause/resume/blacklist/list, campaign remove-lead
   stats.go                — campaign/step/variant/lead stats, event log
 ```
 

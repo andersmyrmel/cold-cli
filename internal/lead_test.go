@@ -48,6 +48,146 @@ func TestPauseLead_NotFound(t *testing.T) {
 	}
 }
 
+func TestResumeLead_HappyPath(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email) VALUES ('sender@x.com')")
+	db.Exec("INSERT INTO campaigns (name, sequence_file, status) VALUES ('c1', 'seq.yml', 'active')")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('john@acme.com', 'John', 'acme.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'paused')")
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status) VALUES (1, 1, 1, 1, '2025-01-01', 'cancelled')")
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status) VALUES (1, 1, 1, 2, '2025-01-04', 'cancelled')")
+
+	result, err := ResumeLead(db, "john@acme.com")
+	if err != nil {
+		t.Fatalf("ResumeLead error: %v", err)
+	}
+	if result.ResumedCampaigns != 1 {
+		t.Errorf("expected 1 resumed campaign, got %d", result.ResumedCampaigns)
+	}
+	if result.RestoredSends != 2 {
+		t.Errorf("expected 2 restored sends, got %d", result.RestoredSends)
+	}
+
+	// Verify campaign_lead status
+	var clStatus string
+	db.QueryRow("SELECT status FROM campaign_leads WHERE lead_id = 1").Scan(&clStatus)
+	if clStatus != "active" {
+		t.Errorf("expected campaign_lead status 'active', got %q", clStatus)
+	}
+
+	// Verify sends restored
+	var pending int
+	db.QueryRow("SELECT COUNT(*) FROM scheduled_sends WHERE lead_id = 1 AND status = 'pending'").Scan(&pending)
+	if pending != 2 {
+		t.Errorf("expected 2 pending sends, got %d", pending)
+	}
+}
+
+func TestResumeLead_NotFound(t *testing.T) {
+	db := testDB(t)
+
+	_, err := ResumeLead(db, "nonexistent@x.com")
+	if err == nil {
+		t.Error("expected error for non-existent lead")
+	}
+}
+
+func TestResumeLead_Blacklisted(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO leads (email, domain, global_status) VALUES ('a@x.com', 'x.com', 'blacklisted')")
+
+	_, err := ResumeLead(db, "a@x.com")
+	if err == nil {
+		t.Error("expected error for blacklisted lead")
+	}
+}
+
+func TestResumeLead_SkipsCompletedCampaigns(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email) VALUES ('sender@x.com')")
+	db.Exec("INSERT INTO campaigns (name, sequence_file, status) VALUES ('active-camp', 'seq.yml', 'active')")
+	db.Exec("INSERT INTO campaigns (name, sequence_file, status) VALUES ('completed-camp', 'seq.yml', 'completed')")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('john@acme.com', 'John', 'acme.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'paused')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (2, 1, 'paused')")
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status) VALUES (1, 1, 1, 1, '2025-01-01', 'cancelled')")
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status) VALUES (2, 1, 1, 1, '2025-01-01', 'cancelled')")
+
+	result, err := ResumeLead(db, "john@acme.com")
+	if err != nil {
+		t.Fatalf("ResumeLead error: %v", err)
+	}
+	// Should only resume for the active campaign
+	if result.ResumedCampaigns != 1 {
+		t.Errorf("expected 1 resumed campaign (active only), got %d", result.ResumedCampaigns)
+	}
+}
+
+func TestRemoveLeadFromCampaign_HappyPath(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email) VALUES ('sender@x.com')")
+	db.Exec("INSERT INTO campaigns (name, sequence_file) VALUES ('c1', 'seq.yml')")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('john@acme.com', 'John', 'acme.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status) VALUES (1, 1, 1, 1, '2025-01-01', 'pending')")
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status) VALUES (1, 1, 1, 2, '2025-01-04', 'pending')")
+
+	result, err := RemoveLeadFromCampaign(db, "c1", "john@acme.com")
+	if err != nil {
+		t.Fatalf("RemoveLeadFromCampaign error: %v", err)
+	}
+	if result.CancelledSends != 2 {
+		t.Errorf("expected 2 cancelled sends, got %d", result.CancelledSends)
+	}
+	if result.Campaign != "c1" {
+		t.Errorf("expected campaign 'c1', got %q", result.Campaign)
+	}
+
+	// Verify campaign_lead removed
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = 1 AND lead_id = 1").Scan(&count)
+	if count != 0 {
+		t.Errorf("expected campaign_lead to be deleted, got %d", count)
+	}
+
+	// Verify sends cancelled
+	var pending int
+	db.QueryRow("SELECT COUNT(*) FROM scheduled_sends WHERE campaign_id = 1 AND lead_id = 1 AND status = 'pending'").Scan(&pending)
+	if pending != 0 {
+		t.Errorf("expected 0 pending sends, got %d", pending)
+	}
+}
+
+func TestRemoveLeadFromCampaign_NotInCampaign(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO campaigns (name, sequence_file) VALUES ('c1', 'seq.yml')")
+	db.Exec("INSERT INTO leads (email, domain) VALUES ('john@acme.com', 'acme.com')")
+
+	_, err := RemoveLeadFromCampaign(db, "c1", "john@acme.com")
+	if err == nil {
+		t.Error("expected error for lead not in campaign")
+	}
+}
+
+func TestRemoveLeadFromCampaign_CampaignNotFound(t *testing.T) {
+	db := testDB(t)
+
+	_, err := RemoveLeadFromCampaign(db, "nonexistent", "john@acme.com")
+	if err == nil {
+		t.Error("expected error for non-existent campaign")
+	}
+}
+
+func TestRemoveLeadFromCampaign_LeadNotFound(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO campaigns (name, sequence_file) VALUES ('c1', 'seq.yml')")
+
+	_, err := RemoveLeadFromCampaign(db, "c1", "nonexistent@x.com")
+	if err == nil {
+		t.Error("expected error for non-existent lead")
+	}
+}
+
 func TestBlacklistLead_ByEmail(t *testing.T) {
 	db := testDB(t)
 	db.Exec("INSERT INTO accounts (email) VALUES ('sender@x.com')")

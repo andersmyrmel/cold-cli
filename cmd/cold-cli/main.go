@@ -452,6 +452,32 @@ var leadPauseCmd = &cobra.Command{
 	},
 }
 
+var leadResumeCmd = &cobra.Command{
+	Use:   "resume <email>",
+	Short: "Resume a paused lead across all campaigns",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		result, err := internal.ResumeLead(db, strings.TrimSpace(args[0]))
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		fmt.Printf("Resumed %s: %d campaigns resumed, %d sends restored\n",
+			result.Email, result.ResumedCampaigns, result.RestoredSends)
+		return nil
+	},
+}
+
 var leadBlacklistCmd = &cobra.Command{
 	Use:   "blacklist <email|domain>",
 	Short: "Blacklist a lead by email or all leads on a domain",
@@ -553,7 +579,8 @@ var campaignPreviewCmd = &cobra.Command{
 		render, _ := cmd.Flags().GetBool("render")
 
 		if render {
-			rendered, err := internal.GetCampaignRenderedPreview(db, name)
+			leadFilter, _ := cmd.Flags().GetString("lead")
+			rendered, err := internal.GetCampaignRenderedPreview(db, name, leadFilter)
 			if err != nil {
 				return err
 			}
@@ -606,7 +633,7 @@ var campaignPreviewCmd = &cobra.Command{
 		if err == nil && len(warnings) > 0 {
 			fmt.Println()
 			for _, warn := range warnings {
-				fmt.Printf("  ! %s: %d sends scheduled for %s, limit is %d -- %d will defer\n",
+				fmt.Printf("  ! %s: %d sends scheduled for %s, limit is %d (across all campaigns) — %d will defer\n",
 					warn.Date, warn.Scheduled, warn.Account, warn.Limit, warn.Overflow)
 			}
 		}
@@ -645,6 +672,37 @@ var campaignListCmd = &cobra.Command{
 			fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%d\t%s\t%s\n", c.ID, c.Name, c.Status, c.Leads, c.Sends, c.SendWindow, c.SendDays)
 		}
 		return w.Flush()
+	},
+}
+
+var campaignRemoveLeadCmd = &cobra.Command{
+	Use:   "remove-lead <name|id> <email>",
+	Short: "Remove a single lead from a campaign",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		name, err := internal.ResolveCampaignName(db, args[0])
+		if err != nil {
+			return err
+		}
+
+		result, err := internal.RemoveLeadFromCampaign(db, name, strings.TrimSpace(args[1]))
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		fmt.Printf("Removed %s from campaign %q: %d sends cancelled\n",
+			result.Email, result.Campaign, result.CancelledSends)
+		return nil
 	},
 }
 
@@ -958,6 +1016,7 @@ var campaignStatusCmd = &cobra.Command{
 		fmt.Printf("  sequence:    %s\n", info.Sequence)
 		fmt.Printf("  timezone:    %s\n", info.Timezone)
 		fmt.Printf("  send window: %s\n", info.SendWindow)
+		fmt.Printf("  send days:   %s\n", info.SendDays)
 		fmt.Printf("  leads:       %d\n", info.Leads)
 		fmt.Printf("  accounts:    %d\n", info.Accounts)
 		fmt.Printf("  created:     %s\n", info.CreatedAt)
@@ -1074,7 +1133,7 @@ var tickCmd = &cobra.Command{
 
 var statsCmd = &cobra.Command{
 	Use:   "stats [campaign]",
-	Short: "Show send/reply/bounce statistics",
+	Short: "Show send/reply/bounce statistics (per-campaign when name given, global otherwise)",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		db, err := openDB()
@@ -1327,27 +1386,28 @@ bob@example.com,Bob,Jones,Widget Inc
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 
-	accountAddCmd.Flags().Int("daily-limit", 50, "maximum emails per day for this account")
+	accountAddCmd.Flags().Int("daily-limit", 50, "max emails per day, shared across all campaigns using this account")
 	accountAddCmd.Flags().Bool("no-login", false, "skip OAuth login (use when gws is already authenticated)")
 	accountAddCmd.Flags().Bool("skip-auth", false, "skip OAuth login (alias for --no-login)")
 	accountAddCmd.Flags().MarkHidden("skip-auth")
-	accountUpdateCmd.Flags().Int("daily-limit", 0, "maximum emails per day for this account")
+	accountUpdateCmd.Flags().Int("daily-limit", 0, "max emails per day, shared across all campaigns using this account")
 	accountCmd.AddCommand(accountAddCmd, accountListCmd, accountPauseCmd, accountResumeCmd, accountRemoveCmd, accountUpdateCmd)
 	leadListCmd.Flags().String("domain", "", "filter by domain")
 	leadListCmd.Flags().String("status", "", "filter by status (active, blacklisted, bounced)")
 	leadListCmd.Flags().Int("limit", 50, "max leads to show")
-	leadCmd.AddCommand(leadListCmd, leadPauseCmd, leadBlacklistCmd)
+	leadCmd.AddCommand(leadListCmd, leadPauseCmd, leadResumeCmd, leadBlacklistCmd)
 
 	campaignCreateCmd.Flags().String("name", "", "campaign name")
 	campaignCreateCmd.Flags().String("sequence", "", "path to sequence YAML file")
 	campaignCreateCmd.Flags().String("leads", "", "path to leads CSV file")
 	campaignCreateCmd.Flags().String("accounts", "", "comma-separated account emails")
 	campaignCreateCmd.Flags().String("start-date", "", "start date (YYYY-MM-DD); default: tomorrow")
-	campaignPreviewCmd.Flags().Bool("render", false, "show rendered email content for the first lead")
+	campaignPreviewCmd.Flags().Bool("render", false, "show rendered email content with templates filled in")
+	campaignPreviewCmd.Flags().String("lead", "", "show rendered preview for a specific lead email (use with --render)")
 	campaignUpdateCmd.Flags().String("sequence", "", "path to new sequence YAML file")
 	campaignUpdateCmd.Flags().String("send-window-start", "", "send window start (HH:MM)")
 	campaignUpdateCmd.Flags().String("send-window-end", "", "send window end (HH:MM)")
-	campaignUpdateCmd.Flags().String("send-days", "", "send days (0=Sun,1=Mon,...,6=Sat)")
+	campaignUpdateCmd.Flags().String("send-days", "", "send days: numbers (0=Sun,1=Mon,...,6=Sat) or names (mon,tue,wed)")
 	campaignUpdateCmd.Flags().String("timezone", "", "timezone (e.g. America/New_York)")
 	campaignUpdateCmd.Flags().Int("min-gap", 0, "minimum seconds between sends")
 	campaignUpdateCmd.Flags().Int("max-gap", 0, "maximum seconds between sends")
@@ -1356,7 +1416,7 @@ func init() {
 	campaignCloneCmd.Flags().String("accounts", "", "comma-separated account emails (default: reuse source accounts)")
 	campaignAddLeadsCmd.Flags().String("leads", "", "path to leads CSV file")
 	campaignRetryCmd.Flags().Int("step", 0, "only retry failed sends for this step number")
-	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignUpdateCmd, campaignCloneCmd, campaignAddLeadsCmd, campaignInitCmd, campaignRetryCmd)
+	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignRemoveLeadCmd, campaignUpdateCmd, campaignCloneCmd, campaignAddLeadsCmd, campaignInitCmd, campaignRetryCmd)
 
 	tickCmd.Flags().Bool("dry-run", false, "show what would be sent without actually sending")
 

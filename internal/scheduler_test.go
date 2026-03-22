@@ -476,10 +476,46 @@ func TestParseSendDays(t *testing.T) {
 	}
 }
 
+func TestParseSendDays_Names(t *testing.T) {
+	days, err := ParseSendDays("mon,tue,wed,thu,fri")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(days) != 5 {
+		t.Fatalf("expected 5 days, got %d", len(days))
+	}
+	if days[0] != time.Monday {
+		t.Errorf("expected Monday, got %s", days[0])
+	}
+	if days[4] != time.Friday {
+		t.Errorf("expected Friday, got %s", days[4])
+	}
+}
+
+func TestParseSendDays_MixedCase(t *testing.T) {
+	days, err := ParseSendDays("Mon,FRI,sun")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(days) != 3 {
+		t.Fatalf("expected 3 days, got %d", len(days))
+	}
+	if days[0] != time.Monday || days[1] != time.Friday || days[2] != time.Sunday {
+		t.Errorf("unexpected days: %v", days)
+	}
+}
+
 func TestParseSendDays_Invalid(t *testing.T) {
 	_, err := ParseSendDays("1,2,7")
 	if err == nil {
 		t.Fatal("expected error for day 7")
+	}
+}
+
+func TestParseSendDays_InvalidName(t *testing.T) {
+	_, err := ParseSendDays("mon,funday")
+	if err == nil {
+		t.Fatal("expected error for invalid day name")
 	}
 }
 

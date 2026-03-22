@@ -87,7 +87,7 @@ steps:
 	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at)
 		VALUES (1, 1, 1, 2, 0, ?)`, sendAt)
 
-	rendered, err := GetCampaignRenderedPreview(db, "render-test")
+	rendered, err := GetCampaignRenderedPreview(db, "render-test", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -129,10 +129,69 @@ steps:
 	}
 }
 
+func TestGetCampaignRenderedPreview_SpecificLead(t *testing.T) {
+	db := testDB(t)
+
+	seqYAML := `name: Test
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello {{first_name}}"
+`
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content,
+		send_window_start, send_window_end, send_days, timezone)
+		VALUES ('lead-test', 'draft', 'seq.yml', ?, '09:00', '17:00', '1,2,3,4,5', 'UTC')`, seqYAML)
+
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('alice@acme.com', 'Alice', 'acme.com')")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('bob@acme.com', 'Bob', 'acme.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 2, 'active')")
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at) VALUES (1, 1, 1, 1, 0, '2025-01-01')")
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at) VALUES (1, 2, 1, 1, 0, '2025-01-01')")
+
+	// Request render for Bob specifically
+	rendered, err := GetCampaignRenderedPreview(db, "lead-test", "bob@acme.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rendered) != 1 {
+		t.Fatalf("expected 1 rendered email, got %d", len(rendered))
+	}
+	if rendered[0].LeadEmail != "bob@acme.com" {
+		t.Errorf("expected bob@acme.com, got %q", rendered[0].LeadEmail)
+	}
+	if rendered[0].Subject != "Hi Bob" {
+		t.Errorf("expected 'Hi Bob', got %q", rendered[0].Subject)
+	}
+}
+
+func TestGetCampaignRenderedPreview_LeadNotInCampaign(t *testing.T) {
+	db := testDB(t)
+
+	seqYAML := `name: Test
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi"
+    body: "Hello"
+`
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content,
+		send_window_start, send_window_end, send_days, timezone)
+		VALUES ('lead-test2', 'draft', 'seq.yml', ?, '09:00', '17:00', '1,2,3,4,5', 'UTC')`, seqYAML)
+
+	_, err := GetCampaignRenderedPreview(db, "lead-test2", "nobody@acme.com")
+	if err == nil {
+		t.Error("expected error for lead not in campaign")
+	}
+}
+
 func TestGetCampaignRenderedPreview_NotFound(t *testing.T) {
 	db := testDB(t)
 
-	_, err := GetCampaignRenderedPreview(db, "nonexistent")
+	_, err := GetCampaignRenderedPreview(db, "nonexistent", "")
 	if err == nil {
 		t.Error("expected error for non-existent campaign")
 	}

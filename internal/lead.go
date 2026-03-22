@@ -59,6 +59,143 @@ func PauseLead(db *sql.DB, email string) (*PauseLeadResult, error) {
 	}, nil
 }
 
+// ResumeLeadResult is returned by ResumeLead.
+type ResumeLeadResult struct {
+	Email            string `json:"email"`
+	ResumedCampaigns int64  `json:"resumed_campaigns"`
+	RestoredSends    int64  `json:"restored_sends"`
+}
+
+// ResumeLead resumes a paused lead: reactivates campaign_leads and restores cancelled sends.
+func ResumeLead(db *sql.DB, email string) (*ResumeLeadResult, error) {
+	var leadID int64
+	err := db.QueryRow("SELECT id FROM leads WHERE email = ?", email).Scan(&leadID)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("lead %s not found", email)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("looking up lead: %w", err)
+	}
+
+	// Check global status - can't resume blacklisted/bounced leads
+	var globalStatus string
+	db.QueryRow("SELECT global_status FROM leads WHERE id = ?", leadID).Scan(&globalStatus)
+	if globalStatus == "blacklisted" || globalStatus == "bounced" {
+		return nil, fmt.Errorf("lead %s is %s — cannot resume (use a new campaign to re-add)", email, globalStatus)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Only resume campaign_leads where the campaign is still active or draft
+	res, err := tx.Exec(`
+		UPDATE campaign_leads SET status = 'active'
+		WHERE lead_id = ? AND status = 'paused'
+		AND campaign_id IN (SELECT id FROM campaigns WHERE status IN ('active', 'draft'))`,
+		leadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("resuming campaign_leads: %w", err)
+	}
+	resumedCampaigns, _ := res.RowsAffected()
+
+	// Restore cancelled sends (only for active/draft campaigns, only future sends)
+	res, err = tx.Exec(`
+		UPDATE scheduled_sends SET status = 'pending'
+		WHERE lead_id = ? AND status = 'cancelled'
+		AND campaign_id IN (SELECT id FROM campaigns WHERE status IN ('active', 'draft'))`,
+		leadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("restoring sends: %w", err)
+	}
+	restoredSends, _ := res.RowsAffected()
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing: %w", err)
+	}
+
+	return &ResumeLeadResult{
+		Email:            email,
+		ResumedCampaigns: resumedCampaigns,
+		RestoredSends:    restoredSends,
+	}, nil
+}
+
+// RemoveLeadResult is returned by RemoveLeadFromCampaign.
+type RemoveLeadResult struct {
+	Email          string `json:"email"`
+	Campaign       string `json:"campaign"`
+	CancelledSends int64  `json:"cancelled_sends"`
+}
+
+// RemoveLeadFromCampaign removes a single lead from a specific campaign.
+func RemoveLeadFromCampaign(db *sql.DB, campaignName, email string) (*RemoveLeadResult, error) {
+	var campaignID int64
+	err := db.QueryRow("SELECT id FROM campaigns WHERE name = ?", campaignName).Scan(&campaignID)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("campaign %q not found", campaignName)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("looking up campaign: %w", err)
+	}
+
+	var leadID int64
+	err = db.QueryRow("SELECT id FROM leads WHERE email = ?", email).Scan(&leadID)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("lead %s not found", email)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("looking up lead: %w", err)
+	}
+
+	// Check lead is in this campaign
+	var clCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = ? AND lead_id = ?",
+		campaignID, leadID).Scan(&clCount)
+	if err != nil {
+		return nil, fmt.Errorf("checking campaign membership: %w", err)
+	}
+	if clCount == 0 {
+		return nil, fmt.Errorf("lead %s is not in campaign %q", email, campaignName)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Cancel pending sends for this lead in this campaign
+	res, err := tx.Exec(
+		"UPDATE scheduled_sends SET status = 'cancelled' WHERE campaign_id = ? AND lead_id = ? AND status = 'pending'",
+		campaignID, leadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("cancelling sends: %w", err)
+	}
+	cancelledSends, _ := res.RowsAffected()
+
+	// Remove the campaign_lead entry
+	if _, err := tx.Exec("DELETE FROM campaign_leads WHERE campaign_id = ? AND lead_id = ?",
+		campaignID, leadID); err != nil {
+		return nil, fmt.Errorf("removing campaign_lead: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing: %w", err)
+	}
+
+	return &RemoveLeadResult{
+		Email:          email,
+		Campaign:       campaignName,
+		CancelledSends: cancelledSends,
+	}, nil
+}
+
 // LeadListRow is a row from ListLeads.
 type LeadListRow struct {
 	ID           int64  `json:"id"`
