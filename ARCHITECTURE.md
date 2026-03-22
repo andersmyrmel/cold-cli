@@ -35,8 +35,8 @@ cold-cli/
 │   ├─ config.go            (YAML config loading)
 │   ├─ stats.go             (campaign/step/variant/lead stats, event log)
 │   ├─ account.go           (account CRUD, domain diagnostics)
-│   ├─ lead.go              (lead pause/blacklist/list)
-│   └─ campaign.go          (campaign CRUD, clone, add-leads)
+│   ├─ lead.go              (lead pause/resume/blacklist/list, campaign remove-lead)
+│   └─ campaign.go          (campaign CRUD, clone, add-leads, inline creation)
 ├─ go.mod
 └─ go.sum
 ```
@@ -271,9 +271,11 @@ cold-cli account add/list/pause/resume/remove/update
 
 cold-cli campaign init [directory]
 cold-cli campaign create --name --sequence --leads --accounts [--start-date YYYY-MM-DD]
-cold-cli campaign clone <source> --name <new> --leads <csv>
-cold-cli campaign add-leads <name|id> --leads <csv>
-cold-cli campaign preview <name|id> [--render]
+cold-cli campaign create --name --sequence-inline '...' --leads-inline '...' --accounts
+cold-cli campaign clone <source> --name <new> --leads <csv>  # or --leads-inline
+cold-cli campaign add-leads <name|id> --leads <csv>          # or --leads-inline
+cold-cli campaign remove-lead <name|id> <email>
+cold-cli campaign preview <name|id> [--render] [--lead <email>]
 cold-cli campaign activate/pause/resume/status <name|id>
 cold-cli campaign list/update/delete/retry <name|id>
 
@@ -283,7 +285,7 @@ cold-cli stats [campaign] [--leads] [--variants]
 cold-cli log [campaign] [--limit N]
 
 cold-cli lead list [--domain X] [--status X]
-cold-cli lead pause/blacklist <email|domain>
+cold-cli lead pause/resume/blacklist <email|domain>
 ```
 
 All commands support `--json` for agent consumption. No interactive prompts, everything via flags.

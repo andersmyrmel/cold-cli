@@ -110,10 +110,13 @@ cold-cli account remove <email>            # deactivate (re-add later with accou
 
 cold-cli campaign init [directory]         # scaffold example sequence.yml + leads.csv
 cold-cli campaign create --name --sequence --leads --accounts [--start-date YYYY-MM-DD]
+cold-cli campaign create --name --sequence-inline '...' --leads-inline '...' --accounts  # no files needed
 cold-cli campaign clone <source> --name <new> --leads <csv>
-cold-cli campaign add-leads <name|id> --leads <csv>
+cold-cli campaign add-leads <name|id> --leads <csv>    # or --leads-inline '...'
+cold-cli campaign remove-lead <name|id> <email>        # remove one lead from a campaign
 cold-cli campaign preview <name|id>        # see full schedule before activating
 cold-cli campaign preview <name|id> --render  # see rendered emails for first lead
+cold-cli campaign preview <name|id> --render --lead <email>  # render for specific lead
 cold-cli campaign activate <name|id>       # start sending
 cold-cli campaign pause <name|id>          # stop sending
 cold-cli campaign resume <name|id>         # resume
@@ -138,6 +141,7 @@ cold-cli lead list                         # list all leads
 cold-cli lead list --domain <domain>       # filter by domain
 cold-cli lead list --status <status>       # filter by status
 cold-cli lead pause <email>                # pause across all campaigns
+cold-cli lead resume <email>              # undo pause, restore pending sends
 cold-cli lead blacklist <email|domain>     # blacklist + cancel pending sends
 ```
 
