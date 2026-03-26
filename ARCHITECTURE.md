@@ -226,6 +226,7 @@ Simple `strings.ReplaceAll` for `{{placeholder}}` substitution. No template engi
 - Unknown placeholders produce actionable errors with available field list and Levenshtein "Did you mean?" suggestions
 - CSV schema: `email` is the only hardcoded required column; all other required columns are driven by the sequence's placeholders
 - CSV column aliases auto-mapped: a `name` column becomes `first_name` (unless `first_name` already exists)
+- At send time, any remaining unresolved `{{variables}}` are stripped (not sent literally), double spaces collapsed, and a warning logged
 - Custom CSV columns stored as JSON in `leads.custom_fields`, parsed at send time
 
 ## gws Integration

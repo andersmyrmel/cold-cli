@@ -92,7 +92,7 @@ john@acme.com,John,Acme Inc
 jane@bigcorp.com,Jane,BigCorp
 ```
 
-`email` is the only required column. All other columns are driven by what `{{placeholders}}` your sequence uses. cold-cli validates this at campaign creation.
+`email` is the only required column. All other columns are driven by what `{{placeholders}}` your sequence uses. cold-cli validates this at campaign creation — mismatched variables produce actionable errors with "Did you mean?" suggestions. Common aliases like `{{name}}` → `first_name` are resolved automatically. Any unresolved variables are stripped at send time (never sent literally).
 
 ## Commands
 

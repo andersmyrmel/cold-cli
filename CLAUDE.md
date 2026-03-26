@@ -22,7 +22,7 @@ internal/                 — single flat package, all application logic
   gws.go                  — GWSClient interface + real subprocess implementation
   send.go                 — RFC 2822 message construction, threading headers
   reply.go                — reply/bounce detection, In-Reply-To header matching
-  template.go             — {{placeholder}} string replacement via strings.ReplaceAll
+  template.go             — {{placeholder}} replacement, alias resolution, unresolved stripping
   csv.go                  — lead CSV import, BOM stripping, field validation
   config.go               — YAML config loading
   campaign.go             — campaign CRUD, preview, rendered preview, daily limit warnings
@@ -37,14 +37,14 @@ These are settled — do not revisit without explicit instruction:
 
 1. **Eager scheduling** — all sends pre-computed into `scheduled_sends` table at campaign creation. Do NOT use lazy/rolling `next_send_at` on campaign_leads.
 2. **GWSClient interface** — gws interaction goes through an interface (`SendEmail`, `ListMessages`). Real impl calls subprocess. Tests use a mock.
-3. **Template rendering** — `strings.ReplaceAll` for `{{placeholder}}` substitution. No Go `text/template`. No template engine.
+3. **Template rendering** — `strings.ReplaceAll` for `{{placeholder}}` substitution with alias resolution (`name` → `first_name`, etc.). Unresolved variables stripped at send time (not sent literally). No Go `text/template`. No template engine.
 4. **Daily limits** — count from events table (`SELECT COUNT(*) ... WHERE type='sent' AND timestamp >= today`). No mutable `sends_today` counter on accounts.
 5. **Account rotation** — round-robin at schedule time. All steps for one lead use the same account (thread continuity).
 6. **Thread management** — after step 1 send, backfill `thread_id` and `parent_message_id` onto all remaining `scheduled_sends` for that lead+campaign.
 7. **Error isolation** — gws send failure marks that one `scheduled_sends` row as `'failed'` and continues. Never crash the whole tick.
 8. **Status semantics** — `skipped` = auto-cancelled (reply/bounce/domain-reply). `cancelled` = user action (pause/blacklist). These are distinct.
 9. **File lock** — tick uses flock/fcntl on `~/.cold-cli/tick.lock`. OS auto-releases on process exit.
-10. **Validation at creation** — template placeholders validated against lead CSV at campaign creation, not send time.
+10. **Validation at creation** — template placeholders validated against lead CSV at campaign creation with alias resolution and Levenshtein "Did you mean?" suggestions. Unresolved vars stripped at send time as a safety net.
 
 ## Testing
 
