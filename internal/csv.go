@@ -67,6 +67,20 @@ func ParseLeadsCSVFromReader(r io.Reader) ([]LeadRecord, []string, error) {
 		}
 	}
 
+	// Reject reserved sequence YAML field names used as CSV columns
+	reserved := map[string]string{
+		"subject": "subject_line",
+		"body":    "body_text",
+		"step":    "step_number",
+		"delay":   "delay_days",
+		"variant": "variant_name",
+	}
+	for _, h := range headers {
+		if suggestion, ok := reserved[h]; ok {
+			return nil, nil, fmt.Errorf("CSV column %q conflicts with reserved field name. Rename it to something like %q", h, suggestion)
+		}
+	}
+
 	// Validate email column exists
 	hasEmail := false
 	for _, h := range headers {

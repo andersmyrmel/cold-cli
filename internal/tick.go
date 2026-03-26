@@ -171,6 +171,20 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			result.Failed++
 			continue
 		}
+		if strings.TrimSpace(emailParams.Subject) == "" {
+			slog.Error("send aborted: empty subject after rendering",
+				"send_id", send.ID, "lead", emailParams.ToEmail, "step", send.StepNumber)
+			markSendStatus(cfg.DB, send.ID, "failed")
+			result.Failed++
+			continue
+		}
+		if strings.TrimSpace(emailParams.Body) == "" {
+			slog.Error("send aborted: empty body after rendering",
+				"send_id", send.ID, "lead", emailParams.ToEmail, "step", send.StepNumber)
+			markSendStatus(cfg.DB, send.ID, "failed")
+			result.Failed++
+			continue
+		}
 
 		// For follow-ups, add threading headers
 		if send.StepNumber > 1 && send.ParentMessageID != "" {

@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -189,6 +190,32 @@ func TestParseLeadsCSV_LastnameAlias(t *testing.T) {
 	}
 	if records[0].Fields["last_name"] != "Doe" {
 		t.Errorf("expected last_name='Doe', got %q", records[0].Fields["last_name"])
+	}
+}
+
+func TestParseLeadsCSV_ReservedColumnName(t *testing.T) {
+	reserved := []string{"subject", "body", "step", "delay", "variant"}
+	for _, name := range reserved {
+		csv := fmt.Sprintf("email,%s\njohn@acme.com,value\n", name)
+		_, _, err := ParseLeadsCSVFromReader(strings.NewReader(csv))
+		if err == nil {
+			t.Errorf("expected error for reserved column %q, got nil", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "conflicts with reserved field name") {
+			t.Errorf("expected reserved field error for %q, got: %v", name, err)
+		}
+	}
+}
+
+func TestParseLeadsCSV_ReservedColumnNameSuggestion(t *testing.T) {
+	csv := "email,subject\njohn@acme.com,hello\n"
+	_, _, err := ParseLeadsCSVFromReader(strings.NewReader(csv))
+	if err == nil {
+		t.Fatal("expected error for reserved 'subject' column")
+	}
+	if !strings.Contains(err.Error(), "subject_line") {
+		t.Errorf("expected rename suggestion 'subject_line', got: %v", err)
 	}
 }
 

@@ -797,6 +797,94 @@ func TestIsInSendWindow_ChecksDay(t *testing.T) {
 	}
 }
 
+func TestTick_EmptySubjectAbortsSend(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	// Sequence where subject is ONLY a placeholder
+	seqYAML := `name: Empty Subject Test
+defaults:
+  from_name: "Test"
+steps:
+  - step: 1
+    delay: 0
+    subject: "{{subject_line}}"
+    body: "Hello there"
+`
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content, send_window_start, send_window_end,
+		send_days, timezone) VALUES ('empty-subj', 'active', 'N/A', ?, '00:00', '23:59', '0,1,2,3,4,5,6', 'UTC')`,
+		seqYAML)
+
+	// Lead has no subject_line field → placeholder gets stripped → empty subject
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('test@example.com', 'Test', 'Example', 'example.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+
+	now := time.Now().UTC()
+	insertPendingSend(t, db, 1, 1, 1, 1, now.Add(-1*time.Hour))
+
+	mock := &MockGWS{}
+	result, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+
+	if result.Sent != 0 {
+		t.Errorf("expected 0 sent (empty subject should abort), got %d", result.Sent)
+	}
+	if result.Failed != 1 {
+		t.Errorf("expected 1 failed, got %d", result.Failed)
+	}
+	if len(mock.SentEmails) != 0 {
+		t.Error("email should NOT have been sent with empty subject")
+	}
+
+	var status string
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE id = 1").Scan(&status)
+	if status != "failed" {
+		t.Errorf("expected status 'failed', got %q", status)
+	}
+}
+
+func TestTick_EmptyBodyAbortsSend(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	// Sequence where body is ONLY a placeholder
+	seqYAML := `name: Empty Body Test
+defaults:
+  from_name: "Test"
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hello"
+    body: "{{custom_body}}"
+`
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content, send_window_start, send_window_end,
+		send_days, timezone) VALUES ('empty-body', 'active', 'N/A', ?, '00:00', '23:59', '0,1,2,3,4,5,6', 'UTC')`,
+		seqYAML)
+
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('test@example.com', 'Test', 'Example', 'example.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+
+	now := time.Now().UTC()
+	insertPendingSend(t, db, 1, 1, 1, 1, now.Add(-1*time.Hour))
+
+	mock := &MockGWS{}
+	result, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+
+	if result.Sent != 0 {
+		t.Errorf("expected 0 sent (empty body should abort), got %d", result.Sent)
+	}
+	if result.Failed != 1 {
+		t.Errorf("expected 1 failed, got %d", result.Failed)
+	}
+}
+
 func TestExtractBouncedEmail(t *testing.T) {
 	tests := []struct {
 		snippet string
