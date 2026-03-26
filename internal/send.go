@@ -24,6 +24,9 @@ type EmailParams struct {
 	// Unsubscribe
 	UnsubscribeEmail   string // mailto address for List-Unsubscribe header
 	UnsubscribeSubject string // subject for the mailto unsubscribe
+
+	// Stripped unresolved template variables (for logging)
+	StrippedVars []string
 }
 
 // BuildRawMessage constructs an RFC 2822 message and returns it as a base64url-encoded string.
@@ -104,12 +107,20 @@ func BuildEmailForSend(
 	subject = RenderTemplate(subject, lead)
 	body = RenderTemplate(body, lead)
 
+	// Strip any remaining unresolved {{variables}}
+	var allStripped []string
+	subject, stripped := StripUnresolved(subject)
+	allStripped = append(allStripped, stripped...)
+	body, stripped = StripUnresolved(body)
+	allStripped = append(allStripped, stripped...)
+
 	return EmailParams{
-		FromName:  seq.Defaults.FromName,
-		FromEmail: fromEmail,
-		ToEmail:   lead["email"],
-		Subject:   subject,
-		Body:      body,
+		FromName:     seq.Defaults.FromName,
+		FromEmail:    fromEmail,
+		ToEmail:      lead["email"],
+		Subject:      subject,
+		Body:         body,
+		StrippedVars: allStripped,
 	}
 }
 

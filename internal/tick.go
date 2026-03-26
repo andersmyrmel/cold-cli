@@ -152,6 +152,11 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 
 		// Build email
 		emailParams := BuildEmailForSend(seq, send.StepNumber, send.VariantIndex, leadFields, account.Email)
+		if len(emailParams.StrippedVars) > 0 {
+			slog.Warn("stripped unresolved template variables",
+				"send_id", send.ID, "lead", leadFields["email"],
+				"step", send.StepNumber, "stripped", emailParams.StrippedVars)
+		}
 		if cfg.UnsubscribeHeader {
 			emailParams.UnsubscribeEmail = account.Email
 			emailParams.UnsubscribeSubject = cfg.UnsubscribeSubject

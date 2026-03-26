@@ -146,6 +146,55 @@ func TestBuildEmailForSend_StepNotFound(t *testing.T) {
 	}
 }
 
+func TestBuildEmailForSend_StripsUnresolved(t *testing.T) {
+	seq := &Sequence{
+		Steps: []SequenceStep{
+			{
+				Step:    1,
+				Subject: "Hi {{first_name}}, about {{topic}}",
+				Body:    "Hello {{first_name}}, your {{title}} role",
+			},
+		},
+	}
+
+	// first_name is present but topic and title are not
+	lead := map[string]string{
+		"email":      "john@acme.com",
+		"first_name": "John",
+	}
+
+	p := BuildEmailForSend(seq, 1, 0, lead, "anders@x.com")
+	if p.Subject != "Hi John, about" {
+		t.Errorf("expected trailing unresolved stripped, got %q", p.Subject)
+	}
+	if p.Body != "Hello John, your role" {
+		t.Errorf("expected mid-sentence unresolved stripped, got %q", p.Body)
+	}
+	if len(p.StrippedVars) != 2 {
+		t.Errorf("expected 2 stripped vars, got %v", p.StrippedVars)
+	}
+}
+
+func TestBuildEmailForSend_EmptyFieldStripped(t *testing.T) {
+	seq := &Sequence{
+		Steps: []SequenceStep{
+			{Step: 1, Subject: "Hi {{first_name}},", Body: "Hello"},
+		},
+	}
+
+	// first_name exists but is empty
+	lead := map[string]string{
+		"email":      "support@acme.com",
+		"first_name": "",
+	}
+
+	p := BuildEmailForSend(seq, 1, 0, lead, "anders@x.com")
+	// Empty value renders as empty string via RenderTemplate, no leftover placeholder
+	if p.Subject != "Hi ," {
+		t.Errorf("expected empty first_name rendered, got %q", p.Subject)
+	}
+}
+
 func TestPrepareFollowUp(t *testing.T) {
 	p := EmailParams{
 		FromEmail: "anders@x.com",

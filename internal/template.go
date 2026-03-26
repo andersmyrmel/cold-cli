@@ -61,6 +61,32 @@ func RenderTemplate(tmpl string, fields map[string]string) string {
 	return result
 }
 
+// doubleSpaceRe matches two or more consecutive spaces.
+var doubleSpaceRe = regexp.MustCompile(`  +`)
+
+// StripUnresolved removes any remaining {{...}} placeholders from a string,
+// collapses double spaces left behind, and returns the names of stripped variables.
+func StripUnresolved(s string) (string, []string) {
+	matches := placeholderRe.FindAllStringSubmatch(s, -1)
+	if len(matches) == 0 {
+		return s, nil
+	}
+
+	var stripped []string
+	seen := map[string]bool{}
+	for _, m := range matches {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			stripped = append(stripped, m[1])
+		}
+	}
+
+	result := placeholderRe.ReplaceAllString(s, "")
+	result = doubleSpaceRe.ReplaceAllString(result, " ")
+	result = strings.TrimSpace(result)
+	return result, stripped
+}
+
 // levenshteinDistance computes the edit distance between two strings.
 func levenshteinDistance(a, b string) int {
 	la, lb := len(a), len(b)

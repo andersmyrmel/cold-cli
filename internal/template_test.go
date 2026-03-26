@@ -55,7 +55,7 @@ func TestRenderTemplate(t *testing.T) {
 		{
 			"{{unknown}} stays",
 			map[string]string{"first_name": "John"},
-			"{{unknown}} stays", // unmatched placeholders left as-is
+			"{{unknown}} stays", // RenderTemplate leaves unmatched; StripUnresolved handles removal
 		},
 		{
 			"",
@@ -165,5 +165,44 @@ func TestSuggestField(t *testing.T) {
 	got = SuggestField("zzzzzzzzzzz", available)
 	if got != "" {
 		t.Errorf("expected no suggestion for 'zzzzzzzzzzz', got %q", got)
+	}
+}
+
+func TestStripUnresolved(t *testing.T) {
+	tests := []struct {
+		input          string
+		expectedOutput string
+		expectedVars   []string
+	}{
+		// No placeholders — unchanged
+		{"Hello world", "Hello world", nil},
+		// Single unresolved variable stripped
+		{"Hi {{first_name}},", "Hi ,", []string{"first_name"}},
+		// Variable with surrounding spaces — double space collapsed
+		{"Hi {{name}}, welcome", "Hi , welcome", []string{"name"}},
+		// Variable between words — double space collapsed
+		{"data for your {{article_title}} blog", "data for your blog", []string{"article_title"}},
+		// Multiple unresolved variables
+		{"{{greeting}} {{name}}", "", []string{"greeting", "name"}},
+		// Duplicate variable names — deduplicated in returned list
+		{"{{x}} and {{x}}", "and", []string{"x"}},
+		// Empty string
+		{"", "", nil},
+	}
+
+	for _, tt := range tests {
+		got, vars := StripUnresolved(tt.input)
+		if got != tt.expectedOutput {
+			t.Errorf("StripUnresolved(%q) = %q, want %q", tt.input, got, tt.expectedOutput)
+		}
+		if len(vars) != len(tt.expectedVars) {
+			t.Errorf("StripUnresolved(%q) vars = %v, want %v", tt.input, vars, tt.expectedVars)
+			continue
+		}
+		for i, v := range vars {
+			if v != tt.expectedVars[i] {
+				t.Errorf("StripUnresolved(%q) vars[%d] = %q, want %q", tt.input, i, v, tt.expectedVars[i])
+			}
+		}
 	}
 }
