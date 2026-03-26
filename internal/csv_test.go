@@ -219,6 +219,32 @@ func TestParseLeadsCSV_ReservedColumnNameSuggestion(t *testing.T) {
 	}
 }
 
+func TestBuildCustomFieldsJSON(t *testing.T) {
+	// Only non-builtin, non-empty fields
+	fields := map[string]string{
+		"email": "a@x.com", "first_name": "A", "company": "X",
+		"slug": "my-slug", "category": "widgets",
+	}
+	got := BuildCustomFieldsJSON(fields)
+	if !strings.Contains(got, `"slug":"my-slug"`) {
+		t.Errorf("expected slug in JSON, got %q", got)
+	}
+	if !strings.Contains(got, `"category":"widgets"`) {
+		t.Errorf("expected category in JSON, got %q", got)
+	}
+	if strings.Contains(got, "email") || strings.Contains(got, "first_name") {
+		t.Errorf("builtin fields should not be in custom JSON, got %q", got)
+	}
+}
+
+func TestBuildCustomFieldsJSON_Empty(t *testing.T) {
+	fields := map[string]string{"email": "a@x.com", "first_name": "A"}
+	got := BuildCustomFieldsJSON(fields)
+	if got != "{}" {
+		t.Errorf("expected '{}' for no custom fields, got %q", got)
+	}
+}
+
 func TestExtractDomain(t *testing.T) {
 	tests := []struct {
 		email  string

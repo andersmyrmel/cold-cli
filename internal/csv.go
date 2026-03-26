@@ -3,6 +3,7 @@ package internal
 import (
 	"bytes"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/mail"
@@ -132,6 +133,26 @@ func ParseLeadsCSVFromReader(r io.Reader) ([]LeadRecord, []string, error) {
 	}
 
 	return records, headers, nil
+}
+
+// builtinFieldSet is the set of fields stored as dedicated columns in the leads table.
+var builtinFieldSet = map[string]bool{
+	"email": true, "first_name": true, "last_name": true, "company": true, "domain": true,
+}
+
+// BuildCustomFieldsJSON extracts non-builtin fields from a LeadRecord and returns them as JSON.
+func BuildCustomFieldsJSON(fields map[string]string) string {
+	custom := map[string]string{}
+	for k, v := range fields {
+		if !builtinFieldSet[k] && v != "" {
+			custom[k] = v
+		}
+	}
+	if len(custom) == 0 {
+		return "{}"
+	}
+	data, _ := json.Marshal(custom)
+	return string(data)
 }
 
 // ExtractDomain returns the domain part of an email address.

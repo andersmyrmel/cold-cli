@@ -164,9 +164,17 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 		lastName := rec.Fields["last_name"]
 		company := rec.Fields["company"]
 
-		tx.Exec(`INSERT OR IGNORE INTO leads (email, first_name, last_name, company, domain)
-			VALUES (?, ?, ?, ?, ?)`,
-			email, firstName, lastName, company, domain,
+		customJSON := BuildCustomFieldsJSON(rec.Fields)
+
+		tx.Exec(`INSERT OR IGNORE INTO leads (email, first_name, last_name, company, domain, custom_fields)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			email, firstName, lastName, company, domain, customJSON,
+		)
+
+		// Update existing leads with fresh CSV data
+		tx.Exec(`UPDATE leads SET first_name = ?, last_name = ?, company = ?, domain = ?, custom_fields = ?
+			WHERE email = ?`,
+			firstName, lastName, company, domain, customJSON, email,
 		)
 
 		var leadID int64
@@ -996,9 +1004,16 @@ func insertLeadsAndSchedule(tx *sql.Tx, campaignID int64, accountIDs []int64,
 		lastName := rec.Fields["last_name"]
 		company := rec.Fields["company"]
 
-		tx.Exec(`INSERT OR IGNORE INTO leads (email, first_name, last_name, company, domain)
-			VALUES (?, ?, ?, ?, ?)`,
-			email, firstName, lastName, company, domain)
+		customJSON := BuildCustomFieldsJSON(rec.Fields)
+
+		tx.Exec(`INSERT OR IGNORE INTO leads (email, first_name, last_name, company, domain, custom_fields)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			email, firstName, lastName, company, domain, customJSON)
+
+		// Update existing leads with fresh CSV data
+		tx.Exec(`UPDATE leads SET first_name = ?, last_name = ?, company = ?, domain = ?, custom_fields = ?
+			WHERE email = ?`,
+			firstName, lastName, company, domain, customJSON, email)
 
 		var leadID int64
 		if err := tx.QueryRow("SELECT id FROM leads WHERE email = ?", email).Scan(&leadID); err != nil {

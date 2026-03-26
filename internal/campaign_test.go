@@ -1215,3 +1215,94 @@ steps:
 		t.Errorf("expected suggestion 'first_name': %v", err)
 	}
 }
+
+func TestCreateCampaign_StoresCustomFields(t *testing.T) {
+	db := testDB(t)
+	tmpDir := t.TempDir()
+	t.Setenv("COLD_CLI_DATA_DIR", tmpDir)
+
+	os.WriteFile(tmpDir+"/config.yml", []byte("default_timezone: UTC\ndefault_daily_limit: 50\nmin_gap_seconds: 90\nmax_gap_seconds: 140\nsend_window_start: \"09:00\"\nsend_window_end: \"17:00\"\nsend_days: \"1,2,3,4,5\"\n"), 0644)
+
+	seqContent := `name: Test
+defaults:
+  from_name: Tester
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Check out {{slug}}"
+`
+	seqFile := tmpDir + "/seq.yml"
+	os.WriteFile(seqFile, []byte(seqContent), 0644)
+
+	leadsContent := "email,first_name,slug\nalice@acme.com,Alice,my-slug\n"
+	leadsFile := tmpDir + "/leads.csv"
+	os.WriteFile(leadsFile, []byte(leadsContent), 0644)
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	_, err := CreateCampaign(db, CreateCampaignOpts{
+		Name: "custom-fields", SequenceFile: seqFile, LeadsFile: leadsFile,
+		AccountEmails: []string{"sender@x.com"},
+	})
+	if err != nil {
+		t.Fatalf("CreateCampaign error: %v", err)
+	}
+
+	// Verify custom_fields stored in DB
+	var customJSON string
+	db.QueryRow("SELECT custom_fields FROM leads WHERE email = 'alice@acme.com'").Scan(&customJSON)
+	if !strings.Contains(customJSON, `"slug":"my-slug"`) {
+		t.Errorf("expected custom_fields to contain slug, got %q", customJSON)
+	}
+}
+
+func TestCreateCampaign_UpdatesExistingLeadCustomFields(t *testing.T) {
+	db := testDB(t)
+	tmpDir := t.TempDir()
+	t.Setenv("COLD_CLI_DATA_DIR", tmpDir)
+
+	os.WriteFile(tmpDir+"/config.yml", []byte("default_timezone: UTC\ndefault_daily_limit: 50\nmin_gap_seconds: 90\nmax_gap_seconds: 140\nsend_window_start: \"09:00\"\nsend_window_end: \"17:00\"\nsend_days: \"1,2,3,4,5\"\n"), 0644)
+
+	// Pre-insert a lead with old custom_fields
+	db.Exec(`INSERT INTO leads (email, first_name, company, domain, custom_fields)
+		VALUES ('alice@acme.com', 'OldAlice', 'OldCorp', 'acme.com', '{"slug":"old-slug"}')`)
+
+	seqContent := `name: Test
+defaults:
+  from_name: Tester
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Check {{slug}}"
+`
+	seqFile := tmpDir + "/seq.yml"
+	os.WriteFile(seqFile, []byte(seqContent), 0644)
+
+	// New CSV with updated data
+	leadsContent := "email,first_name,slug\nalice@acme.com,NewAlice,new-slug\n"
+	leadsFile := tmpDir + "/leads.csv"
+	os.WriteFile(leadsFile, []byte(leadsContent), 0644)
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	_, err := CreateCampaign(db, CreateCampaignOpts{
+		Name: "update-test", SequenceFile: seqFile, LeadsFile: leadsFile,
+		AccountEmails: []string{"sender@x.com"},
+	})
+	if err != nil {
+		t.Fatalf("CreateCampaign error: %v", err)
+	}
+
+	// Verify lead was updated, not stale
+	var firstName, customJSON string
+	db.QueryRow("SELECT first_name, custom_fields FROM leads WHERE email = 'alice@acme.com'").
+		Scan(&firstName, &customJSON)
+	if firstName != "NewAlice" {
+		t.Errorf("expected first_name='NewAlice', got %q", firstName)
+	}
+	if !strings.Contains(customJSON, `"slug":"new-slug"`) {
+		t.Errorf("expected updated custom_fields with new-slug, got %q", customJSON)
+	}
+}
