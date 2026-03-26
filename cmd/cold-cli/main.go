@@ -964,11 +964,85 @@ var campaignRetryCmd = &cobra.Command{
 	},
 }
 
+var campaignSendNowCmd = &cobra.Command{
+	Use:   "send-now <name|id>",
+	Short: "Set all pending sends to now so the next tick sends them immediately",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		name, err := internal.ResolveCampaignName(db, args[0])
+		if err != nil {
+			return err
+		}
+
+		result, err := internal.SendNowCampaign(db, name)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		if result.Updated == 0 {
+			fmt.Printf("No pending sends in campaign %q.\n", name)
+		} else {
+			fmt.Printf("Updated %d pending sends in campaign %q to send now.\n", result.Updated, name)
+			fmt.Println("Run 'cold-cli tick' to send them.")
+		}
+		return nil
+	},
+}
+
 var campaignActivateCmd = &cobra.Command{
 	Use:   "activate <name|id>",
 	Short: "Activate a draft campaign so tick will process it",
 	Args:  cobra.ExactArgs(1),
-	RunE:  campaignStateCmd("activate", "draft", "active"),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		name, err := internal.ResolveCampaignName(db, args[0])
+		if err != nil {
+			return err
+		}
+
+		if err := internal.CampaignStateTransition(db, name, "activate", "draft", "active"); err != nil {
+			return err
+		}
+
+		sendNow, _ := cmd.Flags().GetBool("send-now")
+		var sendNowResult *internal.SendNowResult
+		if sendNow {
+			sendNowResult, err = internal.SendNowCampaign(db, name)
+			if err != nil {
+				return err
+			}
+		}
+
+		if jsonOutput {
+			out := map[string]any{"name": name, "status": "active"}
+			if sendNowResult != nil {
+				out["send_now"] = sendNowResult.Updated
+			}
+			return printJSON(out)
+		}
+
+		fmt.Printf("Campaign %q is now active.\n", name)
+		if sendNowResult != nil && sendNowResult.Updated > 0 {
+			fmt.Printf("Updated %d pending sends to send now.\n", sendNowResult.Updated)
+			fmt.Println("Run 'cold-cli tick' to send them.")
+		}
+		return nil
+	},
 }
 
 var campaignPauseCmd = &cobra.Command{
@@ -1071,6 +1145,7 @@ var tickCmd = &cobra.Command{
 	Short: "Run one tick cycle: poll replies/bounces, send due emails",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		sendNow, _ := cmd.Flags().GetBool("now")
 
 		// Set up structured JSON logging to ~/.cold-cli/tick.log
 		logPath := filepath.Join(internal.DataDir(), "tick.log")
@@ -1131,6 +1206,7 @@ var tickCmd = &cobra.Command{
 			DB:                 db,
 			GWS:                gwsCLI,
 			DryRun:             dryRun,
+			SendNow:            sendNow,
 			Timezone:           tz,
 			UnsubscribeHeader:  unsubHeader,
 			UnsubscribeSubject: unsubSubject,
@@ -1445,9 +1521,11 @@ func init() {
 	campaignAddLeadsCmd.Flags().String("leads", "", "path to leads CSV file")
 	campaignAddLeadsCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads)")
 	campaignRetryCmd.Flags().Int("step", 0, "only retry failed sends for this step number")
-	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignRemoveLeadCmd, campaignUpdateCmd, campaignCloneCmd, campaignAddLeadsCmd, campaignInitCmd, campaignRetryCmd)
+	campaignActivateCmd.Flags().Bool("send-now", false, "set all pending sends to now so they send immediately")
+	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignRemoveLeadCmd, campaignUpdateCmd, campaignCloneCmd, campaignAddLeadsCmd, campaignInitCmd, campaignRetryCmd, campaignSendNowCmd)
 
 	tickCmd.Flags().Bool("dry-run", false, "show what would be sent without actually sending")
+	tickCmd.Flags().Bool("now", false, "ignore send_at timestamps and send all pending emails immediately")
 
 	statsCmd.Flags().Bool("leads", false, "show per-lead breakdown")
 	statsCmd.Flags().Bool("variants", false, "show per-variant A/B test results")

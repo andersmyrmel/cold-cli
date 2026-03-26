@@ -280,10 +280,11 @@ cold-cli campaign clone <source> --name <new> --leads <csv>  # or --leads-inline
 cold-cli campaign add-leads <name|id> --leads <csv>          # or --leads-inline
 cold-cli campaign remove-lead <name|id> <email>
 cold-cli campaign preview <name|id> [--render] [--lead <email>]
-cold-cli campaign activate/pause/resume/status <name|id>
+cold-cli campaign activate [--send-now] / pause/resume/status <name|id>
+cold-cli campaign send-now <name|id>
 cold-cli campaign list/update/delete/retry <name|id>
 
-cold-cli tick [--dry-run]
+cold-cli tick [--dry-run] [--now]
 
 cold-cli stats [campaign] [--leads] [--variants]
 cold-cli log [campaign] [--limit N]

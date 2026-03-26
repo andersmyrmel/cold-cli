@@ -479,6 +479,38 @@ func CampaignStateTransition(db *sql.DB, name, action, fromStatus, toStatus stri
 	return nil
 }
 
+// SendNowResult is returned by SendNowCampaign.
+type SendNowResult struct {
+	Campaign string `json:"campaign"`
+	Updated  int    `json:"updated"`
+}
+
+// SendNowCampaign sets send_at to now for all pending sends in a campaign,
+// so the next tick picks them up immediately.
+func SendNowCampaign(db *sql.DB, name string) (*SendNowResult, error) {
+	var campaignID int64
+	var status string
+	err := db.QueryRow("SELECT id, status FROM campaigns WHERE name = ?", name).Scan(&campaignID, &status)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("campaign %q not found", name)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("looking up campaign: %w", err)
+	}
+	if status != "active" {
+		return nil, fmt.Errorf("campaign %q is %q (must be active to send now)", name, status)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := db.Exec(`UPDATE scheduled_sends SET send_at = ? WHERE campaign_id = ? AND status = 'pending'`, now, campaignID)
+	if err != nil {
+		return nil, fmt.Errorf("updating send times: %w", err)
+	}
+	updated, _ := res.RowsAffected()
+
+	return &SendNowResult{Campaign: name, Updated: int(updated)}, nil
+}
+
 // CampaignStatusInfo is returned by GetCampaignStatus.
 type CampaignStatusInfo struct {
 	Name       string         `json:"name"`

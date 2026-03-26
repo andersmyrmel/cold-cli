@@ -466,6 +466,57 @@ func TestCampaignStateTransition_NotFound(t *testing.T) {
 	}
 }
 
+func TestSendNowCampaign(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	db.Exec("INSERT INTO campaigns (name, status, sequence_file) VALUES ('test', 'active', 'seq.yml')")
+	db.Exec("INSERT INTO leads (email, domain) VALUES ('a@x.com', 'x.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+
+	// Insert sends scheduled far in the future
+	future := "2099-01-01T00:00:00Z"
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at, status) VALUES (1, 1, 1, 1, 0, ?, 'pending')", future)
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at, status) VALUES (1, 1, 1, 2, 0, ?, 'pending')", future)
+
+	result, err := SendNowCampaign(db, "test")
+	if err != nil {
+		t.Fatalf("SendNowCampaign error: %v", err)
+	}
+	if result.Updated != 2 {
+		t.Errorf("expected 2 updated, got %d", result.Updated)
+	}
+
+	// Verify send_at was changed
+	var sendAt string
+	db.QueryRow("SELECT send_at FROM scheduled_sends WHERE id = 1").Scan(&sendAt)
+	if strings.Contains(sendAt, "2099") {
+		t.Errorf("send_at should have been updated from future, got %q", sendAt)
+	}
+}
+
+func TestSendNowCampaign_NotActive(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO campaigns (name, status, sequence_file) VALUES ('draft-camp', 'draft', 'seq.yml')")
+
+	_, err := SendNowCampaign(db, "draft-camp")
+	if err == nil {
+		t.Fatal("expected error for non-active campaign")
+	}
+	if !strings.Contains(err.Error(), "draft") {
+		t.Errorf("error should mention current status: %v", err)
+	}
+}
+
+func TestSendNowCampaign_NotFound(t *testing.T) {
+	db := testDB(t)
+
+	_, err := SendNowCampaign(db, "nope")
+	if err == nil {
+		t.Fatal("expected error for non-existent campaign")
+	}
+}
+
 func TestDeleteCampaign(t *testing.T) {
 	db := testDB(t)
 	db.Exec("INSERT INTO accounts (email) VALUES ('sender@x.com')")

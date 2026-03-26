@@ -29,6 +29,7 @@ type TickConfig struct {
 	DB       *sql.DB
 	GWS      GWSClient
 	DryRun             bool
+	SendNow            bool           // ignore send_at timestamps, send all pending
 	Now                time.Time      // injectable for testing
 	NoSleep            bool           // skip inter-send sleep (for testing)
 	Timezone           *time.Location // for daily limit day boundary; defaults to UTC
@@ -100,7 +101,12 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 	}
 
 	// 4. Find due sends from active campaigns
-	dueSends, err := loadDueSends(cfg.DB, now)
+	var dueSends []dueSend
+	if cfg.SendNow {
+		dueSends, err = loadAllPendingSends(cfg.DB)
+	} else {
+		dueSends, err = loadDueSends(cfg.DB, now)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("loading due sends: %w", err)
 	}
@@ -348,6 +354,32 @@ func loadDueSends(db *sql.DB, now time.Time) ([]dueSend, error) {
 			AND c.status = 'active'
 		ORDER BY ss.send_at`,
 		now.UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sends []dueSend
+	for rows.Next() {
+		var s dueSend
+		if err := rows.Scan(&s.ID, &s.CampaignID, &s.LeadID, &s.AccountID,
+			&s.StepNumber, &s.VariantIndex, &s.ThreadID, &s.ParentMessageID); err != nil {
+			return nil, err
+		}
+		sends = append(sends, s)
+	}
+	return sends, nil
+}
+
+func loadAllPendingSends(db *sql.DB) ([]dueSend, error) {
+	rows, err := db.Query(`
+		SELECT ss.id, ss.campaign_id, ss.lead_id, ss.account_id,
+			ss.step_number, ss.variant_index, ss.thread_id, ss.parent_message_id
+		FROM scheduled_sends ss
+		JOIN campaigns c ON ss.campaign_id = c.id
+		WHERE ss.status = 'pending'
+			AND c.status = 'active'
+		ORDER BY ss.send_at`)
 	if err != nil {
 		return nil, err
 	}

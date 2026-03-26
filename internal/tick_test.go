@@ -111,6 +111,34 @@ func TestTick_SkipsFutureSends(t *testing.T) {
 	}
 }
 
+func TestTick_SendNowIgnoresSchedule(t *testing.T) {
+	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
+	now := time.Now().UTC()
+
+	// Schedule a send far in the future
+	insertPendingSend(t, db, campaignID, leadIDs[0], accountIDs[0], 1, now.Add(72*time.Hour))
+
+	mock := &MockGWS{}
+
+	// Without SendNow, should NOT send
+	result, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+	if result.Sent != 0 {
+		t.Errorf("expected 0 sent without SendNow, got %d", result.Sent)
+	}
+
+	// With SendNow, should send despite future send_at
+	result, err = Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true, SendNow: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+	if result.Sent != 1 {
+		t.Errorf("expected 1 sent with SendNow, got %d", result.Sent)
+	}
+}
+
 func TestTick_DryRun(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
 	now := time.Now().UTC()

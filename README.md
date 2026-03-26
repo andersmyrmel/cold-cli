@@ -118,6 +118,8 @@ cold-cli campaign preview <name|id>        # see full schedule before activating
 cold-cli campaign preview <name|id> --render  # see rendered emails for first lead
 cold-cli campaign preview <name|id> --render --lead <email>  # render for specific lead
 cold-cli campaign activate <name|id>       # start sending
+cold-cli campaign activate <name|id> --send-now  # activate and send immediately
+cold-cli campaign send-now <name|id>       # set all pending sends to now
 cold-cli campaign pause <name|id>          # stop sending
 cold-cli campaign resume <name|id>         # resume
 cold-cli campaign status <name|id>         # details + reply rate + next/last send
@@ -129,6 +131,7 @@ cold-cli campaign retry <name|id> --step N # retry only failed sends for step N
 
 cold-cli tick                              # process replies, bounces, send due emails
 cold-cli tick --dry-run                    # show what would happen
+cold-cli tick --now                        # ignore schedule, send all pending immediately
 
 cold-cli stats [campaign]                  # sent/replied/bounced per campaign
 cold-cli stats <name> --leads             # per-lead breakdown
