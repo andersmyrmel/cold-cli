@@ -972,3 +972,195 @@ func TestCreateCampaign_WithStartDate(t *testing.T) {
 		t.Errorf("expected send_at on 2026-06-15, got %q", sendAt)
 	}
 }
+
+func TestCreateCampaign_UnresolvedVariable(t *testing.T) {
+	db := testDB(t)
+	tmpDir := t.TempDir()
+	t.Setenv("COLD_CLI_DATA_DIR", tmpDir)
+
+	os.WriteFile(tmpDir+"/config.yml", []byte("default_timezone: UTC\ndefault_daily_limit: 50\nmin_gap_seconds: 90\nmax_gap_seconds: 140\nsend_window_start: \"09:00\"\nsend_window_end: \"17:00\"\nsend_days: \"1,2,3,4,5\"\n"), 0644)
+
+	// Sequence uses {{title}} but CSV doesn't have it
+	seqContent := `name: Test
+defaults:
+  from_name: Tester
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello {{first_name}}, as {{title}}"
+`
+	seqFile := tmpDir + "/seq.yml"
+	os.WriteFile(seqFile, []byte(seqContent), 0644)
+
+	leadsContent := "email,first_name\nalice@acme.com,Alice\n"
+	leadsFile := tmpDir + "/leads.csv"
+	os.WriteFile(leadsFile, []byte(leadsContent), 0644)
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	_, err := CreateCampaign(db, CreateCampaignOpts{
+		Name:          "bad-var",
+		SequenceFile:  seqFile,
+		LeadsFile:     leadsFile,
+		AccountEmails: []string{"sender@x.com"},
+	})
+	if err == nil {
+		t.Fatal("expected error for unresolved {{title}} variable")
+	}
+	if !strings.Contains(err.Error(), "title") {
+		t.Errorf("error should mention 'title': %v", err)
+	}
+	if !strings.Contains(err.Error(), "Available fields:") {
+		t.Errorf("error should list available fields: %v", err)
+	}
+
+	// Verify campaign was NOT created
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM campaigns WHERE name = 'bad-var'").Scan(&count)
+	if count != 0 {
+		t.Error("campaign should not be created when validation fails")
+	}
+}
+
+func TestCreateCampaign_AliasMapping(t *testing.T) {
+	db := testDB(t)
+	tmpDir := t.TempDir()
+	t.Setenv("COLD_CLI_DATA_DIR", tmpDir)
+
+	os.WriteFile(tmpDir+"/config.yml", []byte("default_timezone: UTC\ndefault_daily_limit: 50\nmin_gap_seconds: 90\nmax_gap_seconds: 140\nsend_window_start: \"09:00\"\nsend_window_end: \"17:00\"\nsend_days: \"1,2,3,4,5\"\n"), 0644)
+
+	// Sequence uses {{name}} (alias for first_name)
+	seqContent := `name: Test
+defaults:
+  from_name: Tester
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{name}}"
+    body: "Hello {{name}}"
+`
+	seqFile := tmpDir + "/seq.yml"
+	os.WriteFile(seqFile, []byte(seqContent), 0644)
+
+	leadsContent := "email,first_name\nalice@acme.com,Alice\n"
+	leadsFile := tmpDir + "/leads.csv"
+	os.WriteFile(leadsFile, []byte(leadsContent), 0644)
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	result, err := CreateCampaign(db, CreateCampaignOpts{
+		Name:          "alias-test",
+		SequenceFile:  seqFile,
+		LeadsFile:     leadsFile,
+		AccountEmails: []string{"sender@x.com"},
+	})
+	if err != nil {
+		t.Fatalf("CreateCampaign should succeed with alias: %v", err)
+	}
+	if result.Leads != 1 {
+		t.Errorf("expected 1 lead, got %d", result.Leads)
+	}
+	// Should have a warning about the alias
+	if len(result.Warnings) == 0 {
+		t.Error("expected warning about {{name}} -> first_name alias mapping")
+	}
+}
+
+func TestCreateCampaign_CSVAliasColumn(t *testing.T) {
+	db := testDB(t)
+	tmpDir := t.TempDir()
+	t.Setenv("COLD_CLI_DATA_DIR", tmpDir)
+
+	os.WriteFile(tmpDir+"/config.yml", []byte("default_timezone: UTC\ndefault_daily_limit: 50\nmin_gap_seconds: 90\nmax_gap_seconds: 140\nsend_window_start: \"09:00\"\nsend_window_end: \"17:00\"\nsend_days: \"1,2,3,4,5\"\n"), 0644)
+
+	// Sequence uses {{first_name}} (canonical)
+	seqContent := `name: Test
+defaults:
+  from_name: Tester
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello {{first_name}}"
+`
+	seqFile := tmpDir + "/seq.yml"
+	os.WriteFile(seqFile, []byte(seqContent), 0644)
+
+	// CSV has "name" column (alias) — should be mapped to first_name
+	leadsContent := "email,name\nalice@acme.com,Alice\n"
+	leadsFile := tmpDir + "/leads.csv"
+	os.WriteFile(leadsFile, []byte(leadsContent), 0644)
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	result, err := CreateCampaign(db, CreateCampaignOpts{
+		Name:          "csv-alias-test",
+		SequenceFile:  seqFile,
+		LeadsFile:     leadsFile,
+		AccountEmails: []string{"sender@x.com"},
+	})
+	if err != nil {
+		t.Fatalf("CreateCampaign should succeed with CSV alias: %v", err)
+	}
+	if result.Leads != 1 {
+		t.Errorf("expected 1 lead, got %d", result.Leads)
+	}
+
+	// Verify the rendered preview resolves correctly
+	rendered, err := GetCampaignRenderedPreview(db, "csv-alias-test", "")
+	if err != nil {
+		t.Fatalf("GetCampaignRenderedPreview error: %v", err)
+	}
+	if len(rendered) == 0 {
+		t.Fatal("expected rendered preview")
+	}
+	// Note: the lead's first_name in DB comes from CSV "name" column mapped to first_name
+	// The value should be "Alice" through the alias
+	if !strings.Contains(rendered[0].Subject, "Alice") {
+		t.Errorf("expected rendered subject to contain 'Alice', got %q", rendered[0].Subject)
+	}
+}
+
+func TestCreateCampaign_DidYouMeanSuggestion(t *testing.T) {
+	db := testDB(t)
+	tmpDir := t.TempDir()
+	t.Setenv("COLD_CLI_DATA_DIR", tmpDir)
+
+	os.WriteFile(tmpDir+"/config.yml", []byte("default_timezone: UTC\ndefault_daily_limit: 50\nmin_gap_seconds: 90\nmax_gap_seconds: 140\nsend_window_start: \"09:00\"\nsend_window_end: \"17:00\"\nsend_days: \"1,2,3,4,5\"\n"), 0644)
+
+	// Sequence uses {{fist_name}} (typo)
+	seqContent := `name: Test
+defaults:
+  from_name: Tester
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{fist_name}}"
+    body: "Hello"
+`
+	seqFile := tmpDir + "/seq.yml"
+	os.WriteFile(seqFile, []byte(seqContent), 0644)
+
+	leadsContent := "email,first_name\nalice@acme.com,Alice\n"
+	leadsFile := tmpDir + "/leads.csv"
+	os.WriteFile(leadsFile, []byte(leadsContent), 0644)
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	_, err := CreateCampaign(db, CreateCampaignOpts{
+		Name:          "typo-test",
+		SequenceFile:  seqFile,
+		LeadsFile:     leadsFile,
+		AccountEmails: []string{"sender@x.com"},
+	})
+	if err == nil {
+		t.Fatal("expected error for typo placeholder")
+	}
+	if !strings.Contains(err.Error(), "Did you mean") {
+		t.Errorf("expected 'Did you mean' suggestion: %v", err)
+	}
+	if !strings.Contains(err.Error(), "first_name") {
+		t.Errorf("expected suggestion 'first_name': %v", err)
+	}
+}

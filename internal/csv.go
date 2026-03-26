@@ -55,6 +55,18 @@ func ParseLeadsCSVFromReader(r io.Reader) ([]LeadRecord, []string, error) {
 		headers[i] = strings.ToLower(strings.TrimSpace(strings.ReplaceAll(h, " ", "_")))
 	}
 
+	// Apply field name aliases (e.g., "name" → "first_name")
+	canonicalPresent := make(map[string]bool, len(headers))
+	for _, h := range headers {
+		canonicalPresent[h] = true
+	}
+	for i, h := range headers {
+		if canonical := ResolveAlias(h); canonical != h && !canonicalPresent[canonical] {
+			headers[i] = canonical
+			canonicalPresent[canonical] = true
+		}
+	}
+
 	// Validate email column exists
 	hasEmail := false
 	for _, h := range headers {

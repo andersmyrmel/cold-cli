@@ -49,12 +49,13 @@ type CreateCampaignOpts struct {
 
 // CreateCampaignResult is returned by CreateCampaign.
 type CreateCampaignResult struct {
-	ID             int64  `json:"id"`
-	Name           string `json:"name"`
-	Status         string `json:"status"`
-	Leads          int    `json:"leads"`
-	ScheduledSends int    `json:"scheduled_sends"`
-	Accounts       int    `json:"accounts"`
+	ID             int64    `json:"id"`
+	Name           string   `json:"name"`
+	Status         string   `json:"status"`
+	Leads          int      `json:"leads"`
+	ScheduledSends int      `json:"scheduled_sends"`
+	Accounts       int      `json:"accounts"`
+	Warnings       []string `json:"warnings,omitempty"`
 }
 
 // CreateCampaign parses sequence+CSV, validates, computes schedule, and inserts everything.
@@ -87,7 +88,8 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 	}
 
 	placeholders := seq.CollectPlaceholders()
-	if err := ValidateLeadFields(records, placeholders); err != nil {
+	validationWarnings, err := ValidateLeadFields(records, placeholders)
+	if err != nil {
 		return nil, err
 	}
 
@@ -246,6 +248,7 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 		Leads:          len(leadsForSchedule),
 		ScheduledSends: len(schedRows),
 		Accounts:       len(accountIDs),
+		Warnings:       validationWarnings,
 	}, nil
 }
 
@@ -741,7 +744,8 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 	}
 
 	placeholders := seq.CollectPlaceholders()
-	if err := ValidateLeadFields(records, placeholders); err != nil {
+	cloneWarnings, err := ValidateLeadFields(records, placeholders)
+	if err != nil {
 		return nil, err
 	}
 
@@ -834,15 +838,17 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 		Leads:          leadsAdded,
 		ScheduledSends: sendsAdded,
 		Accounts:       len(accountIDs),
+		Warnings:       cloneWarnings,
 	}, nil
 }
 
 // AddLeadsResult is returned by AddLeadsToCampaign.
 type AddLeadsResult struct {
-	Campaign       string `json:"campaign"`
-	LeadsAdded     int    `json:"leads_added"`
-	LeadsSkipped   int    `json:"leads_skipped"`
-	ScheduledSends int    `json:"scheduled_sends"`
+	Campaign       string   `json:"campaign"`
+	LeadsAdded     int      `json:"leads_added"`
+	LeadsSkipped   int      `json:"leads_skipped"`
+	ScheduledSends int      `json:"scheduled_sends"`
+	Warnings       []string `json:"warnings,omitempty"`
 }
 
 // AddLeadsToCampaign adds new leads to an existing campaign and schedules their sends.
@@ -886,7 +892,8 @@ func AddLeadsToCampaign(db *sql.DB, campaignName, leadsFile, leadsInline string)
 	}
 
 	placeholders := seq.CollectPlaceholders()
-	if err := ValidateLeadFields(records, placeholders); err != nil {
+	addWarnings, err := ValidateLeadFields(records, placeholders)
+	if err != nil {
 		return nil, err
 	}
 
@@ -937,6 +944,7 @@ func AddLeadsToCampaign(db *sql.DB, campaignName, leadsFile, leadsInline string)
 		LeadsAdded:     leadsAdded,
 		LeadsSkipped:   totalRecords - leadsAdded,
 		ScheduledSends: sendsAdded,
+		Warnings:       addWarnings,
 	}, nil
 }
 
@@ -1150,7 +1158,7 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 					},
 				})
 			}
-			if err := ValidateLeadFields(leads, placeholders); err != nil {
+			if _, err := ValidateLeadFields(leads, placeholders); err != nil {
 				return fmt.Errorf("new sequence has placeholders that existing leads can't fill:\n%w", err)
 			}
 		}

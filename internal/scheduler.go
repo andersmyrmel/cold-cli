@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -284,14 +285,66 @@ func ParseSendDays(s string) ([]time.Weekday, error) {
 	return days, nil
 }
 
-// ValidateLeadFields checks that every lead has non-empty values for all required placeholders.
-func ValidateLeadFields(leads []LeadRecord, placeholders []string) error {
+// ValidateLeadFields checks that every placeholder in the sequence maps to a known field
+// and that every lead has non-empty values for all required placeholders.
+// Returns alias-mapping warnings (if any) and an error if validation fails.
+func ValidateLeadFields(leads []LeadRecord, placeholders []string) ([]string, error) {
+	if len(leads) == 0 || len(placeholders) == 0 {
+		return nil, nil
+	}
+
+	// Build the set of available fields: built-in fields + CSV columns
+	available := make(map[string]bool)
+	var availableList []string
+	for _, f := range BuiltinFields {
+		if !available[f] {
+			available[f] = true
+			availableList = append(availableList, f)
+		}
+	}
+	for k := range leads[0].Fields {
+		if !available[k] {
+			available[k] = true
+			availableList = append(availableList, k)
+		}
+	}
+	sort.Strings(availableList)
+
+	// Phase 1: resolve aliases and check each placeholder maps to an available field
+	var warnings []string
+	resolved := make([]string, len(placeholders))
+	var unresolvable []string
+
+	for i, p := range placeholders {
+		canonical := ResolveAlias(p)
+		if canonical != p {
+			warnings = append(warnings, fmt.Sprintf("template variable {{%s}} mapped to %s", p, canonical))
+		}
+		if available[canonical] {
+			resolved[i] = canonical
+		} else {
+			suggestion := SuggestField(canonical, availableList)
+			msg := fmt.Sprintf("template variable {{%s}} has no matching field", p)
+			if suggestion != "" {
+				msg += fmt.Sprintf(". Did you mean %q?", suggestion)
+			}
+			unresolvable = append(unresolvable, msg)
+		}
+	}
+
+	if len(unresolvable) > 0 {
+		return nil, fmt.Errorf("%s\nAvailable fields: %s",
+			strings.Join(unresolvable, "\n"),
+			strings.Join(availableList, ", "))
+	}
+
+	// Phase 2: check each lead has non-empty values for resolved placeholders
 	var errors []string
 	for _, lead := range leads {
 		var missing []string
-		for _, p := range placeholders {
-			if val, ok := lead.Fields[p]; !ok || val == "" {
-				missing = append(missing, "{{"+p+"}}")
+		for i, rp := range resolved {
+			if val, ok := lead.Fields[rp]; !ok || val == "" {
+				missing = append(missing, "{{"+placeholders[i]+"}}")
 			}
 		}
 		if len(missing) > 0 {
@@ -299,12 +352,13 @@ func ValidateLeadFields(leads []LeadRecord, placeholders []string) error {
 		}
 	}
 	if len(errors) > 0 {
-		return fmt.Errorf("leads missing required fields:\n%s\n\nSequence uses: %s",
+		return warnings, fmt.Errorf("leads missing required fields:\n%s\n\nSequence uses: %s",
 			strings.Join(errors, "\n"),
 			strings.Join(wrapPlaceholders(placeholders), ", "),
 		)
 	}
-	return nil
+
+	return warnings, nil
 }
 
 func wrapPlaceholders(ps []string) []string {

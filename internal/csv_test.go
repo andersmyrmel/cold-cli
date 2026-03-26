@@ -127,6 +127,71 @@ func TestParseLeadsCSV_TrimWhitespace(t *testing.T) {
 	}
 }
 
+func TestParseLeadsCSV_AliasMapping(t *testing.T) {
+	// CSV with "name" column should be mapped to "first_name"
+	csv := "email,name,company\njohn@acme.com,John,Acme\n"
+	records, headers, err := ParseLeadsCSVFromReader(strings.NewReader(csv))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Header should be mapped
+	found := false
+	for _, h := range headers {
+		if h == "first_name" {
+			found = true
+		}
+		if h == "name" {
+			t.Error("header 'name' should have been mapped to 'first_name'")
+		}
+	}
+	if !found {
+		t.Error("expected 'first_name' in headers after alias mapping")
+	}
+
+	// Field values should use the canonical name
+	if records[0].Fields["first_name"] != "John" {
+		t.Errorf("expected first_name='John', got %q", records[0].Fields["first_name"])
+	}
+}
+
+func TestParseLeadsCSV_AliasNotAppliedWhenCanonicalExists(t *testing.T) {
+	// CSV with both "name" and "first_name" — alias should NOT be applied
+	csv := "email,name,first_name\njohn@acme.com,Johnny,John\n"
+	records, headers, err := ParseLeadsCSVFromReader(strings.NewReader(csv))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Both columns should exist
+	nameCount := 0
+	for _, h := range headers {
+		if h == "name" || h == "first_name" {
+			nameCount++
+		}
+	}
+	if nameCount != 2 {
+		t.Errorf("expected both 'name' and 'first_name' in headers, got %v", headers)
+	}
+	if records[0].Fields["name"] != "Johnny" {
+		t.Errorf("expected name='Johnny', got %q", records[0].Fields["name"])
+	}
+	if records[0].Fields["first_name"] != "John" {
+		t.Errorf("expected first_name='John', got %q", records[0].Fields["first_name"])
+	}
+}
+
+func TestParseLeadsCSV_LastnameAlias(t *testing.T) {
+	csv := "email,lastname\njohn@acme.com,Doe\n"
+	records, _, err := ParseLeadsCSVFromReader(strings.NewReader(csv))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if records[0].Fields["last_name"] != "Doe" {
+		t.Errorf("expected last_name='Doe', got %q", records[0].Fields["last_name"])
+	}
+}
+
 func TestExtractDomain(t *testing.T) {
 	tests := []struct {
 		email  string

@@ -560,6 +560,9 @@ var campaignCreateCmd = &cobra.Command{
 			return printJSON(result)
 		}
 
+		for _, w := range result.Warnings {
+			fmt.Fprintf(os.Stderr, "Warning: %s\n", w)
+		}
 		fmt.Printf("Created campaign %q (id=%d)\n", result.Name, result.ID)
 		fmt.Printf("  leads:    %d\n", result.Leads)
 		fmt.Printf("  sends:    %d\n", result.ScheduledSends)
@@ -866,6 +869,9 @@ var campaignCloneCmd = &cobra.Command{
 			return printJSON(result)
 		}
 
+		for _, w := range result.Warnings {
+			fmt.Fprintf(os.Stderr, "Warning: %s\n", w)
+		}
 		fmt.Printf("Cloned %q -> %q (id=%d)\n", sourceName, result.Name, result.ID)
 		fmt.Printf("  leads:    %d\n", result.Leads)
 		fmt.Printf("  sends:    %d\n", result.ScheduledSends)
@@ -907,6 +913,9 @@ var campaignAddLeadsCmd = &cobra.Command{
 			return printJSON(result)
 		}
 
+		for _, w := range result.Warnings {
+			fmt.Fprintf(os.Stderr, "Warning: %s\n", w)
+		}
 		fmt.Printf("Added leads to %q\n", result.Campaign)
 		fmt.Printf("  added:   %d\n", result.LeadsAdded)
 		fmt.Printf("  skipped: %d (already in campaign, blacklisted, or bounced)\n", result.LeadsSkipped)

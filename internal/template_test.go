@@ -71,3 +71,99 @@ func TestRenderTemplate(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderTemplate_AliasResolution(t *testing.T) {
+	// {{name}} should resolve to first_name value via alias
+	fields := map[string]string{"first_name": "Mike", "last_name": "Smith"}
+
+	got := RenderTemplate("Hi {{name}}", fields)
+	if got != "Hi Mike" {
+		t.Errorf("expected 'Hi Mike', got %q", got)
+	}
+
+	// {{firstname}} alias
+	got = RenderTemplate("Hi {{firstname}}", fields)
+	if got != "Hi Mike" {
+		t.Errorf("expected 'Hi Mike' for {{firstname}}, got %q", got)
+	}
+
+	// {{last}} alias
+	got = RenderTemplate("Dear {{last}}", fields)
+	if got != "Dear Smith" {
+		t.Errorf("expected 'Dear Smith' for {{last}}, got %q", got)
+	}
+
+	// Alias should NOT override an explicit field with the same name
+	fieldsWithName := map[string]string{"first_name": "Mike", "name": "Custom Name"}
+	got = RenderTemplate("Hi {{name}}", fieldsWithName)
+	if got != "Hi Custom Name" {
+		t.Errorf("explicit 'name' field should win over alias, got %q", got)
+	}
+}
+
+func TestResolveAlias(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"name", "first_name"},
+		{"firstname", "first_name"},
+		{"first", "first_name"},
+		{"lastname", "last_name"},
+		{"last", "last_name"},
+		{"first_name", "first_name"}, // canonical stays unchanged
+		{"email", "email"},           // not an alias
+		{"custom", "custom"},         // unknown stays unchanged
+	}
+
+	for _, tt := range tests {
+		got := ResolveAlias(tt.input)
+		if got != tt.expected {
+			t.Errorf("ResolveAlias(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestLevenshteinDistance(t *testing.T) {
+	tests := []struct {
+		a, b     string
+		expected int
+	}{
+		{"", "", 0},
+		{"a", "", 1},
+		{"", "a", 1},
+		{"kitten", "sitting", 3},
+		{"first_name", "fist_name", 1},
+		{"company", "company", 0},
+		{"first_name", "first_name", 0},
+	}
+
+	for _, tt := range tests {
+		got := levenshteinDistance(tt.a, tt.b)
+		if got != tt.expected {
+			t.Errorf("levenshteinDistance(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.expected)
+		}
+	}
+}
+
+func TestSuggestField(t *testing.T) {
+	available := []string{"email", "first_name", "last_name", "company", "domain"}
+
+	// Close match
+	got := SuggestField("fist_name", available)
+	if got != "first_name" {
+		t.Errorf("expected suggestion 'first_name' for 'fist_name', got %q", got)
+	}
+
+	// Close match for company
+	got = SuggestField("compnay", available)
+	if got != "company" {
+		t.Errorf("expected suggestion 'company' for 'compnay', got %q", got)
+	}
+
+	// Too far away — no suggestion
+	got = SuggestField("zzzzzzzzzzz", available)
+	if got != "" {
+		t.Errorf("expected no suggestion for 'zzzzzzzzzzz', got %q", got)
+	}
+}

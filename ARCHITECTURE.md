@@ -222,7 +222,10 @@ Round-robin assignment at schedule time (not send time). All steps for a given l
 Simple `strings.ReplaceAll` for `{{placeholder}}` substitution. No template engine, no injection risk.
 
 - Placeholders validated at campaign creation: extract all `{{X}}` from sequence YAML, verify every lead has non-empty values
+- Common aliases auto-resolved: `{{name}}` → `first_name`, `{{firstname}}` → `first_name`, `{{last}}` → `last_name`, etc.
+- Unknown placeholders produce actionable errors with available field list and Levenshtein "Did you mean?" suggestions
 - CSV schema: `email` is the only hardcoded required column; all other required columns are driven by the sequence's placeholders
+- CSV column aliases auto-mapped: a `name` column becomes `first_name` (unless `first_name` already exists)
 - Custom CSV columns stored as JSON in `leads.custom_fields`, parsed at send time
 
 ## gws Integration

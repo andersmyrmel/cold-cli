@@ -431,13 +431,13 @@ func TestValidateLeadFields(t *testing.T) {
 	}
 
 	// Should pass — only checking first_name
-	err := ValidateLeadFields(records, []string{"first_name"})
+	_, err := ValidateLeadFields(records, []string{"first_name"})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 
 	// Should fail — jane missing company
-	err = ValidateLeadFields(records, []string{"first_name", "company"})
+	_, err = ValidateLeadFields(records, []string{"first_name", "company"})
 	if err == nil {
 		t.Fatal("expected error for missing company")
 	}
@@ -454,9 +454,80 @@ func TestValidateLeadFields_MissingKey(t *testing.T) {
 		{Fields: map[string]string{"email": "john@acme.com", "first_name": "John"}},
 	}
 
-	err := ValidateLeadFields(records, []string{"first_name", "title"})
+	_, err := ValidateLeadFields(records, []string{"first_name", "title"})
 	if err == nil {
 		t.Fatal("expected error for missing title field")
+	}
+	// Should list available fields in the error
+	if !contains(err.Error(), "Available fields:") {
+		t.Errorf("error should list available fields: %v", err)
+	}
+}
+
+func TestValidateLeadFields_AliasResolution(t *testing.T) {
+	records := []LeadRecord{
+		{Fields: map[string]string{"email": "john@acme.com", "first_name": "John"}},
+	}
+
+	// {{name}} should resolve to first_name via alias
+	warnings, err := ValidateLeadFields(records, []string{"name"})
+	if err != nil {
+		t.Fatalf("expected alias resolution to pass, got error: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning about alias mapping, got %d", len(warnings))
+	}
+	if !contains(warnings[0], "name") || !contains(warnings[0], "first_name") {
+		t.Errorf("warning should mention name->first_name mapping: %q", warnings[0])
+	}
+}
+
+func TestValidateLeadFields_DidYouMean(t *testing.T) {
+	records := []LeadRecord{
+		{Fields: map[string]string{"email": "john@acme.com", "first_name": "John", "company": "Acme"}},
+	}
+
+	// Typo: "fist_name" should suggest "first_name"
+	_, err := ValidateLeadFields(records, []string{"fist_name"})
+	if err == nil {
+		t.Fatal("expected error for typo placeholder")
+	}
+	if !contains(err.Error(), "Did you mean") {
+		t.Errorf("error should suggest close match: %v", err)
+	}
+	if !contains(err.Error(), "first_name") {
+		t.Errorf("error should suggest 'first_name': %v", err)
+	}
+}
+
+func TestValidateLeadFields_AvailableFields(t *testing.T) {
+	records := []LeadRecord{
+		{Fields: map[string]string{"email": "john@acme.com", "first_name": "John", "subject": "test"}},
+	}
+
+	_, err := ValidateLeadFields(records, []string{"nonexistent"})
+	if err == nil {
+		t.Fatal("expected error for unknown placeholder")
+	}
+	// Should list available fields including CSV custom columns and builtins
+	if !contains(err.Error(), "Available fields:") {
+		t.Errorf("error should list available fields: %v", err)
+	}
+	if !contains(err.Error(), "subject") {
+		t.Errorf("error should include CSV custom field 'subject': %v", err)
+	}
+	if !contains(err.Error(), "domain") {
+		t.Errorf("error should include builtin field 'domain': %v", err)
+	}
+}
+
+func TestValidateLeadFields_EmptyRecords(t *testing.T) {
+	warnings, err := ValidateLeadFields(nil, []string{"first_name"})
+	if err != nil {
+		t.Errorf("expected nil error for empty records, got: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("expected no warnings for empty records, got %d", len(warnings))
 	}
 }
 
