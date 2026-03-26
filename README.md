@@ -92,7 +92,13 @@ john@acme.com,John,Acme Inc
 jane@bigcorp.com,Jane,BigCorp
 ```
 
-`email` is the only required column. All other columns are driven by what `{{placeholders}}` your sequence uses. cold-cli validates this at campaign creation — mismatched variables produce actionable errors with "Did you mean?" suggestions. Common aliases like `{{name}}` → `first_name` are resolved automatically. Any unresolved variables are stripped at send time (never sent literally).
+`email` is the only required column. All other columns are driven by what `{{placeholders}}` your sequence uses. Extra columns beyond the built-in fields (`first_name`, `last_name`, `company`) are stored as custom fields and available for templates at send time.
+
+- **Validation at creation** — mismatched variables produce actionable errors with "Did you mean?" suggestions
+- **Aliases** — common names like `{{name}}` → `first_name` are resolved automatically
+- **Reserved names blocked** — CSV columns named `subject`, `body`, `step`, `delay`, or `variant` are rejected (they conflict with sequence YAML fields)
+- **Reimport updates** — if a lead already exists, its fields are updated from the new CSV (not silently skipped)
+- **Safety at send time** — unresolved variables are stripped (never sent literally); emails with empty subject or body are not sent
 
 ## Commands
 

@@ -226,8 +226,11 @@ Simple `strings.ReplaceAll` for `{{placeholder}}` substitution. No template engi
 - Unknown placeholders produce actionable errors with available field list and Levenshtein "Did you mean?" suggestions
 - CSV schema: `email` is the only hardcoded required column; all other required columns are driven by the sequence's placeholders
 - CSV column aliases auto-mapped: a `name` column becomes `first_name` (unless `first_name` already exists)
+- Reserved CSV column names (`subject`, `body`, `step`, `delay`, `variant`) rejected at import — they conflict with sequence YAML fields
 - At send time, any remaining unresolved `{{variables}}` are stripped (not sent literally), double spaces collapsed, and a warning logged
+- Emails with empty subject or body after rendering are marked `failed` and not sent
 - Custom CSV columns stored as JSON in `leads.custom_fields`, parsed at send time
+- Reimporting a lead updates its fields from the new CSV (source of truth), not silently skipped via INSERT OR IGNORE
 
 ## gws Integration
 

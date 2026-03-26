@@ -41,7 +41,7 @@ These are settled — do not revisit without explicit instruction:
 4. **Daily limits** — count from events table (`SELECT COUNT(*) ... WHERE type='sent' AND timestamp >= today`). No mutable `sends_today` counter on accounts.
 5. **Account rotation** — round-robin at schedule time. All steps for one lead use the same account (thread continuity).
 6. **Thread management** — after step 1 send, backfill `thread_id` and `parent_message_id` onto all remaining `scheduled_sends` for that lead+campaign.
-7. **Error isolation** — gws send failure marks that one `scheduled_sends` row as `'failed'` and continues. Never crash the whole tick.
+7. **Error isolation** — gws send failure marks that one `scheduled_sends` row as `'failed'` and continues. Never crash the whole tick. Emails with empty subject/body after rendering are also marked `failed` (not sent).
 8. **Status semantics** — `skipped` = auto-cancelled (reply/bounce/domain-reply). `cancelled` = user action (pause/blacklist). These are distinct.
 9. **File lock** — tick uses flock/fcntl on `~/.cold-cli/tick.lock`. OS auto-releases on process exit.
 10. **Validation at creation** — template placeholders validated against lead CSV at campaign creation with alias resolution and Levenshtein "Did you mean?" suggestions. Unresolved vars stripped at send time as a safety net.
@@ -82,6 +82,9 @@ Key: `scheduled_sends` is the core table. Each row is a self-contained send inst
 - All other required columns are driven by `{{placeholders}}` in the sequence YAML
 - Strip UTF-8 BOM on import
 - Validate all leads have values for all placeholders at campaign creation
+- Reserved column names (`subject`, `body`, `step`, `delay`, `variant`) are rejected — they conflict with sequence YAML fields
+- Extra columns beyond built-in fields stored as JSON in `leads.custom_fields`
+- Reimporting a lead updates all fields from the new CSV (source of truth)
 
 ## gws Integration
 
