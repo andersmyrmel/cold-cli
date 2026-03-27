@@ -538,6 +538,135 @@ func TestProcessReplies_UnsubscribeBlacklistsGlobally(t *testing.T) {
 	}
 }
 
+func TestProcessReplies_ThreadIDFallback(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	// Insert sent event with thread_id
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (1, 1, 1, 'sent', 1, '<sent-1@gmail.com>', 'thread-abc')`)
+
+	// Insert pending step 2
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 2, '2099-01-01', 'pending')`)
+
+	// Reply from a DIFFERENT address (shared inbox / forwarded), no In-Reply-To,
+	// but same Gmail thread
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{ID: "reply-1", ThreadID: "thread-abc", InReplyTo: "", From: "tammy@otherdomain.com",
+				Subject: "Re: Your pitch"},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	replies, _, err := ProcessReplies(db, mock, accounts)
+	if err != nil {
+		t.Fatalf("ProcessReplies error: %v", err)
+	}
+	if replies != 1 {
+		t.Errorf("expected 1 reply via thread-ID fallback, got %d", replies)
+	}
+
+	// Lead should be marked replied
+	var clStatus string
+	db.QueryRow("SELECT status FROM campaign_leads WHERE campaign_id = 1 AND lead_id = 1").Scan(&clStatus)
+	if clStatus != "replied" {
+		t.Errorf("expected campaign_lead status 'replied', got %q", clStatus)
+	}
+
+	// Pending send should be skipped
+	var ssStatus string
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE campaign_id = 1 AND lead_id = 1").Scan(&ssStatus)
+	if ssStatus != "skipped" {
+		t.Errorf("expected scheduled_send 'skipped', got %q", ssStatus)
+	}
+}
+
+func TestProcessReplies_ThreadIDNotMatchedWhenInReplyToWorks(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	// Insert sent event
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (1, 1, 1, 'sent', 1, '<sent-1@gmail.com>', 'thread-abc')`)
+
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 2, '2099-01-01', 'pending')`)
+
+	// Reply with BOTH InReplyTo and ThreadID — InReplyTo should take priority
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{ID: "reply-1", ThreadID: "thread-abc", InReplyTo: "<sent-1@gmail.com>", From: "john@acme.com"},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	replies, _, err := ProcessReplies(db, mock, accounts)
+	if err != nil {
+		t.Fatalf("ProcessReplies error: %v", err)
+	}
+	if replies != 1 {
+		t.Errorf("expected 1 reply, got %d", replies)
+	}
+}
+
+func TestProcessReplies_ThreadIDNoMatchSkipped(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	// No sent events — no thread to match against
+
+	// Message with a thread_id that doesn't match anything
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{ID: "msg-1", ThreadID: "unknown-thread", InReplyTo: "", From: "random@example.com"},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	replies, _, err := ProcessReplies(db, mock, accounts)
+	if err != nil {
+		t.Fatalf("ProcessReplies error: %v", err)
+	}
+	if replies != 0 {
+		t.Errorf("expected 0 replies for unmatched thread, got %d", replies)
+	}
+}
+
+func TestProcessReplies_ThreadIDUnsubscribe(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (1, 1, 1, 'sent', 1, '<sent-1@gmail.com>', 'thread-abc')`)
+
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 2, '2099-01-01', 'pending')`)
+
+	// Unsubscribe via thread-ID (no In-Reply-To)
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{ID: "unsub-1", ThreadID: "thread-abc", InReplyTo: "",
+				From: "john@acme.com", Subject: "Please remove me from your list"},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	replies, unsubs, err := ProcessReplies(db, mock, accounts)
+	if err != nil {
+		t.Fatalf("ProcessReplies error: %v", err)
+	}
+	if replies != 0 {
+		t.Errorf("expected 0 replies, got %d", replies)
+	}
+	if unsubs != 1 {
+		t.Errorf("expected 1 unsubscribe via thread-ID, got %d", unsubs)
+	}
+
+	var globalStatus string
+	db.QueryRow("SELECT global_status FROM leads WHERE id = 1").Scan(&globalStatus)
+	if globalStatus != "blacklisted" {
+		t.Errorf("expected 'blacklisted', got %q", globalStatus)
+	}
+}
+
 // setupReplyTestDB creates minimal test data for reply/bounce tests.
 func setupReplyTestDB(t *testing.T) *sql.DB {
 	t.Helper()

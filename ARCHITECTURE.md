@@ -132,7 +132,7 @@ tick starts
 │   └─ locked? → print "tick already running", exit 0
 │
 ├─ 1. Poll inbox (via gws, messages after last_poll_at)
-│      → match replies via In-Reply-To header
+│      → match replies via In-Reply-To header, then thread-ID fallback
 │      → detect unsubscribe requests (keyword matching)
 │      │   → unsubscribe: blacklist lead globally, cancel all sends
 │      │   → reply: UPDATE campaign_leads.status = 'replied',
@@ -211,7 +211,7 @@ Round-robin assignment at schedule time (not send time). All steps for a given l
 
 ## Reply/Bounce/Unsubscribe Handling
 
-- **Reply detected** → `campaign_leads.status = 'replied'`, remaining `scheduled_sends` marked `'skipped'`
+- **Reply detected** → `campaign_leads.status = 'replied'`, remaining `scheduled_sends` marked `'skipped'`. Two matching strategies: (1) `In-Reply-To` header → sent `message_id` (primary, precise), (2) Gmail `thread_id` fallback (catches replies from shared inboxes, forwarded addresses, or mail clients that don't set `In-Reply-To`)
 - **Domain reply** (if `stop_on_domain_reply=true`) → all leads with same domain in that campaign get their pending sends skipped
 - **Unsubscribe detected** (keyword matching: "unsubscribe", "remove me", "opt out", etc.) → lead blacklisted globally, all pending sends across all campaigns cancelled, `'unsubscribe'` event recorded
 - **Bounce detected** → `leads.global_status = 'bounced'` (global), `campaign_leads.status = 'bounced'`, pending sends skipped
@@ -381,6 +381,7 @@ All commands support `--json` for agent consumption. No interactive prompts, eve
 | 14 | CSV schema | email required, rest driven by template | Flexible, no arbitrary constraints |
 | 15 | Daily count query | Preload at tick start | One GROUP BY query, in-memory map |
 | 16 | Reply polling | last_poll_at + after: filter | Efficient, only checks new messages |
+| 27 | Reply matching | In-Reply-To primary, thread-ID fallback | Precise when possible, catches shared-inbox/forward replies as fallback |
 | 17 | Sequence storage | YAML content in DB + file path fallback | Survives file moves, immutable per campaign |
 | 18 | Daily limit timezone | Config default_timezone for day boundary | Prevents limit overshoot near midnight |
 | 19 | Send day enforcement | Check day-of-week at tick time | Prevents weekend catch-up sends |

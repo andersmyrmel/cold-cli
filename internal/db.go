@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS kv (
 CREATE INDEX IF NOT EXISTS idx_sends_pending ON scheduled_sends(status, send_at) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_events_account_day ON events(account_id, type, timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_message_id ON events(message_id);
+CREATE INDEX IF NOT EXISTS idx_events_thread_id ON events(thread_id);
 CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
 CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(domain);
 `

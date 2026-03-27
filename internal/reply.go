@@ -75,10 +75,6 @@ func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (replies int,
 		}
 
 		for _, msg := range messages {
-			if msg.InReplyTo == "" {
-				continue
-			}
-
 			// Dedup: skip if we already recorded this message as a reply or unsubscribe event
 			var existing int
 			db.QueryRow("SELECT COUNT(*) FROM events WHERE message_id = ? AND type IN ('reply', 'unsubscribe')",
@@ -87,21 +83,47 @@ func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (replies int,
 				continue
 			}
 
-			// Check if this is a reply to one of our sent emails
 			var campaignID, leadID int64
-			err := db.QueryRow(`
-				SELECT e.campaign_id, e.lead_id
-				FROM events e
-				WHERE e.message_id = ? AND e.type = 'sent'
-				LIMIT 1`,
-				msg.InReplyTo,
-			).Scan(&campaignID, &leadID)
+			matched := false
 
-			if err == sql.ErrNoRows {
-				continue // Not a reply to our email
+			// Strategy 1: In-Reply-To header matching
+			if msg.InReplyTo != "" {
+				err := db.QueryRow(`
+					SELECT e.campaign_id, e.lead_id
+					FROM events e
+					WHERE e.message_id = ? AND e.type = 'sent'
+					LIMIT 1`,
+					msg.InReplyTo,
+				).Scan(&campaignID, &leadID)
+
+				if err == nil {
+					matched = true
+				} else if err != sql.ErrNoRows {
+					return replies, unsubscribes, fmt.Errorf("looking up event for In-Reply-To %s: %w", msg.InReplyTo, err)
+				}
 			}
-			if err != nil {
-				return replies, unsubscribes, fmt.Errorf("looking up event for In-Reply-To %s: %w", msg.InReplyTo, err)
+
+			// Strategy 2: Thread-ID matching (catches replies from shared inboxes,
+			// forwarded addresses, or mail clients that don't set In-Reply-To)
+			if !matched && msg.ThreadID != "" {
+				err := db.QueryRow(`
+					SELECT e.campaign_id, e.lead_id
+					FROM events e
+					WHERE e.thread_id = ? AND e.type = 'sent'
+					LIMIT 1`,
+					msg.ThreadID,
+				).Scan(&campaignID, &leadID)
+
+				if err == nil {
+					matched = true
+					slog.Info("reply matched via thread-ID",
+						"thread_id", msg.ThreadID, "message_id", msg.ID,
+						"campaign_id", campaignID, "lead_id", leadID)
+				}
+			}
+
+			if !matched {
+				continue
 			}
 
 			// Check if this is an unsubscribe request
