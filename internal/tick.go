@@ -171,23 +171,25 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			}
 		}
 		if emailParams.ToEmail == "" {
-			slog.Error("could not build email",
-				"send_id", send.ID, "step", send.StepNumber)
-			markSendStatus(cfg.DB, send.ID, "failed")
+			errMsg := "could not build email: missing recipient"
+			slog.Error(errMsg, "send_id", send.ID, "step", send.StepNumber)
+			markSendFailed(cfg.DB, send, errMsg)
 			result.Failed++
 			continue
 		}
 		if strings.TrimSpace(emailParams.Subject) == "" {
-			slog.Error("send aborted: empty subject after rendering",
+			errMsg := "empty subject after rendering"
+			slog.Error("send aborted: "+errMsg,
 				"send_id", send.ID, "lead", emailParams.ToEmail, "step", send.StepNumber)
-			markSendStatus(cfg.DB, send.ID, "failed")
+			markSendFailed(cfg.DB, send, errMsg)
 			result.Failed++
 			continue
 		}
 		if strings.TrimSpace(emailParams.Body) == "" {
-			slog.Error("send aborted: empty body after rendering",
+			errMsg := "empty body after rendering"
+			slog.Error("send aborted: "+errMsg,
 				"send_id", send.ID, "lead", emailParams.ToEmail, "step", send.StepNumber)
-			markSendStatus(cfg.DB, send.ID, "failed")
+			markSendFailed(cfg.DB, send, errMsg)
 			result.Failed++
 			continue
 		}
@@ -211,20 +213,21 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		// Send via gws
 		msgID, threadID, err := cfg.GWS.SendEmail(account.Email, emailParams.ToEmail, rawMsg)
 		if err != nil {
+			errMsg := err.Error()
 			slog.Error("send failed",
 				"send_id", send.ID, "step", send.StepNumber,
 				"to", emailParams.ToEmail, "account", account.Email,
 				"error", err)
-			markSendStatus(cfg.DB, send.ID, "failed")
+			markSendFailed(cfg.DB, send, errMsg)
 			result.Failed++
 			continue
 		}
 
 		// Validate response
 		if msgID == "" || threadID == "" {
-			slog.Error("gws returned empty message_id or thread_id",
-				"send_id", send.ID)
-			markSendStatus(cfg.DB, send.ID, "failed")
+			errMsg := "gws returned empty message_id or thread_id"
+			slog.Error(errMsg, "send_id", send.ID)
+			markSendFailed(cfg.DB, send, errMsg)
 			result.Failed++
 			continue
 		}
@@ -487,8 +490,19 @@ func loadLeadFields(db *sql.DB, leadID int64) (map[string]string, error) {
 	return fields, nil
 }
 
-func markSendStatus(db *sql.DB, sendID int64, status string) {
-	if _, err := db.Exec("UPDATE scheduled_sends SET status = ? WHERE id = ?", status, sendID); err != nil {
+// markSendFailed marks a scheduled send as failed and inserts a failed event.
+func markSendFailed(db *sql.DB, send dueSend, errorMsg string) {
+	markSendStatus(db, send.ID, "failed", errorMsg)
+	if _, err := db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, metadata)
+		VALUES (?, ?, ?, 'failed', ?, ?)`,
+		send.CampaignID, send.LeadID, send.AccountID, send.StepNumber, errorMsg); err != nil {
+		slog.Error("failed to insert failed event",
+			"send_id", send.ID, "error", err)
+	}
+}
+
+func markSendStatus(db *sql.DB, sendID int64, status string, errorMsg string) {
+	if _, err := db.Exec("UPDATE scheduled_sends SET status = ?, error_message = ? WHERE id = ?", status, errorMsg, sendID); err != nil {
 		slog.Error("failed to mark send status",
 			"send_id", sendID, "status", status, "error", err)
 	}

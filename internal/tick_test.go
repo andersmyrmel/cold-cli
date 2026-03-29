@@ -913,6 +913,93 @@ steps:
 	}
 }
 
+func TestTick_FailedSendRecordsErrorAndEvent(t *testing.T) {
+	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
+	now := time.Now().UTC()
+
+	insertPendingSend(t, db, campaignID, leadIDs[0], accountIDs[0], 1, now.Add(-1*time.Hour))
+
+	mock := &MockGWS{SendError: fmt.Errorf("gws: token expired")}
+
+	result, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+	if result.Failed != 1 {
+		t.Errorf("expected 1 failed, got %d", result.Failed)
+	}
+
+	// Verify error_message is stored on scheduled_sends
+	var errorMsg string
+	db.QueryRow("SELECT error_message FROM scheduled_sends WHERE campaign_id = ? AND lead_id = ?",
+		campaignID, leadIDs[0]).Scan(&errorMsg)
+	if errorMsg != "gws: token expired" {
+		t.Errorf("expected error_message %q, got %q", "gws: token expired", errorMsg)
+	}
+
+	// Verify a 'failed' event was inserted
+	var eventCount int
+	db.QueryRow("SELECT COUNT(*) FROM events WHERE campaign_id = ? AND type = 'failed'", campaignID).Scan(&eventCount)
+	if eventCount != 1 {
+		t.Errorf("expected 1 failed event, got %d", eventCount)
+	}
+
+	// Verify the event metadata contains the error message
+	var metadata string
+	db.QueryRow("SELECT metadata FROM events WHERE campaign_id = ? AND type = 'failed'", campaignID).Scan(&metadata)
+	if metadata != "gws: token expired" {
+		t.Errorf("expected event metadata %q, got %q", "gws: token expired", metadata)
+	}
+}
+
+func TestTick_EmptySubjectRecordsError(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	// Sequence where subject is ONLY a placeholder that won't resolve
+	seqYAML := `name: Empty Subject Test
+defaults:
+  from_name: "Test"
+steps:
+  - step: 1
+    delay: 0
+    subject: "{{missing_var}}"
+    body: "Hello there"
+`
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content, send_window_start, send_window_end,
+		send_days, timezone) VALUES ('empty-subj', 'active', 'N/A', ?, '00:00', '23:59', '0,1,2,3,4,5,6', 'UTC')`,
+		seqYAML)
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('test@example.com', 'Test', 'Example', 'example.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+
+	now := time.Now().UTC()
+	insertPendingSend(t, db, 1, 1, 1, 1, now.Add(-1*time.Hour))
+
+	mock := &MockGWS{}
+	result, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+	if result.Failed != 1 {
+		t.Errorf("expected 1 failed, got %d", result.Failed)
+	}
+
+	// Verify error_message is stored
+	var errorMsg string
+	db.QueryRow("SELECT error_message FROM scheduled_sends WHERE id = 1").Scan(&errorMsg)
+	if errorMsg != "empty subject after rendering" {
+		t.Errorf("expected error_message %q, got %q", "empty subject after rendering", errorMsg)
+	}
+
+	// Verify failed event exists
+	var eventCount int
+	db.QueryRow("SELECT COUNT(*) FROM events WHERE type = 'failed'").Scan(&eventCount)
+	if eventCount != 1 {
+		t.Errorf("expected 1 failed event, got %d", eventCount)
+	}
+}
+
 func TestExtractBouncedEmail(t *testing.T) {
 	tests := []struct {
 		snippet string

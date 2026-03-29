@@ -58,6 +58,7 @@ type ScheduledSend struct {
 	ParentMessageID string     `json:"parent_message_id,omitempty"`
 	MessageID       string     `json:"message_id,omitempty"`
 	SentAt          *time.Time `json:"sent_at,omitempty"`
+	ErrorMessage    string     `json:"error_message,omitempty"`
 }
 
 type Event struct {

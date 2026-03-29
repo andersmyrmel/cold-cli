@@ -268,6 +268,7 @@ type PreviewRow struct {
 	Status       string `json:"status"`
 	LeadEmail    string `json:"lead_email"`
 	AccountEmail string `json:"account_email"`
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 // GetCampaignPreview returns the full scheduled send list for a campaign.
@@ -282,7 +283,7 @@ func GetCampaignPreview(db *sql.DB, name string) (campaignID int64, status strin
 
 	rows, err := db.Query(`
 		SELECT ss.step_number, ss.variant_index, ss.send_at, ss.status,
-			l.email, a.email
+			l.email, a.email, ss.error_message
 		FROM scheduled_sends ss
 		JOIN leads l ON ss.lead_id = l.id
 		JOIN accounts a ON ss.account_id = a.id
@@ -295,7 +296,7 @@ func GetCampaignPreview(db *sql.DB, name string) (campaignID int64, status strin
 
 	for rows.Next() {
 		var r PreviewRow
-		if err := rows.Scan(&r.StepNumber, &r.VariantIndex, &r.SendAt, &r.Status, &r.LeadEmail, &r.AccountEmail); err != nil {
+		if err := rows.Scan(&r.StepNumber, &r.VariantIndex, &r.SendAt, &r.Status, &r.LeadEmail, &r.AccountEmail, &r.ErrorMessage); err != nil {
 			return 0, "", nil, fmt.Errorf("scanning row: %w", err)
 		}
 		preview = append(preview, r)
@@ -519,22 +520,29 @@ func SendNowCampaign(db *sql.DB, name string) (*SendNowResult, error) {
 	return &SendNowResult{Campaign: name, Updated: int(updated)}, nil
 }
 
+// FailureReason is an error message and its count from failed sends.
+type FailureReason struct {
+	Error string `json:"error"`
+	Count int    `json:"count"`
+}
+
 // CampaignStatusInfo is returned by GetCampaignStatus.
 type CampaignStatusInfo struct {
-	Name       string         `json:"name"`
-	Status     string         `json:"status"`
-	Sequence   string         `json:"sequence"`
-	Timezone   string         `json:"timezone"`
-	SendWindow string         `json:"send_window"`
-	SendDays   string         `json:"send_days"`
-	Leads      int            `json:"leads"`
-	Accounts   int            `json:"accounts"`
-	TotalSends int            `json:"total_sends"`
-	SendCounts map[string]int `json:"send_counts"`
-	CreatedAt  string         `json:"created_at"`
-	ReplyRate  *float64       `json:"reply_rate,omitempty"`
-	NextSendAt *string        `json:"next_send_at,omitempty"`
-	LastSendAt *string        `json:"last_send_at,omitempty"`
+	Name           string         `json:"name"`
+	Status         string         `json:"status"`
+	Sequence       string         `json:"sequence"`
+	Timezone       string         `json:"timezone"`
+	SendWindow     string         `json:"send_window"`
+	SendDays       string         `json:"send_days"`
+	Leads          int            `json:"leads"`
+	Accounts       int            `json:"accounts"`
+	TotalSends     int            `json:"total_sends"`
+	SendCounts     map[string]int `json:"send_counts"`
+	CreatedAt      string         `json:"created_at"`
+	ReplyRate      *float64       `json:"reply_rate,omitempty"`
+	NextSendAt     *string        `json:"next_send_at,omitempty"`
+	LastSendAt     *string        `json:"last_send_at,omitempty"`
+	FailureReasons []FailureReason `json:"failure_reasons,omitempty"`
 }
 
 // GetCampaignStatus returns campaign details and send counts.
@@ -618,6 +626,22 @@ func GetCampaignStatus(db *sql.DB, name string) (*CampaignStatusInfo, error) {
 		c.ID).Scan(&lastSend)
 	if lastSend.Valid {
 		info.LastSendAt = &lastSend.String
+	}
+
+	// Failure reasons
+	if counts["failed"] > 0 {
+		frRows, err := db.Query(`
+			SELECT error_message, COUNT(*) FROM scheduled_sends
+			WHERE campaign_id = ? AND status = 'failed' AND error_message != ''
+			GROUP BY error_message ORDER BY COUNT(*) DESC`, c.ID)
+		if err == nil {
+			defer frRows.Close()
+			for frRows.Next() {
+				var fr FailureReason
+				frRows.Scan(&fr.Error, &fr.Count)
+				info.FailureReasons = append(info.FailureReasons, fr)
+			}
+		}
 	}
 
 	return info, nil

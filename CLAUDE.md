@@ -65,7 +65,7 @@ go test ./...
 ```
 pending   → waiting to send
 sent      → successfully sent via gws
-failed    → gws send failed (logged, isolated)
+failed    → gws send failed (error stored in error_message column + events table)
 skipped   → auto-cancelled (reply/bounce/domain-reply detected)
 cancelled → user-cancelled (pause/blacklist)
 ```
@@ -74,7 +74,7 @@ cancelled → user-cancelled (pause/blacklist)
 
 6 tables: `accounts`, `campaigns`, `campaign_accounts`, `leads`, `campaign_leads`, `scheduled_sends`, `events`. See ARCHITECTURE.md for full schema.
 
-Key: `scheduled_sends` is the core table. Each row is a self-contained send instruction with pre-computed `send_at`, assigned `account_id`, `variant_index`, and (after step 1 sends) `thread_id` + `parent_message_id`.
+Key: `scheduled_sends` is the core table. Each row is a self-contained send instruction with pre-computed `send_at`, assigned `account_id`, `variant_index`, and (after step 1 sends) `thread_id` + `parent_message_id`. Failed sends store the reason in `error_message` and insert a `'failed'` event.
 
 ## CSV Import Rules
 

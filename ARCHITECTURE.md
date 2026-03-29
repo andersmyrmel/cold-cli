@@ -84,11 +84,12 @@ scheduled_sends
 ├─ thread_id                  (backfilled after step 1 send)
 ├─ parent_message_id          (backfilled after step 1 send)
 ├─ message_id                 (filled after send)
-└─ sent_at                    (filled after send)
+├─ sent_at                    (filled after send)
+└─ error_message              (filled when status = 'failed')
 
 events
 ├─ id, campaign_id, lead_id, account_id
-├─ type (sent/reply/bounce/unsubscribe)
+├─ type (sent/reply/bounce/unsubscribe/failed)
 ├─ step_number, message_id, thread_id
 ├─ timestamp
 └─ metadata (json)

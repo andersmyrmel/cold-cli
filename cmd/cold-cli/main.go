@@ -636,8 +636,12 @@ var campaignPreviewCmd = &cobra.Command{
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "SEND AT\tSTEP\tVARIANT\tLEAD\tACCOUNT\tSTATUS")
 		for _, r := range preview {
+			statusCol := r.Status
+			if r.Status == "failed" && r.ErrorMessage != "" {
+				statusCol = r.Status + "  " + r.ErrorMessage
+			}
 			fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\t%s\n",
-				r.SendAt, r.StepNumber, r.VariantIndex, r.LeadEmail, r.AccountEmail, r.Status)
+				r.SendAt, r.StepNumber, r.VariantIndex, r.LeadEmail, r.AccountEmail, statusCol)
 		}
 		w.Flush()
 
@@ -1132,6 +1136,12 @@ var campaignStatusCmd = &cobra.Command{
 		for _, s := range []string{"pending", "sent", "failed", "skipped", "cancelled"} {
 			if n, ok := info.SendCounts[s]; ok {
 				fmt.Printf("  %-10s %d\n", s, n)
+			}
+		}
+		if len(info.FailureReasons) > 0 {
+			fmt.Printf("\nFailure reasons:\n")
+			for _, fr := range info.FailureReasons {
+				fmt.Printf("  %s (%d sends)\n", fr.Error, fr.Count)
 			}
 		}
 		return nil

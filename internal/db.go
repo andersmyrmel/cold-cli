@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS scheduled_sends (
 	thread_id TEXT NOT NULL DEFAULT '',
 	parent_message_id TEXT NOT NULL DEFAULT '',
 	message_id TEXT NOT NULL DEFAULT '',
-	sent_at DATETIME
+	sent_at DATETIME,
+	error_message TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -157,6 +158,7 @@ func runMigrations(db *sql.DB) {
 	migrations := []string{
 		"ALTER TABLE accounts ADD COLUMN gws_config_dir TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE campaigns ADD COLUMN sequence_content TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE scheduled_sends ADD COLUMN error_message TEXT NOT NULL DEFAULT ''",
 	}
 	for _, m := range migrations {
 		db.Exec(m) // ignore errors (column may already exist)
