@@ -76,7 +76,7 @@ steps:
   - step: 3
     delay: 5
     body: |
-      Last note — just wanted to make sure this didn't get buried.
+      Last note - just wanted to make sure this didn't get buried.
 ```
 
 - `delay` is in days after the previous step
@@ -94,11 +94,11 @@ jane@bigcorp.com,Jane,BigCorp
 
 `email` is the only required column. All other columns are driven by what `{{placeholders}}` your sequence uses. Extra columns beyond the built-in fields (`first_name`, `last_name`, `company`) are stored as custom fields and available for templates at send time.
 
-- **Validation at creation** — mismatched variables produce actionable errors with "Did you mean?" suggestions
-- **Aliases** — common names like `{{name}}` → `first_name` are resolved automatically
-- **Reserved names blocked** — CSV columns named `subject`, `body`, `step`, `delay`, or `variant` are rejected (they conflict with sequence YAML fields)
-- **Reimport updates** — if a lead already exists, its fields are updated from the new CSV (not silently skipped)
-- **Safety at send time** — unresolved variables are stripped (never sent literally); emails with empty subject or body are not sent
+- **Validation at creation** - mismatched variables produce actionable errors with "Did you mean?" suggestions
+- **Aliases** - common names like `{{name}}` → `first_name` are resolved automatically
+- **Reserved names blocked** - CSV columns named `subject`, `body`, `step`, `delay`, or `variant` are rejected (they conflict with sequence YAML fields)
+- **Reimport updates** - if a lead already exists, its fields are updated from the new CSV (not silently skipped)
+- **Safety at send time** - unresolved variables are stripped (never sent literally); emails with empty subject or body are not sent
 
 ## Commands
 
@@ -188,9 +188,9 @@ Unsubscribe requests ("unsubscribe", "remove me", "opt out", etc.) are auto-dete
 ### Bounce Detection
 
 Three-strategy fallback:
-1. **Thread matching** — NDR shares a Gmail thread with our sent email (catches all formats)
-2. **X-Failed-Recipients header** — standard MTA header
-3. **Snippet parsing** — extract bounced email from NDR text
+1. **Thread matching** - NDR shares a Gmail thread with our sent email (catches all formats)
+2. **X-Failed-Recipients header** - standard MTA header
+3. **Snippet parsing** - extract bounced email from NDR text
 
 ### Multi-Account
 
@@ -257,11 +257,11 @@ unsubscribe_subject: Unsubscribe
 
 ## Architecture
 
-- **Go** — single binary, no runtime deps
-- **SQLite** — `~/.cold-cli/data.db`, pure Go driver (no CGO)
-- **gws CLI** — subprocess calls for Gmail API (send, list, get)
-- **Cobra** — CLI framework
-- **log/slog** — structured JSON logging to `~/.cold-cli/tick.log`
+- **Go** - single binary, no runtime deps
+- **SQLite** - `~/.cold-cli/data.db`, pure Go driver (no CGO)
+- **gws CLI** - subprocess calls for Gmail API (send, list, get)
+- **Cobra** - CLI framework
+- **log/slog** - structured JSON logging to `~/.cold-cli/tick.log`
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for data model, tick flow diagrams, and design decisions.
 
