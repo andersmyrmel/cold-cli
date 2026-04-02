@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/anders/cold-cli/internal"
 )
 
 // buildCLI builds the cold-cli binary into a temp dir and returns its path.
@@ -872,6 +874,86 @@ func TestCLI_CampaignUpdate(t *testing.T) {
 	out, code = runCLI(t, bin, env, "campaign", "status", "updatable", "--json")
 	if code != 0 {
 		t.Fatalf("status failed (exit %d): %s", code, out)
+	}
+}
+
+func TestCLI_CampaignUpdate_ReschedulesUnsentFirstStepFromStartDate(t *testing.T) {
+	bin, env, dataDir := setupTestEnv(t)
+	dir := t.TempDir()
+
+	seqFile := filepath.Join(dir, "seq.yml")
+	os.WriteFile(seqFile, []byte(`
+name: Test
+defaults:
+  from_name: "Test"
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello {{first_name}}"
+  - step: 2
+    delay: 3
+    body: "Following up..."
+`), 0644)
+
+	leadsFile := filepath.Join(dir, "leads.csv")
+	os.WriteFile(leadsFile, []byte("email,first_name\njohn@acme.com,John\n"), 0644)
+
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "create",
+		"--name", "future-update",
+		"--sequence", seqFile,
+		"--leads", leadsFile,
+		"--accounts", "sender@x.com",
+		"--start-date", "2099-06-13",
+		"--send-days", "2,4")
+	if code != 0 {
+		t.Fatalf("campaign create failed (exit %d): %s", code, out)
+	}
+
+	db, err := internal.OpenDB(filepath.Join(dataDir, "data.db"))
+	if err != nil {
+		t.Fatalf("opening db: %v", err)
+	}
+	defer db.Close()
+
+	var step1Before string
+	db.QueryRow(`SELECT send_at FROM scheduled_sends
+		WHERE campaign_id = (SELECT id FROM campaigns WHERE name = 'future-update')
+		AND step_number = 1`).Scan(&step1Before)
+	if !strings.Contains(step1Before, "2099-06-16") {
+		t.Fatalf("expected initial step 1 on 2099-06-16, got %q", step1Before)
+	}
+
+	var step2Before string
+	db.QueryRow(`SELECT send_at FROM scheduled_sends
+		WHERE campaign_id = (SELECT id FROM campaigns WHERE name = 'future-update')
+		AND step_number = 2`).Scan(&step2Before)
+	if !strings.Contains(step2Before, "2099-06-23") {
+		t.Fatalf("expected initial step 2 on 2099-06-23, got %q", step2Before)
+	}
+
+	out, code = runCLI(t, bin, env, "campaign", "update", "future-update", "--send-days", "0,1,2,3,4,5,6")
+	if code != 0 {
+		t.Fatalf("campaign update failed (exit %d): %s", code, out)
+	}
+
+	var step1After string
+	db.QueryRow(`SELECT send_at FROM scheduled_sends
+		WHERE campaign_id = (SELECT id FROM campaigns WHERE name = 'future-update')
+		AND step_number = 1`).Scan(&step1After)
+	if !strings.Contains(step1After, "2099-06-13") {
+		t.Fatalf("expected step 1 to move to the stored start date, got %q", step1After)
+	}
+
+	var step2After string
+	db.QueryRow(`SELECT send_at FROM scheduled_sends
+		WHERE campaign_id = (SELECT id FROM campaigns WHERE name = 'future-update')
+		AND step_number = 2`).Scan(&step2After)
+	if !strings.Contains(step2After, "2099-06-16") {
+		t.Fatalf("expected step 2 to chain from the new step 1, got %q", step2After)
 	}
 }
 

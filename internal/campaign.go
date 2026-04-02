@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+var timeNow = time.Now
+
 // ResolveCampaignName accepts a campaign name or numeric ID and returns the campaign name.
 // This lets users reference campaigns by either their name or the ID shown in "campaign list".
 func ResolveCampaignName(db *sql.DB, nameOrID string) (string, error) {
@@ -140,10 +142,11 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 	}
 
 	result, err := tx.Exec(`
-		INSERT INTO campaigns (name, status, sequence_file, sequence_content, send_window_start, send_window_end,
+		INSERT INTO campaigns (name, status, sequence_file, sequence_content, start_date, send_window_start, send_window_end,
 			send_days, timezone, min_gap_seconds, max_gap_seconds)
-		VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		opts.Name, seqFile, string(seqContent),
+		opts.StartDate,
 		cfg.SendWindowStart, cfg.SendWindowEnd,
 		sendDaysStr, cfg.DefaultTimezone,
 		cfg.MinGapSeconds, cfg.MaxGapSeconds,
@@ -212,15 +215,17 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 		return nil, fmt.Errorf("no eligible leads (all blacklisted or bounced)")
 	}
 
-	startTime := time.Now().In(tz)
+	startTime := timeNow().In(tz)
 	if opts.StartDate != "" {
 		parsed, err := time.ParseInLocation("2006-01-02", opts.StartDate, tz)
 		if err != nil {
 			return nil, fmt.Errorf("invalid start date %q (expected YYYY-MM-DD): %w", opts.StartDate, err)
 		}
-		// Use window start on the given date
-		ws, _ := parseTimeOfDay(cfg.SendWindowStart)
-		startTime = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), ws.hour, ws.min, 0, 0, tz)
+		windowStartTOD, err := parseTimeOfDay(cfg.SendWindowStart)
+		if err != nil {
+			return nil, fmt.Errorf("invalid send_window_start: %w", err)
+		}
+		startTime = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), windowStartTOD.hour, windowStartTOD.min, 0, 0, tz)
 	}
 
 	schedRows, err := ComputeSchedule(ScheduleConfig{
@@ -873,9 +878,9 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 	}
 
 	res, err := tx.Exec(`
-		INSERT INTO campaigns (name, status, sequence_file, sequence_content, stop_on_reply, stop_on_domain_reply,
+		INSERT INTO campaigns (name, status, sequence_file, sequence_content, start_date, stop_on_reply, stop_on_domain_reply,
 			send_window_start, send_window_end, send_days, timezone, min_gap_seconds, max_gap_seconds)
-		VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, 'draft', ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)`,
 		opts.NewName, src.SeqFile, src.SeqContent, stopReply, stopDomain,
 		src.WindowStart, src.WindowEnd, src.SendDays, src.Timezone, src.MinGap, src.MaxGap)
 	if err != nil {
@@ -1139,7 +1144,7 @@ func loadStoredCampaignSequence(seqFile, seqContent string) (*Sequence, error) {
 }
 
 func reschedulePendingSends(tx *sql.Tx, campaignID int64, seq *Sequence,
-	windowStart, windowEnd string, sendDays []time.Weekday, tz *time.Location) error {
+	startDate, windowStart, windowEnd string, sendDays []time.Weekday, tz *time.Location) error {
 
 	type scheduledSendState struct {
 		ID         int64
@@ -1204,10 +1209,50 @@ func reschedulePendingSends(tx *sql.Tx, campaignID int64, seq *Sequence,
 	if err != nil {
 		return fmt.Errorf("invalid send_window_end: %w", err)
 	}
+	freshAnchor, err := campaignStartAnchor(timeNow().In(tz), startDate, windowStartTOD, tz)
+	if err != nil {
+		return fmt.Errorf("invalid start date %q (expected YYYY-MM-DD): %w", startDate, err)
+	}
 
 	for _, leadID := range leadOrder {
+		hasSentHistory := false
+		for _, send := range byLead[leadID] {
+			if send.HasSentAt {
+				hasSentHistory = true
+				break
+			}
+		}
+
 		var prevSendAt time.Time
 		var havePrev bool
+
+		if !hasSentHistory {
+			for _, send := range byLead[leadID] {
+				if send.Status != "pending" {
+					continue
+				}
+
+				var nextSendAt time.Time
+				if havePrev {
+					step, ok := stepByNumber[send.StepNumber]
+					if !ok {
+						return fmt.Errorf("campaign sequence is missing step %d for pending send %d", send.StepNumber, send.ID)
+					}
+					nextSendAt = nextScheduledTime(prevSendAt, step.Delay, windowStartTOD, windowEndTOD, sendDays, tz)
+				} else {
+					nextSendAt = clampToWindow(freshAnchor, windowStartTOD, windowEndTOD, sendDays, tz)
+				}
+
+				if _, err := tx.Exec("UPDATE scheduled_sends SET send_at = ? WHERE id = ?",
+					nextSendAt.UTC().Format(time.RFC3339), send.ID); err != nil {
+					return fmt.Errorf("updating send %d: %w", send.ID, err)
+				}
+
+				prevSendAt = nextSendAt
+				havePrev = true
+			}
+			continue
+		}
 
 		for _, send := range byLead[leadID] {
 			nextSendAt := send.SendAt.In(tz)
@@ -1238,6 +1283,25 @@ func reschedulePendingSends(tx *sql.Tx, campaignID int64, seq *Sequence,
 	}
 
 	return nil
+}
+
+func campaignStartAnchor(now time.Time, startDate string, windowStart timeOfDay, tz *time.Location) (time.Time, error) {
+	anchor := now.In(tz)
+	startDate = strings.TrimSpace(startDate)
+	if startDate == "" {
+		return anchor, nil
+	}
+
+	parsed, err := time.ParseInLocation("2006-01-02", startDate, tz)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	startAt := time.Date(parsed.Year(), parsed.Month(), parsed.Day(), windowStart.hour, windowStart.min, 0, 0, tz)
+	if startAt.After(anchor) {
+		anchor = startAt
+	}
+	return anchor, nil
 }
 
 // RetryCampaign resets failed sends back to pending with send_at = now.
@@ -1314,14 +1378,15 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 		ID          int64
 		SeqFile     string
 		SeqContent  string
+		StartDate   string
 		WindowStart string
 		WindowEnd   string
 		SendDays    string
 		Timezone    string
 	}
-	err := db.QueryRow(`SELECT id, sequence_file, sequence_content, send_window_start, send_window_end, send_days, timezone
+	err := db.QueryRow(`SELECT id, sequence_file, sequence_content, start_date, send_window_start, send_window_end, send_days, timezone
 		FROM campaigns WHERE name = ?`, name).
-		Scan(&current.ID, &current.SeqFile, &current.SeqContent, &current.WindowStart, &current.WindowEnd, &current.SendDays, &current.Timezone)
+		Scan(&current.ID, &current.SeqFile, &current.SeqContent, &current.StartDate, &current.WindowStart, &current.WindowEnd, &current.SendDays, &current.Timezone)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("campaign %q not found", name)
 	}
@@ -1501,7 +1566,7 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 
 	if shouldReschedulePending && hasPendingSends {
 		if err := reschedulePendingSends(tx, current.ID, effectiveSeq,
-			effectiveWindowStart, effectiveWindowEnd, effectiveSendDays, effectiveTimezone); err != nil {
+			current.StartDate, effectiveWindowStart, effectiveWindowEnd, effectiveSendDays, effectiveTimezone); err != nil {
 			return fmt.Errorf("rescheduling pending sends: %w", err)
 		}
 	}

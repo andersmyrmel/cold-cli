@@ -167,6 +167,8 @@ All send times are pre-computed when you create a campaign. Each send becomes a 
 - `tick` just queries for rows where `send_at <= now`
 - Agents can review and approve the full timeline
 - `campaign update --send-days/--send-window-*/--timezone` recalculates existing `pending` sends without touching `sent`, `failed`, `skipped`, or `cancelled` rows
+- For leads with no sent history, update recomputes the first pending send from `max(now, campaign start date)` under the new window/day/timezone rules, then chains later pending sends from that new anchor
+- For leads already in flight, update preserves sent history and only reschedules future pending sends
 
 ### Tick Engine
 

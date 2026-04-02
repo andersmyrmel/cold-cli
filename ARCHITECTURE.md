@@ -187,6 +187,7 @@ Enables:
 - Agent review of the timeline
 - tick is trivially simple: `SELECT WHERE send_at <= now AND status = 'pending'`
 - `campaign update` can recalculate `pending` rows in place when send days/window/timezone change
+- Unsent leads get a fresh first-pending anchor from `max(now, start_date)` under the updated window/day/timezone rules; in-flight leads keep their sent-history anchor
 
 ### Schedule Computation
 
