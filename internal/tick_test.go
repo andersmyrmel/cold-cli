@@ -2,7 +2,9 @@ package internal
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -44,6 +46,26 @@ func insertPendingSend(t *testing.T, db *sql.DB, campaignID, leadID, accountID i
 	if err != nil {
 		t.Fatalf("inserting pending send: %v", err)
 	}
+}
+
+func insertPendingFollowUpSend(t *testing.T, db *sql.DB, campaignID, leadID, accountID int64, variantIndex int, sendAt time.Time, threadID, parentMessageID string) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO scheduled_sends (
+			campaign_id, lead_id, account_id, step_number, variant_index, send_at, status, thread_id, parent_message_id
+		) VALUES (?, ?, ?, 2, ?, ?, 'pending', ?, ?)`,
+		campaignID, leadID, accountID, variantIndex, sendAt.UTC().Format(time.RFC3339), threadID, parentMessageID)
+	if err != nil {
+		t.Fatalf("inserting pending follow-up send: %v", err)
+	}
+}
+
+func decodeRawMessage(t *testing.T, raw string) string {
+	t.Helper()
+	decoded, err := base64.URLEncoding.DecodeString(raw)
+	if err != nil {
+		t.Fatalf("decoding raw message: %v", err)
+	}
+	return string(decoded)
 }
 
 func TestTick_SendsDueEmails(t *testing.T) {
@@ -213,7 +235,6 @@ func TestTick_FailedSendIsolation(t *testing.T) {
 		t.Errorf("second send should be 'sent', got %q", status2)
 	}
 }
-
 
 func TestTick_DailyLimitEnforcement(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
@@ -871,6 +892,147 @@ steps:
 	db.QueryRow("SELECT status FROM scheduled_sends WHERE id = 1").Scan(&status)
 	if status != "failed" {
 		t.Errorf("expected status 'failed', got %q", status)
+	}
+}
+
+func TestTick_FollowUpEmptySubjectUsesOriginalSubject(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	seqYAML := `name: Follow Up Empty Subject
+defaults:
+  from_name: "Test"
+steps:
+  - step: 1
+    delay: 0
+    subject: "Quick question about Acme"
+    body: "Hello there"
+  - step: 2
+    delay: 3
+    subject: ""
+    body: "Following up..."
+`
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content, send_window_start, send_window_end,
+		send_days, timezone) VALUES ('followup-empty-subject', 'active', 'N/A', ?, '00:00', '23:59', '0,1,2,3,4,5,6', 'UTC')`,
+		seqYAML)
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('test@example.com', 'Test', 'Acme', 'example.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+
+	now := time.Now().UTC()
+	insertPendingFollowUpSend(t, db, 1, 1, 1, 0, now.Add(-1*time.Hour), "thread-123", "<msg-1@example.com>")
+
+	mock := &MockGWS{}
+	result, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+
+	if result.Sent != 1 {
+		t.Fatalf("expected 1 sent, got %d", result.Sent)
+	}
+	if len(mock.SentEmails) != 1 {
+		t.Fatalf("expected 1 sent email, got %d", len(mock.SentEmails))
+	}
+
+	msg := decodeRawMessage(t, mock.SentEmails[0].RawMsg)
+	if !strings.Contains(msg, "Subject: Re: Quick question about Acme") {
+		t.Errorf("expected follow-up subject to use rendered step-1 subject, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "In-Reply-To: <msg-1@example.com>") {
+		t.Errorf("expected In-Reply-To header, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "References: <msg-1@example.com>") {
+		t.Errorf("expected References header, got:\n%s", msg)
+	}
+}
+
+func TestTick_FollowUpUsesRenderedPlaceholderSubject(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	seqYAML := `name: Follow Up Placeholder Subject
+defaults:
+  from_name: "Test"
+steps:
+  - step: 1
+    delay: 0
+    subject: "Leads for {{first_name}}"
+    body: "Hello there"
+  - step: 2
+    delay: 3
+    subject: ""
+    body: "Following up..."
+`
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content, send_window_start, send_window_end,
+		send_days, timezone) VALUES ('followup-placeholder-subject', 'active', 'N/A', ?, '00:00', '23:59', '0,1,2,3,4,5,6', 'UTC')`,
+		seqYAML)
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('john@acme.com', 'John', 'Acme', 'acme.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+
+	now := time.Now().UTC()
+	insertPendingFollowUpSend(t, db, 1, 1, 1, 0, now.Add(-1*time.Hour), "thread-123", "<msg-1@example.com>")
+
+	mock := &MockGWS{}
+	result, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+
+	if result.Sent != 1 {
+		t.Fatalf("expected 1 sent, got %d", result.Sent)
+	}
+
+	msg := decodeRawMessage(t, mock.SentEmails[0].RawMsg)
+	if !strings.Contains(msg, "Subject: Re: Leads for John") {
+		t.Errorf("expected rendered placeholder subject, got:\n%s", msg)
+	}
+}
+
+func TestTick_FollowUpUsesRenderedVariantSubject(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+
+	seqYAML := `name: Follow Up Variant Subject
+defaults:
+  from_name: "Test"
+steps:
+  - step: 1
+    delay: 0
+    subject: "Default subject"
+    body: "Hello there"
+    variants:
+      - subject: "Offer for {{company}}"
+        body: "Variant body"
+  - step: 2
+    delay: 3
+    subject: ""
+    body: "Following up..."
+`
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content, send_window_start, send_window_end,
+		send_days, timezone) VALUES ('followup-variant-subject', 'active', 'N/A', ?, '00:00', '23:59', '0,1,2,3,4,5,6', 'UTC')`,
+		seqYAML)
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('john@acme.com', 'John', 'Acme', 'acme.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+
+	now := time.Now().UTC()
+	insertPendingFollowUpSend(t, db, 1, 1, 1, 1, now.Add(-1*time.Hour), "thread-123", "<msg-1@example.com>")
+
+	mock := &MockGWS{}
+	result, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+
+	if result.Sent != 1 {
+		t.Fatalf("expected 1 sent, got %d", result.Sent)
+	}
+
+	msg := decodeRawMessage(t, mock.SentEmails[0].RawMsg)
+	if !strings.Contains(msg, "Subject: Re: Offer for Acme") {
+		t.Errorf("expected rendered variant subject, got:\n%s", msg)
 	}
 }
 

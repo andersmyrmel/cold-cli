@@ -17,9 +17,9 @@ type EmailParams struct {
 	Body      string
 
 	// For follow-ups (step 2+)
-	InReplyTo string // Message-ID of the previous step
+	InReplyTo  string // Message-ID of the previous step
 	References string // same as InReplyTo for simple chains
-	ThreadID  string // Gmail thread ID for threading
+	ThreadID   string // Gmail thread ID for threading
 
 	// Unsubscribe
 	UnsubscribeEmail   string // mailto address for List-Unsubscribe header
@@ -159,10 +159,21 @@ func PrepareFollowUp(p *EmailParams, parentMessageID, threadID, originalSubject 
 	p.References = parentMessageID
 	p.ThreadID = threadID
 
-	// Follow-ups use "Re: <original subject>" if no subject specified
-	if p.Subject == "" {
+	subject := strings.TrimSpace(p.Subject)
+	if subject == "" {
+		originalSubject = strings.TrimSpace(originalSubject)
+		if originalSubject == "" {
+			return
+		}
 		p.Subject = "Re: " + originalSubject
-	} else if !strings.HasPrefix(p.Subject, "Re: ") {
-		p.Subject = "Re: " + p.Subject
+		return
 	}
+
+	// Preserve an existing reply prefix regardless of casing.
+	if strings.HasPrefix(strings.ToLower(subject), "re:") {
+		p.Subject = subject
+		return
+	}
+
+	p.Subject = "Re: " + subject
 }

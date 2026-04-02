@@ -26,8 +26,8 @@ type TickResult struct {
 
 // TickConfig holds configuration for a tick invocation.
 type TickConfig struct {
-	DB       *sql.DB
-	GWS      GWSClient
+	DB                 *sql.DB
+	GWS                GWSClient
 	DryRun             bool
 	SendNow            bool           // ignore send_at timestamps, send all pending
 	Now                time.Time      // injectable for testing
@@ -177,6 +177,14 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			result.Failed++
 			continue
 		}
+
+		// For follow-ups, add threading headers and derive the visible subject
+		// from the rendered step-1 subject before validating emptiness.
+		if send.StepNumber > 1 && send.ParentMessageID != "" {
+			originalEmail := BuildEmailForSend(seq, 1, send.VariantIndex, leadFields, account.Email)
+			PrepareFollowUp(&emailParams, send.ParentMessageID, send.ThreadID, originalEmail.Subject)
+		}
+
 		if strings.TrimSpace(emailParams.Subject) == "" {
 			errMsg := "empty subject after rendering"
 			slog.Error("send aborted: "+errMsg,
@@ -192,12 +200,6 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			markSendFailed(cfg.DB, send, errMsg)
 			result.Failed++
 			continue
-		}
-
-		// For follow-ups, add threading headers
-		if send.StepNumber > 1 && send.ParentMessageID != "" {
-			originalSubject := getOriginalSubject(seq, send.VariantIndex)
-			PrepareFollowUp(&emailParams, send.ParentMessageID, send.ThreadID, originalSubject)
 		}
 
 		if cfg.DryRun {
@@ -506,20 +508,6 @@ func markSendStatus(db *sql.DB, sendID int64, status string, errorMsg string) {
 		slog.Error("failed to mark send status",
 			"send_id", sendID, "status", status, "error", err)
 	}
-}
-
-func getOriginalSubject(seq *Sequence, variantIndex int) string {
-	if len(seq.Steps) == 0 {
-		return ""
-	}
-	step := seq.Steps[0]
-	if variantIndex > 0 && variantIndex <= len(step.Variants) {
-		v := step.Variants[variantIndex-1]
-		if v.Subject != "" {
-			return v.Subject
-		}
-	}
-	return step.Subject
 }
 
 // FormatTickResult returns a human-readable summary of a tick result.
