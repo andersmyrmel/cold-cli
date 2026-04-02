@@ -38,13 +38,14 @@ func ResolveCampaignName(db *sql.DB, nameOrID string) (string, error) {
 
 // CreateCampaignOpts holds options for CreateCampaign.
 type CreateCampaignOpts struct {
-	Name            string
-	SequenceFile    string
-	SequenceInline  string // inline YAML content (alternative to SequenceFile)
-	LeadsFile       string
-	LeadsInline     string // inline CSV content (alternative to LeadsFile)
-	AccountEmails   []string
-	StartDate       string // optional "YYYY-MM-DD"; empty = now
+	Name           string
+	SequenceFile   string
+	SequenceInline string // inline YAML content (alternative to SequenceFile)
+	LeadsFile      string
+	LeadsInline    string // inline CSV content (alternative to LeadsFile)
+	AccountEmails  []string
+	StartDate      string // optional "YYYY-MM-DD"; empty = now
+	SendDays       string // optional send days override for this campaign
 }
 
 // CreateCampaignResult is returned by CreateCampaign.
@@ -112,7 +113,12 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 		return nil, err
 	}
 
-	sendDays, err := ParseSendDays(cfg.SendDays)
+	sendDaysStr := cfg.SendDays
+	if strings.TrimSpace(opts.SendDays) != "" {
+		sendDaysStr = strings.TrimSpace(opts.SendDays)
+	}
+
+	sendDays, err := ParseSendDays(sendDaysStr)
 	if err != nil {
 		return nil, fmt.Errorf("parsing send_days: %w", err)
 	}
@@ -139,7 +145,7 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 		VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?)`,
 		opts.Name, seqFile, string(seqContent),
 		cfg.SendWindowStart, cfg.SendWindowEnd,
-		cfg.SendDays, cfg.DefaultTimezone,
+		sendDaysStr, cfg.DefaultTimezone,
 		cfg.MinGapSeconds, cfg.MaxGapSeconds,
 	)
 	if err != nil {
@@ -528,20 +534,20 @@ type FailureReason struct {
 
 // CampaignStatusInfo is returned by GetCampaignStatus.
 type CampaignStatusInfo struct {
-	Name           string         `json:"name"`
-	Status         string         `json:"status"`
-	Sequence       string         `json:"sequence"`
-	Timezone       string         `json:"timezone"`
-	SendWindow     string         `json:"send_window"`
-	SendDays       string         `json:"send_days"`
-	Leads          int            `json:"leads"`
-	Accounts       int            `json:"accounts"`
-	TotalSends     int            `json:"total_sends"`
-	SendCounts     map[string]int `json:"send_counts"`
-	CreatedAt      string         `json:"created_at"`
-	ReplyRate      *float64       `json:"reply_rate,omitempty"`
-	NextSendAt     *string        `json:"next_send_at,omitempty"`
-	LastSendAt     *string        `json:"last_send_at,omitempty"`
+	Name           string          `json:"name"`
+	Status         string          `json:"status"`
+	Sequence       string          `json:"sequence"`
+	Timezone       string          `json:"timezone"`
+	SendWindow     string          `json:"send_window"`
+	SendDays       string          `json:"send_days"`
+	Leads          int             `json:"leads"`
+	Accounts       int             `json:"accounts"`
+	TotalSends     int             `json:"total_sends"`
+	SendCounts     map[string]int  `json:"send_counts"`
+	CreatedAt      string          `json:"created_at"`
+	ReplyRate      *float64        `json:"reply_rate,omitempty"`
+	NextSendAt     *string         `json:"next_send_at,omitempty"`
+	LastSendAt     *string         `json:"last_send_at,omitempty"`
 	FailureReasons []FailureReason `json:"failure_reasons,omitempty"`
 }
 
@@ -753,7 +759,7 @@ type CloneCampaignOpts struct {
 	SourceName  string
 	NewName     string
 	LeadsFile   string
-	LeadsInline string // inline CSV content (alternative to LeadsFile)
+	LeadsInline string   // inline CSV content (alternative to LeadsFile)
 	Accounts    []string // optional: override accounts; empty = reuse source accounts
 }
 
@@ -761,17 +767,17 @@ type CloneCampaignOpts struct {
 func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, error) {
 	// Load source campaign
 	var src struct {
-		ID              int64
-		SeqFile         string
-		SeqContent      string
-		StopOnReply     bool
-		StopOnDomain    bool
-		WindowStart     string
-		WindowEnd       string
-		SendDays        string
-		Timezone        string
-		MinGap          int
-		MaxGap          int
+		ID           int64
+		SeqFile      string
+		SeqContent   string
+		StopOnReply  bool
+		StopOnDomain bool
+		WindowStart  string
+		WindowEnd    string
+		SendDays     string
+		Timezone     string
+		MinGap       int
+		MaxGap       int
 	}
 	err := db.QueryRow(`SELECT id, sequence_file, sequence_content, stop_on_reply, stop_on_domain_reply,
 		send_window_start, send_window_end, send_days, timezone, min_gap_seconds, max_gap_seconds
@@ -1110,6 +1116,130 @@ type RetryCampaignResult struct {
 	Retried  int    `json:"retried"`
 }
 
+func parseDBTimestamp(value string) (time.Time, error) {
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unsupported timestamp %q", value)
+}
+
+func loadStoredCampaignSequence(seqFile, seqContent string) (*Sequence, error) {
+	if seqContent != "" {
+		return ParseSequenceFromBytes([]byte(seqContent))
+	}
+	return ParseSequence(seqFile)
+}
+
+func reschedulePendingSends(tx *sql.Tx, campaignID int64, seq *Sequence,
+	windowStart, windowEnd string, sendDays []time.Weekday, tz *time.Location) error {
+
+	type scheduledSendState struct {
+		ID         int64
+		LeadID     int64
+		StepNumber int
+		Status     string
+		SendAt     time.Time
+		SentAt     time.Time
+		HasSentAt  bool
+	}
+
+	stepByNumber := make(map[int]SequenceStep, len(seq.Steps))
+	for _, step := range seq.Steps {
+		stepByNumber[step.Step] = step
+	}
+
+	rows, err := tx.Query(`
+		SELECT id, lead_id, step_number, status, send_at, COALESCE(sent_at, '')
+		FROM scheduled_sends
+		WHERE campaign_id = ?
+		ORDER BY lead_id, step_number`, campaignID)
+	if err != nil {
+		return fmt.Errorf("loading scheduled sends: %w", err)
+	}
+	defer rows.Close()
+
+	byLead := make(map[int64][]scheduledSendState)
+	var leadOrder []int64
+	for rows.Next() {
+		var send scheduledSendState
+		var sendAtStr, sentAtStr string
+		if err := rows.Scan(&send.ID, &send.LeadID, &send.StepNumber, &send.Status, &sendAtStr, &sentAtStr); err != nil {
+			return fmt.Errorf("scanning scheduled send: %w", err)
+		}
+
+		send.SendAt, err = parseDBTimestamp(sendAtStr)
+		if err != nil {
+			return fmt.Errorf("parsing send_at for send %d: %w", send.ID, err)
+		}
+		if sentAtStr != "" {
+			send.SentAt, err = parseDBTimestamp(sentAtStr)
+			if err != nil {
+				return fmt.Errorf("parsing sent_at for send %d: %w", send.ID, err)
+			}
+			send.HasSentAt = true
+		}
+
+		if _, ok := byLead[send.LeadID]; !ok {
+			leadOrder = append(leadOrder, send.LeadID)
+		}
+		byLead[send.LeadID] = append(byLead[send.LeadID], send)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterating scheduled sends: %w", err)
+	}
+
+	windowStartTOD, err := parseTimeOfDay(windowStart)
+	if err != nil {
+		return fmt.Errorf("invalid send_window_start: %w", err)
+	}
+	windowEndTOD, err := parseTimeOfDay(windowEnd)
+	if err != nil {
+		return fmt.Errorf("invalid send_window_end: %w", err)
+	}
+
+	for _, leadID := range leadOrder {
+		var prevSendAt time.Time
+		var havePrev bool
+
+		for _, send := range byLead[leadID] {
+			nextSendAt := send.SendAt.In(tz)
+			if send.HasSentAt {
+				nextSendAt = send.SentAt.In(tz)
+			}
+
+			if send.Status == "pending" {
+				if havePrev {
+					step, ok := stepByNumber[send.StepNumber]
+					if !ok {
+						return fmt.Errorf("campaign sequence is missing step %d for pending send %d", send.StepNumber, send.ID)
+					}
+					nextSendAt = nextScheduledTime(prevSendAt, step.Delay, windowStartTOD, windowEndTOD, sendDays, tz)
+				} else {
+					nextSendAt = clampToWindow(nextSendAt, windowStartTOD, windowEndTOD, sendDays, tz)
+				}
+
+				if _, err := tx.Exec("UPDATE scheduled_sends SET send_at = ? WHERE id = ?",
+					nextSendAt.UTC().Format(time.RFC3339), send.ID); err != nil {
+					return fmt.Errorf("updating send %d: %w", send.ID, err)
+				}
+			}
+
+			prevSendAt = nextSendAt
+			havePrev = true
+		}
+	}
+
+	return nil
+}
+
 // RetryCampaign resets failed sends back to pending with send_at = now.
 // If step is non-nil, only retry failed sends for that specific step.
 func RetryCampaign(db *sql.DB, name string, step *int) (*RetryCampaignResult, error) {
@@ -1180,8 +1310,18 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 		}
 	}
 
-	var campaignID int64
-	err := db.QueryRow("SELECT id FROM campaigns WHERE name = ?", name).Scan(&campaignID)
+	var current struct {
+		ID          int64
+		SeqFile     string
+		SeqContent  string
+		WindowStart string
+		WindowEnd   string
+		SendDays    string
+		Timezone    string
+	}
+	err := db.QueryRow(`SELECT id, sequence_file, sequence_content, send_window_start, send_window_end, send_days, timezone
+		FROM campaigns WHERE name = ?`, name).
+		Scan(&current.ID, &current.SeqFile, &current.SeqContent, &current.WindowStart, &current.WindowEnd, &current.SendDays, &current.Timezone)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("campaign %q not found", name)
 	}
@@ -1190,10 +1330,11 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 	}
 
 	// Validate and prepare sequence update if requested
+	var newSeq *Sequence
 	var newSeqFile string
 	var newSeqContent string
 	if opts.SequenceFile != nil {
-		seq, err := ParseSequence(*opts.SequenceFile)
+		newSeq, err = ParseSequence(*opts.SequenceFile)
 		if err != nil {
 			return err
 		}
@@ -1203,13 +1344,13 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 		}
 
 		// Validate placeholders against existing campaign leads
-		placeholders := seq.CollectPlaceholders()
+		placeholders := newSeq.CollectPlaceholders()
 		if len(placeholders) > 0 {
 			rows, err := db.Query(`
 				SELECT l.email, l.first_name, l.last_name, l.company, l.domain
 				FROM leads l
 				JOIN campaign_leads cl ON cl.lead_id = l.id
-				WHERE cl.campaign_id = ?`, campaignID)
+				WHERE cl.campaign_id = ?`, current.ID)
 			if err != nil {
 				return fmt.Errorf("loading campaign leads: %w", err)
 			}
@@ -1238,6 +1379,63 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 		newSeqContent = string(content)
 	}
 
+	effectiveWindowStart := current.WindowStart
+	if opts.SendWindowStart != nil {
+		effectiveWindowStart = *opts.SendWindowStart
+	}
+
+	effectiveWindowEnd := current.WindowEnd
+	if opts.SendWindowEnd != nil {
+		effectiveWindowEnd = *opts.SendWindowEnd
+	}
+
+	effectiveSendDaysStr := current.SendDays
+	if opts.SendDays != nil {
+		effectiveSendDaysStr = *opts.SendDays
+	}
+
+	effectiveTimezoneName := current.Timezone
+	if opts.Timezone != nil {
+		effectiveTimezoneName = *opts.Timezone
+	}
+
+	shouldReschedulePending := opts.SendWindowStart != nil || opts.SendWindowEnd != nil || opts.SendDays != nil || opts.Timezone != nil
+	hasPendingSends := false
+	if shouldReschedulePending {
+		var pendingCount int
+		if err := db.QueryRow(
+			"SELECT COUNT(*) FROM scheduled_sends WHERE campaign_id = ? AND status = 'pending'",
+			current.ID,
+		).Scan(&pendingCount); err != nil {
+			return fmt.Errorf("counting pending sends: %w", err)
+		}
+		hasPendingSends = pendingCount > 0
+	}
+
+	var effectiveSeq *Sequence
+	var effectiveSendDays []time.Weekday
+	var effectiveTimezone *time.Location
+	if shouldReschedulePending && hasPendingSends {
+		if newSeq != nil {
+			effectiveSeq = newSeq
+		} else {
+			effectiveSeq, err = loadStoredCampaignSequence(current.SeqFile, current.SeqContent)
+			if err != nil {
+				return fmt.Errorf("loading campaign sequence: %w", err)
+			}
+		}
+
+		effectiveSendDays, err = ParseSendDays(effectiveSendDaysStr)
+		if err != nil {
+			return fmt.Errorf("parsing effective send_days: %w", err)
+		}
+
+		effectiveTimezone, err = time.LoadLocation(effectiveTimezoneName)
+		if err != nil {
+			return fmt.Errorf("loading effective timezone %q: %w", effectiveTimezoneName, err)
+		}
+	}
+
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("starting transaction: %w", err)
@@ -1249,31 +1447,62 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 		val any
 	}{}
 	if opts.SendWindowStart != nil {
-		updates = append(updates, struct{ col string; val any }{"send_window_start", *opts.SendWindowStart})
+		updates = append(updates, struct {
+			col string
+			val any
+		}{"send_window_start", *opts.SendWindowStart})
 	}
 	if opts.SendWindowEnd != nil {
-		updates = append(updates, struct{ col string; val any }{"send_window_end", *opts.SendWindowEnd})
+		updates = append(updates, struct {
+			col string
+			val any
+		}{"send_window_end", *opts.SendWindowEnd})
 	}
 	if opts.SendDays != nil {
-		updates = append(updates, struct{ col string; val any }{"send_days", *opts.SendDays})
+		updates = append(updates, struct {
+			col string
+			val any
+		}{"send_days", *opts.SendDays})
 	}
 	if opts.Timezone != nil {
-		updates = append(updates, struct{ col string; val any }{"timezone", *opts.Timezone})
+		updates = append(updates, struct {
+			col string
+			val any
+		}{"timezone", *opts.Timezone})
 	}
 	if opts.MinGapSeconds != nil {
-		updates = append(updates, struct{ col string; val any }{"min_gap_seconds", *opts.MinGapSeconds})
+		updates = append(updates, struct {
+			col string
+			val any
+		}{"min_gap_seconds", *opts.MinGapSeconds})
 	}
 	if opts.MaxGapSeconds != nil {
-		updates = append(updates, struct{ col string; val any }{"max_gap_seconds", *opts.MaxGapSeconds})
+		updates = append(updates, struct {
+			col string
+			val any
+		}{"max_gap_seconds", *opts.MaxGapSeconds})
 	}
 	if opts.SequenceFile != nil {
-		updates = append(updates, struct{ col string; val any }{"sequence_file", newSeqFile})
-		updates = append(updates, struct{ col string; val any }{"sequence_content", newSeqContent})
+		updates = append(updates, struct {
+			col string
+			val any
+		}{"sequence_file", newSeqFile})
+		updates = append(updates, struct {
+			col string
+			val any
+		}{"sequence_content", newSeqContent})
 	}
 
 	for _, u := range updates {
-		if _, err := tx.Exec("UPDATE campaigns SET "+u.col+" = ? WHERE id = ?", u.val, campaignID); err != nil {
+		if _, err := tx.Exec("UPDATE campaigns SET "+u.col+" = ? WHERE id = ?", u.val, current.ID); err != nil {
 			return fmt.Errorf("updating %s: %w", u.col, err)
+		}
+	}
+
+	if shouldReschedulePending && hasPendingSends {
+		if err := reschedulePendingSends(tx, current.ID, effectiveSeq,
+			effectiveWindowStart, effectiveWindowEnd, effectiveSendDays, effectiveTimezone); err != nil {
+			return fmt.Errorf("rescheduling pending sends: %w", err)
 		}
 	}
 

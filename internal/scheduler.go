@@ -13,9 +13,9 @@ import (
 
 // Sequence represents a parsed sequence YAML file.
 type Sequence struct {
-	Name     string         `yaml:"name"`
+	Name     string           `yaml:"name"`
 	Defaults SequenceDefaults `yaml:"defaults"`
-	Steps    []SequenceStep `yaml:"steps"`
+	Steps    []SequenceStep   `yaml:"steps"`
 }
 
 type SequenceDefaults struct {
@@ -23,10 +23,10 @@ type SequenceDefaults struct {
 }
 
 type SequenceStep struct {
-	Step     int              `yaml:"step"`
-	Delay    int              `yaml:"delay"` // days after previous step
-	Subject  string           `yaml:"subject"`
-	Body     string           `yaml:"body"`
+	Step     int               `yaml:"step"`
+	Delay    int               `yaml:"delay"` // days after previous step
+	Subject  string            `yaml:"subject"`
+	Body     string            `yaml:"body"`
 	Variants []SequenceVariant `yaml:"variants"`
 }
 
@@ -95,17 +95,17 @@ func (s *Sequence) CollectPlaceholders() []string {
 
 // ScheduleConfig holds parameters for schedule computation.
 type ScheduleConfig struct {
-	CampaignID    int64
-	AccountIDs    []int64
-	Leads         []LeadForSchedule
-	Sequence      *Sequence
+	CampaignID      int64
+	AccountIDs      []int64
+	Leads           []LeadForSchedule
+	Sequence        *Sequence
 	SendWindowStart string // "09:00"
 	SendWindowEnd   string // "17:00"
-	SendDays      []time.Weekday
-	Timezone      *time.Location
-	MinGapSeconds int
-	MaxGapSeconds int
-	StartTime     time.Time // when the campaign starts (typically now)
+	SendDays        []time.Weekday
+	Timezone        *time.Location
+	MinGapSeconds   int
+	MaxGapSeconds   int
+	StartTime       time.Time // when the campaign starts (typically now)
 }
 
 // LeadForSchedule is the minimal lead info needed for scheduling.
@@ -174,12 +174,13 @@ func ComputeSchedule(cfg ScheduleConfig) ([]ScheduledSendRow, error) {
 				}
 				sendAt = sendAt.Add(time.Duration(leadIdx*gapSec) * time.Second)
 			} else {
-				// Step N: previous step send_at + delay days
-				sendAt = prevSendAt.AddDate(0, 0, step.Delay)
+				sendAt = nextScheduledTime(prevSendAt, step.Delay, windowStart, windowEnd, cfg.SendDays, cfg.Timezone)
 			}
 
-			// Clamp to send window and skip non-send days
-			sendAt = clampToWindow(sendAt, windowStart, windowEnd, cfg.SendDays, cfg.Timezone)
+			if stepIdx == 0 {
+				// Step 1 still needs clamping after applying the per-lead offset.
+				sendAt = clampToWindow(sendAt, windowStart, windowEnd, cfg.SendDays, cfg.Timezone)
+			}
 
 			rows = append(rows, ScheduledSendRow{
 				CampaignID:   cfg.CampaignID,
@@ -236,6 +237,10 @@ func clampToWindow(sendAt time.Time, start, end timeOfDay, sendDays []time.Weekd
 	}
 
 	return t
+}
+
+func nextScheduledTime(prevSendAt time.Time, delayDays int, start, end timeOfDay, sendDays []time.Weekday, tz *time.Location) time.Time {
+	return clampToWindow(prevSendAt.AddDate(0, 0, delayDays), start, end, sendDays, tz)
 }
 
 func isDaySendable(day time.Weekday, sendDays []time.Weekday) bool {

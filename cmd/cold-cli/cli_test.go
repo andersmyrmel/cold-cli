@@ -285,6 +285,53 @@ func TestCLI_CampaignCreate(t *testing.T) {
 	}
 }
 
+func TestCLI_CampaignCreate_SendDaysOverride(t *testing.T) {
+	bin, env, dataDir := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	os.WriteFile(filepath.Join(dataDir, "config.yml"), []byte(`default_timezone: UTC
+default_daily_limit: 50
+min_gap_seconds: 90
+max_gap_seconds: 140
+send_window_start: "09:00"
+send_window_end: "17:00"
+send_days: "1,2,3,4,5"
+`), 0644)
+
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+
+	dir := t.TempDir()
+	seqFile := filepath.Join(dir, "seq.yml")
+	os.WriteFile(seqFile, []byte(`
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi"
+    body: "Hello"
+`), 0644)
+	leadsFile := filepath.Join(dir, "leads.csv")
+	os.WriteFile(leadsFile, []byte("email\njohn@acme.com\n"), 0644)
+
+	out, code := runCLI(t, bin, env, "campaign", "create",
+		"--name", "weekend-camp",
+		"--sequence", seqFile,
+		"--leads", leadsFile,
+		"--accounts", "sender@x.com",
+		"--start-date", "2026-06-13",
+		"--send-days", "0,1,2,3,4,5,6")
+	if code != 0 {
+		t.Fatalf("campaign create with send-days override failed (exit %d): %s", code, out)
+	}
+
+	out, code = runCLI(t, bin, env, "campaign", "preview", "weekend-camp")
+	if code != 0 {
+		t.Fatalf("campaign preview failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "2026-06-13") {
+		t.Errorf("expected preview to keep the Saturday start date, got: %s", out)
+	}
+}
+
 func TestCLI_CampaignCreate_JSON(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)

@@ -115,7 +115,7 @@ cold-cli account resume <email>            # reactivate a paused account
 cold-cli account remove <email>            # deactivate (re-add later with account add)
 
 cold-cli campaign init [directory]         # scaffold example sequence.yml + leads.csv
-cold-cli campaign create --name --sequence --leads --accounts [--start-date YYYY-MM-DD]
+cold-cli campaign create --name --sequence --leads --accounts [--start-date YYYY-MM-DD] [--send-days "1,2,3,4,5"]
 cold-cli campaign create --name --sequence-inline '...' --leads-inline '...' --accounts  # no files needed
 cold-cli campaign clone <source> --name <new> --leads <csv>
 cold-cli campaign add-leads <name|id> --leads <csv>    # or --leads-inline '...'
@@ -130,7 +130,8 @@ cold-cli campaign pause <name|id>          # stop sending
 cold-cli campaign resume <name|id>         # resume
 cold-cli campaign status <name|id>         # details + reply rate + next/last send
 cold-cli campaign list                     # list all campaigns (with send window + days)
-cold-cli campaign update <name|id>         # update sequence, send window, timezone, gaps
+cold-cli campaign update <name|id>         # update sequence, send window/days, timezone, gaps
+cold-cli campaign update <name|id> --send-days "0,1,2,3,4,5,6"  # reschedule pending sends only
 cold-cli campaign delete <name|id>         # delete campaign and all data
 cold-cli campaign retry <name|id>          # reset failed sends back to pending
 cold-cli campaign retry <name|id> --step N # retry only failed sends for step N
@@ -165,6 +166,7 @@ All send times are pre-computed when you create a campaign. Each send becomes a 
 - `campaign preview` shows the exact schedule before you activate
 - `tick` just queries for rows where `send_at <= now`
 - Agents can review and approve the full timeline
+- `campaign update --send-days/--send-window-*/--timezone` recalculates existing `pending` sends without touching `sent`, `failed`, `skipped`, or `cancelled` rows
 
 ### Tick Engine
 
@@ -254,6 +256,8 @@ send_days: "1,2,3,4,5"
 unsubscribe_header: false
 unsubscribe_subject: Unsubscribe
 ```
+
+`send_days` in config is the default for new campaigns. Override it per campaign with `cold-cli campaign create --send-days ...`.
 
 ## Architecture
 

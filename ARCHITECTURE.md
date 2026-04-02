@@ -186,6 +186,7 @@ Enables:
 - `campaign preview` to show full schedule before activating
 - Agent review of the timeline
 - tick is trivially simple: `SELECT WHERE send_at <= now AND status = 'pending'`
+- `campaign update` can recalculate `pending` rows in place when send days/window/timezone change
 
 ### Schedule Computation
 
@@ -256,7 +257,7 @@ type GWSClient interface {
 - **DB write failure after send**: slog.Error with full context (send_id, message_id), continue
 - **Concurrent tick**: flock auto-releases on process exit; second tick exits cleanly
 - **Lock file after crash**: OS releases flock on process exit, no stale lock problem
-- **Invalid campaign update**: timezone, time format, send days validated before writing
+- **Invalid campaign update**: timezone, time format, send days validated before writing; successful send-window/day/timezone updates recalculate pending `scheduled_sends`
 
 ## Domain Diagnostics
 
@@ -278,7 +279,7 @@ cold-cli doctor [domain...]
 cold-cli account add/list/pause/resume/remove/update
 
 cold-cli campaign init [directory]
-cold-cli campaign create --name --sequence --leads --accounts [--start-date YYYY-MM-DD]
+cold-cli campaign create --name --sequence --leads --accounts [--start-date YYYY-MM-DD] [--send-days "1,2,3,4,5"]
 cold-cli campaign create --name --sequence-inline '...' --leads-inline '...' --accounts
 cold-cli campaign clone <source> --name <new> --leads <csv>  # or --leads-inline
 cold-cli campaign add-leads <name|id> --leads <csv>          # or --leads-inline
@@ -286,7 +287,8 @@ cold-cli campaign remove-lead <name|id> <email>
 cold-cli campaign preview <name|id> [--render] [--lead <email>]
 cold-cli campaign activate [--send-now] / pause/resume/status <name|id>
 cold-cli campaign send-now <name|id>
-cold-cli campaign list/update/delete/retry <name|id>
+cold-cli campaign update <name|id> [--send-days "..."] [--send-window-start HH:MM] [--send-window-end HH:MM] [--timezone TZ]
+cold-cli campaign list/delete/retry <name|id>
 
 cold-cli tick [--dry-run] [--now]
 

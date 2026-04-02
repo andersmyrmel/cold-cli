@@ -526,6 +526,7 @@ var campaignCreateCmd = &cobra.Command{
 		leadsInline, _ := cmd.Flags().GetString("leads-inline")
 		accountsFlag, _ := cmd.Flags().GetString("accounts")
 		startDate, _ := cmd.Flags().GetString("start-date")
+		sendDays, _ := cmd.Flags().GetString("send-days")
 
 		if name == "" || accountsFlag == "" {
 			return fmt.Errorf("required flags: --name, --accounts")
@@ -551,6 +552,7 @@ var campaignCreateCmd = &cobra.Command{
 			LeadsInline:    leadsInline,
 			AccountEmails:  strings.Split(accountsFlag, ","),
 			StartDate:      startDate,
+			SendDays:       sendDays,
 		})
 		if err != nil {
 			return err
@@ -1515,6 +1517,7 @@ func init() {
 	campaignCreateCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads)")
 	campaignCreateCmd.Flags().String("accounts", "", "comma-separated account emails")
 	campaignCreateCmd.Flags().String("start-date", "", "start date (YYYY-MM-DD); default: tomorrow")
+	campaignCreateCmd.Flags().String("send-days", "", "campaign send days override: numbers (0=Sun,1=Mon,...,6=Sat) or names (mon,tue,wed)")
 	campaignPreviewCmd.Flags().Bool("render", false, "show rendered email content with templates filled in")
 	campaignPreviewCmd.Flags().String("lead", "", "show rendered preview for a specific lead email (use with --render)")
 	campaignUpdateCmd.Flags().String("sequence", "", "path to new sequence YAML file")
