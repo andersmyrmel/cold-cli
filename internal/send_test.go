@@ -51,12 +51,12 @@ func TestBuildRawMessage_Step1(t *testing.T) {
 
 func TestBuildRawMessage_FollowUp(t *testing.T) {
 	raw := BuildRawMessage(EmailParams{
-		FromName:  "Anders",
-		FromEmail: "anders@example.com",
-		ToEmail:   "john@acme.com",
-		Subject:   "Re: Quick question about Acme",
-		Body:      "Following up...",
-		InReplyTo: "<abc123@gmail.com>",
+		FromName:   "Anders",
+		FromEmail:  "anders@example.com",
+		ToEmail:    "john@acme.com",
+		Subject:    "Re: Quick question about Acme",
+		Body:       "Following up...",
+		InReplyTo:  "<abc123@gmail.com>",
 		References: "<abc123@gmail.com>",
 	})
 
@@ -234,7 +234,7 @@ func TestPrepareFollowUp_AlreadyHasRe(t *testing.T) {
 func TestMockGWS_SendEmail(t *testing.T) {
 	mock := &MockGWS{}
 
-	msgID, threadID, err := mock.SendEmail("a@x.com", "to@x.com", "raw-msg")
+	msgID, threadID, err := mock.SendEmail("a@x.com", "to@x.com", "raw-msg", "thread-123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -252,6 +252,9 @@ func TestMockGWS_SendEmail(t *testing.T) {
 	if mock.SentEmails[0].To != "to@x.com" {
 		t.Errorf("expected to to@x.com, got %s", mock.SentEmails[0].To)
 	}
+	if mock.SentEmails[0].ThreadID != "thread-123" {
+		t.Errorf("expected threadID thread-123, got %s", mock.SentEmails[0].ThreadID)
+	}
 }
 
 func TestPlainTextToHTML(t *testing.T) {
@@ -265,7 +268,7 @@ func TestPlainTextToHTML(t *testing.T) {
 		{"Hi\n\nMiddle\n\nBye", "<div>Hi<br><br>Middle<br><br>Bye</div>"},
 		{"", "<div></div>"},
 		{"Has <html> & \"quotes\"", "<div>Has &lt;html&gt; &amp; \"quotes\"</div>"},
-		{"\n\nLeading whitespace\n\n", "<div>Leading whitespace</div>"},       // trimmed
+		{"\n\nLeading whitespace\n\n", "<div>Leading whitespace</div>"},         // trimmed
 		{"Windows\r\nLine\r\nEndings", "<div>Windows<br>Line<br>Endings</div>"}, // CRLF
 		{"Sign off\nAnders\nCompany", "<div>Sign off<br>Anders<br>Company</div>"},
 	}
@@ -283,7 +286,7 @@ func TestMockGWS_SendError(t *testing.T) {
 		SendError: fmt.Errorf("auth expired"),
 	}
 
-	_, _, err := mock.SendEmail("a@x.com", "to@x.com", "raw-msg")
+	_, _, err := mock.SendEmail("a@x.com", "to@x.com", "raw-msg", "")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -301,7 +304,7 @@ func TestMockGWS_MessageIDValidation(t *testing.T) {
 
 	// MockGWS defaults to generating IDs — this tests the real GWSCLI behavior
 	// which checks for empty IDs. Here we test the mock works correctly.
-	msgID, _, err := mock.SendEmail("a@x.com", "to@x.com", "raw")
+	msgID, _, err := mock.SendEmail("a@x.com", "to@x.com", "raw", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

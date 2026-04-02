@@ -213,7 +213,7 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		rawMsg := BuildRawMessage(emailParams)
 
 		// Send via gws
-		msgID, threadID, err := cfg.GWS.SendEmail(account.Email, emailParams.ToEmail, rawMsg)
+		gmailMsgID, threadID, err := cfg.GWS.SendEmail(account.Email, emailParams.ToEmail, rawMsg, emailParams.ThreadID)
 		if err != nil {
 			errMsg := err.Error()
 			slog.Error("send failed",
@@ -226,7 +226,7 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		}
 
 		// Validate response
-		if msgID == "" || threadID == "" {
+		if gmailMsgID == "" || threadID == "" {
 			errMsg := "gws returned empty message_id or thread_id"
 			slog.Error(errMsg, "send_id", send.ID)
 			markSendFailed(cfg.DB, send, errMsg)
@@ -234,19 +234,31 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			continue
 		}
 
+		storedMessageID := gmailMsgID
+		sentMessage, err := cfg.GWS.GetMessage(account.Email, gmailMsgID)
+		if err != nil {
+			slog.Warn("failed to fetch sent message headers; falling back to Gmail API id",
+				"send_id", send.ID, "gmail_message_id", gmailMsgID, "error", err)
+		} else if rfcMessageID := extractRFCMessageID(sentMessage); rfcMessageID != "" {
+			storedMessageID = rfcMessageID
+		} else {
+			slog.Warn("sent message missing Message-ID header; falling back to Gmail API id",
+				"send_id", send.ID, "gmail_message_id", gmailMsgID)
+		}
+
 		// Mark sent
 		if _, err := cfg.DB.Exec(`UPDATE scheduled_sends SET status = 'sent', message_id = ?, sent_at = ?
-			WHERE id = ?`, msgID, now.UTC().Format(time.RFC3339), send.ID); err != nil {
+			WHERE id = ?`, storedMessageID, now.UTC().Format(time.RFC3339), send.ID); err != nil {
 			slog.Error("email sent but failed to mark as sent in DB",
-				"send_id", send.ID, "message_id", msgID, "error", err)
+				"send_id", send.ID, "message_id", storedMessageID, "error", err)
 		}
 
 		// Insert event
 		if _, err := cfg.DB.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
 			VALUES (?, ?, ?, 'sent', ?, ?, ?)`,
-			send.CampaignID, send.LeadID, send.AccountID, send.StepNumber, msgID, threadID); err != nil {
+			send.CampaignID, send.LeadID, send.AccountID, send.StepNumber, storedMessageID, threadID); err != nil {
 			slog.Error("failed to insert sent event",
-				"send_id", send.ID, "message_id", msgID, "error", err)
+				"send_id", send.ID, "message_id", storedMessageID, "error", err)
 		}
 
 		// If step 1: backfill thread_id and parent_message_id on future sends
@@ -254,7 +266,7 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			if _, err := cfg.DB.Exec(`UPDATE scheduled_sends
 				SET thread_id = ?, parent_message_id = ?
 				WHERE campaign_id = ? AND lead_id = ? AND step_number > 1 AND status = 'pending'`,
-				threadID, msgID, send.CampaignID, send.LeadID); err != nil {
+				threadID, storedMessageID, send.CampaignID, send.LeadID); err != nil {
 				slog.Error("failed to backfill thread info",
 					"send_id", send.ID, "campaign_id", send.CampaignID,
 					"lead_id", send.LeadID, "error", err)
@@ -508,6 +520,13 @@ func markSendStatus(db *sql.DB, sendID int64, status string, errorMsg string) {
 		slog.Error("failed to mark send status",
 			"send_id", sendID, "status", status, "error", err)
 	}
+}
+
+func extractRFCMessageID(msg *GWSMessage) string {
+	if msg == nil || msg.Headers == nil {
+		return ""
+	}
+	return strings.TrimSpace(msg.Headers["Message-ID"])
 }
 
 // FormatTickResult returns a human-readable summary of a tick result.

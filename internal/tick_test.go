@@ -272,8 +272,9 @@ func TestTick_Step1BackfillsThreadID(t *testing.T) {
 	insertPendingSend(t, db, campaignID, leadIDs[0], accountIDs[0], 2, now.Add(72*time.Hour))
 
 	mock := &MockGWS{
-		SendMsgID:    "msg-abc",
-		SendThreadID: "thread-xyz",
+		SendMsgID:        "gmail-msg-abc",
+		SendThreadID:     "thread-xyz",
+		SendRFCMessageID: "<sent-1@example.com>",
 	}
 
 	_, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
@@ -290,8 +291,16 @@ func TestTick_Step1BackfillsThreadID(t *testing.T) {
 	if threadID != "thread-xyz" {
 		t.Errorf("expected thread_id 'thread-xyz', got %q", threadID)
 	}
-	if parentMsgID != "msg-abc" {
-		t.Errorf("expected parent_message_id 'msg-abc', got %q", parentMsgID)
+	if parentMsgID != "<sent-1@example.com>" {
+		t.Errorf("expected parent_message_id '<sent-1@example.com>', got %q", parentMsgID)
+	}
+
+	var step1MessageID string
+	db.QueryRow(`SELECT message_id FROM scheduled_sends
+		WHERE campaign_id = ? AND lead_id = ? AND step_number = 1`,
+		campaignID, leadIDs[0]).Scan(&step1MessageID)
+	if step1MessageID != "<sent-1@example.com>" {
+		t.Errorf("expected step 1 message_id '<sent-1@example.com>', got %q", step1MessageID)
 	}
 }
 
@@ -938,6 +947,9 @@ steps:
 	msg := decodeRawMessage(t, mock.SentEmails[0].RawMsg)
 	if !strings.Contains(msg, "Subject: Re: Quick question about Acme") {
 		t.Errorf("expected follow-up subject to use rendered step-1 subject, got:\n%s", msg)
+	}
+	if mock.SentEmails[0].ThreadID != "thread-123" {
+		t.Errorf("expected send threadID 'thread-123', got %q", mock.SentEmails[0].ThreadID)
 	}
 	if !strings.Contains(msg, "In-Reply-To: <msg-1@example.com>") {
 		t.Errorf("expected In-Reply-To header, got:\n%s", msg)

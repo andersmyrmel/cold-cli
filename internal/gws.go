@@ -14,7 +14,7 @@ import (
 
 // GWSClient is the interface for Gmail operations via gws CLI.
 type GWSClient interface {
-	SendEmail(account, to, rawMsg string) (msgID, threadID string, err error)
+	SendEmail(account, to, rawMsg, threadID string) (msgID, sentThreadID string, err error)
 	ListMessages(account, query string) ([]GWSMessage, error)
 	GetMessage(account, msgID string) (*GWSMessage, error)
 }
@@ -48,9 +48,9 @@ type gwsListResponse struct {
 
 // gws get response (full format)
 type gwsGetResponse struct {
-	ID       string `json:"id"`
-	ThreadID string `json:"threadId"`
-	Snippet  string `json:"snippet"`
+	ID       string   `json:"id"`
+	ThreadID string   `json:"threadId"`
+	Snippet  string   `json:"snippet"`
 	LabelIDs []string `json:"labelIds"`
 	Payload  struct {
 		Headers []struct {
@@ -78,9 +78,12 @@ func (g *GWSCLI) SetConfigDir(account, configDir string) {
 	g.ConfigDirs[account] = configDir
 }
 
-// SendEmail sends an email via gws and returns the message ID and thread ID.
-func (g *GWSCLI) SendEmail(account, to, rawMsg string) (string, string, error) {
-	body := map[string]string{"raw": rawMsg}
+// SendEmail sends an email via gws and returns the Gmail message ID and thread ID.
+func (g *GWSCLI) SendEmail(account, to, rawMsg, threadID string) (string, string, error) {
+	body := map[string]any{"raw": rawMsg}
+	if threadID != "" {
+		body["threadId"] = threadID
+	}
 	bodyJSON, err := json.Marshal(body)
 	if err != nil {
 		return "", "", fmt.Errorf("marshaling send body: %w", err)
@@ -270,4 +273,3 @@ func GWSAuthLogin(configDir string) error {
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
-

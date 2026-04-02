@@ -22,39 +22,42 @@ type MockGWS struct {
 	SentEmails    []MockSentEmail
 	InboxMessages []GWSMessage
 
-	SendError    error
-	SendMsgID    string
-	SendThreadID string
-	ListError    error
-	GetError     error
+	SendError        error
+	SendMsgID        string
+	SendThreadID     string
+	SendRFCMessageID string
+	ListError        error
+	GetError         error
 }
 
 type MockSentEmail struct {
-	Account string
-	To      string
-	RawMsg  string
+	Account  string
+	To       string
+	RawMsg   string
+	ThreadID string
 }
 
-func (m *MockGWS) SendEmail(account, to, rawMsg string) (string, string, error) {
+func (m *MockGWS) SendEmail(account, to, rawMsg, threadID string) (string, string, error) {
 	if m.SendError != nil {
 		return "", "", m.SendError
 	}
 	m.SentEmails = append(m.SentEmails, MockSentEmail{
-		Account: account,
-		To:      to,
-		RawMsg:  rawMsg,
+		Account:  account,
+		To:       to,
+		RawMsg:   rawMsg,
+		ThreadID: threadID,
 	})
 
 	msgID := m.SendMsgID
 	if msgID == "" {
 		msgID = fmt.Sprintf("msg-%d", len(m.SentEmails))
 	}
-	threadID := m.SendThreadID
-	if threadID == "" {
-		threadID = fmt.Sprintf("thread-%d", len(m.SentEmails))
+	sentThreadID := m.SendThreadID
+	if sentThreadID == "" {
+		sentThreadID = fmt.Sprintf("thread-%d", len(m.SentEmails))
 	}
 
-	return msgID, threadID, nil
+	return msgID, sentThreadID, nil
 }
 
 func (m *MockGWS) ListMessages(account, query string) ([]GWSMessage, error) {
@@ -73,7 +76,17 @@ func (m *MockGWS) GetMessage(account, msgID string) (*GWSMessage, error) {
 			return &msg, nil
 		}
 	}
-	return nil, fmt.Errorf("message %s not found", msgID)
+	rfcMessageID := m.SendRFCMessageID
+	if rfcMessageID == "" {
+		rfcMessageID = fmt.Sprintf("<%s@mock.local>", msgID)
+	}
+	return &GWSMessage{
+		ID:       msgID,
+		ThreadID: m.SendThreadID,
+		Headers: map[string]string{
+			"Message-ID": rfcMessageID,
+		},
+	}, nil
 }
 
 // failFirstMockGWS fails the first SendEmail call, succeeds after.
@@ -81,7 +94,7 @@ type failFirstMockGWS struct {
 	callCount int
 }
 
-func (m *failFirstMockGWS) SendEmail(account, to, rawMsg string) (string, string, error) {
+func (m *failFirstMockGWS) SendEmail(account, to, rawMsg, threadID string) (string, string, error) {
 	m.callCount++
 	if m.callCount == 1 {
 		return "", "", fmt.Errorf("simulated gws failure")
