@@ -163,12 +163,14 @@ All commands support `--json` for programmatic use.
 
 All send times are pre-computed when you create a campaign. Each send becomes a row in SQLite with a specific `send_at` timestamp, assigned account, and variant. This means:
 
-- `campaign preview` shows the exact schedule before you activate
-- `tick` just queries for rows where `send_at <= now`
+- `campaign preview` shows the sender-capacity-aware schedule before you activate
+- schedules are rebalanced across `active` and `draft` campaigns that share an account
+- `tick` uses the same rebalance logic as preview before loading due rows
 - Agents can review and approve the full timeline
 - `campaign update --send-days/--send-window-*/--timezone` recalculates existing `pending` sends without touching `sent`, `failed`, `skipped`, or `cancelled` rows
 - For leads with no sent history, update recomputes the first pending send from `max(now, campaign start date)` under the new window/day/timezone rules, then chains later pending sends from that new anchor
 - For leads already in flight, update preserves sent history and only reschedules future pending sends
+- If a prior step is actually sent later than planned, future pending follow-ups are re-anchored from the actual `sent_at` so configured delays still hold
 
 ### Tick Engine
 
@@ -177,9 +179,12 @@ All send times are pre-computed when you create a campaign. Each send becomes a 
 1. Poll inbox for replies → match via In-Reply-To headers → pause lead
 2. Poll inbox for bounces → detect via thread matching → mark bounced
 3. Detect unsubscribe requests → auto-blacklist lead globally
-4. Find sends where `send_at <= now` and campaign is active
+4. Rebalance pending sends for the affected sender accounts using real daily-limit capacity
+5. Find sends where `send_at <= now` and campaign is active
+6. Re-check each pending row just before send so stale preloaded rows cannot fire
 5. Send each email via gws with 90-140 second random gaps
-6. Respect daily limits, send windows, and send days
+6. After each successful send, rebalance that sender again so future follow-ups chain from actual send time
+7. Respect daily limits, send windows, and send days
 
 Run it manually, via cron (`*/10 * * * *`), or have an agent call it. All tick activity is logged to `~/.cold-cli/tick.log` as structured JSON.
 

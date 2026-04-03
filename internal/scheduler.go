@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"database/sql"
 	"fmt"
 	"math/rand"
 	"os"
@@ -196,6 +197,442 @@ func ComputeSchedule(cfg ScheduleConfig) ([]ScheduledSendRow, error) {
 	}
 
 	return rows, nil
+}
+
+type campaignScheduleRules struct {
+	CampaignID      int64
+	SendWindowStart string
+	SendWindowEnd   string
+	SendDays        []time.Weekday
+	Timezone        *time.Location
+	WindowStartTOD  timeOfDay
+	WindowEndTOD    timeOfDay
+	StepByNumber    map[int]SequenceStep
+}
+
+type accountScheduleRow struct {
+	ID         int64
+	CampaignID int64
+	LeadID     int64
+	AccountID  int64
+	StepNumber int
+	Status     string
+	SendAt     time.Time
+	SentAt     time.Time
+	HasSentAt  bool
+}
+
+type leadScheduleQueue struct {
+	rules      *campaignScheduleRules
+	rows       []accountScheduleRow
+	nextIdx    int
+	nextAt     time.Time
+	hasNext    bool
+	anchorTime time.Time
+}
+
+type pendingScheduleCandidate struct {
+	queue *leadScheduleQueue
+	row   accountScheduleRow
+	at    time.Time
+}
+
+// RebalancePendingSchedules rewrites pending send_at timestamps for the affected
+// accounts so daily limits are respected across all active and draft campaigns.
+func RebalancePendingSchedules(db *sql.DB, accountIDs []int64) error {
+	accountIDs = uniqueSortedInt64s(accountIDs)
+	if len(accountIDs) == 0 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := rebalancePendingSchedulesTx(tx, accountIDs); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func rebalancePendingSchedulesTx(tx *sql.Tx, accountIDs []int64) error {
+	accountIDs = uniqueSortedInt64s(accountIDs)
+	if len(accountIDs) == 0 {
+		return nil
+	}
+
+	limits, err := loadAccountDailyLimitsTx(tx, accountIDs)
+	if err != nil {
+		return fmt.Errorf("loading account daily limits: %w", err)
+	}
+	if len(limits) == 0 {
+		return nil
+	}
+
+	rows, rulesByCampaign, err := loadAccountScheduleRowsTx(tx, accountIDs)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	usageByAccount, err := loadSentUsageByAccountTx(tx, accountIDs)
+	if err != nil {
+		return fmt.Errorf("loading sent usage: %w", err)
+	}
+
+	rowsByAccountLead := make(map[int64]map[string][]accountScheduleRow)
+	for _, row := range rows {
+		if _, ok := rowsByAccountLead[row.AccountID]; !ok {
+			rowsByAccountLead[row.AccountID] = map[string][]accountScheduleRow{}
+		}
+		key := scheduleLeadKey(row.CampaignID, row.LeadID)
+		rowsByAccountLead[row.AccountID][key] = append(rowsByAccountLead[row.AccountID][key], row)
+	}
+
+	for _, accountID := range accountIDs {
+		leadRows := rowsByAccountLead[accountID]
+		if len(leadRows) == 0 {
+			continue
+		}
+
+		var queues []*leadScheduleQueue
+		for _, rows := range leadRows {
+			rules := rulesByCampaign[rows[0].CampaignID]
+			queue, err := newLeadScheduleQueue(rows, rules)
+			if err != nil {
+				return err
+			}
+			if queue.hasNext {
+				queues = append(queues, queue)
+			}
+		}
+
+		usage := usageByAccount[accountID]
+		if usage == nil {
+			usage = map[string]int{}
+			usageByAccount[accountID] = usage
+		}
+
+		limit := limits[accountID]
+		if limit < 1 {
+			limit = 1
+		}
+
+		for {
+			var candidates []pendingScheduleCandidate
+			for _, queue := range queues {
+				if !queue.hasNext {
+					continue
+				}
+				candidates = append(candidates, pendingScheduleCandidate{
+					queue: queue,
+					row:   queue.rows[queue.nextIdx],
+					at:    queue.nextAt,
+				})
+			}
+			if len(candidates) == 0 {
+				break
+			}
+
+			sort.Slice(candidates, func(i, j int) bool {
+				left := candidates[i]
+				right := candidates[j]
+				if !left.at.Equal(right.at) {
+					return left.at.Before(right.at)
+				}
+				if !left.row.SendAt.Equal(right.row.SendAt) {
+					return left.row.SendAt.Before(right.row.SendAt)
+				}
+				if left.row.CampaignID != right.row.CampaignID {
+					return left.row.CampaignID < right.row.CampaignID
+				}
+				if left.row.LeadID != right.row.LeadID {
+					return left.row.LeadID < right.row.LeadID
+				}
+				if left.row.StepNumber != right.row.StepNumber {
+					return left.row.StepNumber < right.row.StepNumber
+				}
+				return left.row.ID < right.row.ID
+			})
+
+			candidate := candidates[0]
+			assignedAt := allocateDailyLimitedSendAt(candidate.at, candidate.queue.rules, usage, limit)
+			if _, err := tx.Exec(
+				"UPDATE scheduled_sends SET send_at = ? WHERE id = ?",
+				assignedAt.UTC().Format(time.RFC3339), candidate.row.ID,
+			); err != nil {
+				return fmt.Errorf("updating send %d: %w", candidate.row.ID, err)
+			}
+
+			if err := candidate.queue.advance(assignedAt); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func loadAccountDailyLimitsTx(tx *sql.Tx, accountIDs []int64) (map[int64]int, error) {
+	query, args := accountIDInClauseQuery(
+		"SELECT id, daily_limit FROM accounts WHERE id IN (%s)",
+		accountIDs,
+	)
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	limits := map[int64]int{}
+	for rows.Next() {
+		var accountID int64
+		var limit int
+		if err := rows.Scan(&accountID, &limit); err != nil {
+			return nil, err
+		}
+		limits[accountID] = limit
+	}
+	return limits, rows.Err()
+}
+
+func loadAccountScheduleRowsTx(tx *sql.Tx, accountIDs []int64) ([]accountScheduleRow, map[int64]*campaignScheduleRules, error) {
+	query, args := accountIDInClauseQuery(`
+		SELECT ss.id, ss.campaign_id, ss.lead_id, ss.account_id, ss.step_number, ss.status,
+			ss.send_at, COALESCE(ss.sent_at, ''), c.sequence_file, c.sequence_content,
+			c.send_window_start, c.send_window_end, c.send_days, c.timezone
+		FROM scheduled_sends ss
+		JOIN campaigns c ON c.id = ss.campaign_id
+		WHERE ss.account_id IN (%s)
+		  AND c.status IN ('active', 'draft')
+		ORDER BY ss.account_id, ss.campaign_id, ss.lead_id, ss.step_number, ss.id`,
+		accountIDs,
+	)
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	var scheduledRows []accountScheduleRow
+	rulesByCampaign := map[int64]*campaignScheduleRules{}
+	for rows.Next() {
+		var row accountScheduleRow
+		var sendAtStr, sentAtStr string
+		var seqFile, seqContent, sendWindowStart, sendWindowEnd, sendDaysStr, timezoneName string
+		if err := rows.Scan(
+			&row.ID, &row.CampaignID, &row.LeadID, &row.AccountID, &row.StepNumber, &row.Status,
+			&sendAtStr, &sentAtStr, &seqFile, &seqContent, &sendWindowStart, &sendWindowEnd, &sendDaysStr, &timezoneName,
+		); err != nil {
+			return nil, nil, err
+		}
+
+		row.SendAt, err = parseDBTimestamp(sendAtStr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parsing send_at for send %d: %w", row.ID, err)
+		}
+		if sentAtStr != "" {
+			row.SentAt, err = parseDBTimestamp(sentAtStr)
+			if err != nil {
+				return nil, nil, fmt.Errorf("parsing sent_at for send %d: %w", row.ID, err)
+			}
+			row.HasSentAt = true
+		}
+		scheduledRows = append(scheduledRows, row)
+
+		if _, ok := rulesByCampaign[row.CampaignID]; ok {
+			continue
+		}
+
+		seq, err := loadStoredCampaignSequence(seqFile, seqContent)
+		if err != nil {
+			return nil, nil, fmt.Errorf("loading sequence for campaign %d: %w", row.CampaignID, err)
+		}
+		sendDays, err := ParseSendDays(sendDaysStr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parsing send_days for campaign %d: %w", row.CampaignID, err)
+		}
+		tz, err := time.LoadLocation(timezoneName)
+		if err != nil {
+			return nil, nil, fmt.Errorf("loading timezone %q for campaign %d: %w", timezoneName, row.CampaignID, err)
+		}
+		windowStartTOD, err := parseTimeOfDay(sendWindowStart)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parsing send_window_start for campaign %d: %w", row.CampaignID, err)
+		}
+		windowEndTOD, err := parseTimeOfDay(sendWindowEnd)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parsing send_window_end for campaign %d: %w", row.CampaignID, err)
+		}
+
+		stepByNumber := make(map[int]SequenceStep, len(seq.Steps))
+		for _, step := range seq.Steps {
+			stepByNumber[step.Step] = step
+		}
+
+		rulesByCampaign[row.CampaignID] = &campaignScheduleRules{
+			CampaignID:      row.CampaignID,
+			SendWindowStart: sendWindowStart,
+			SendWindowEnd:   sendWindowEnd,
+			SendDays:        sendDays,
+			Timezone:        tz,
+			WindowStartTOD:  windowStartTOD,
+			WindowEndTOD:    windowEndTOD,
+			StepByNumber:    stepByNumber,
+		}
+	}
+
+	return scheduledRows, rulesByCampaign, rows.Err()
+}
+
+func loadSentUsageByAccountTx(tx *sql.Tx, accountIDs []int64) (map[int64]map[string]int, error) {
+	query, args := accountIDInClauseQuery(
+		"SELECT account_id, timestamp FROM events WHERE type = 'sent' AND account_id IN (%s)",
+		accountIDs,
+	)
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	usage := map[int64]map[string]int{}
+	for rows.Next() {
+		var accountID int64
+		var timestamp string
+		if err := rows.Scan(&accountID, &timestamp); err != nil {
+			return nil, err
+		}
+
+		sentAt, err := parseDBTimestamp(timestamp)
+		if err != nil {
+			return nil, fmt.Errorf("parsing sent event timestamp %q: %w", timestamp, err)
+		}
+
+		if usage[accountID] == nil {
+			usage[accountID] = map[string]int{}
+		}
+		usage[accountID][dailyLimitDateKey(sentAt)]++
+	}
+
+	return usage, rows.Err()
+}
+
+func newLeadScheduleQueue(rows []accountScheduleRow, rules *campaignScheduleRules) (*leadScheduleQueue, error) {
+	queue := &leadScheduleQueue{
+		rules:   rules,
+		rows:    rows,
+		nextIdx: -1,
+	}
+
+	var prevAnchor time.Time
+	var havePrev bool
+	for idx, row := range rows {
+		if row.HasSentAt {
+			prevAnchor = row.SentAt.In(rules.Timezone)
+			havePrev = true
+			continue
+		}
+		if row.Status != "pending" {
+			continue
+		}
+
+		nextAt, err := firstPendingAnchorForRow(row, prevAnchor, havePrev, rules)
+		if err != nil {
+			return nil, err
+		}
+		queue.nextIdx = idx
+		queue.nextAt = nextAt
+		queue.anchorTime = nextAt
+		queue.hasNext = true
+		return queue, nil
+	}
+
+	return queue, nil
+}
+
+func firstPendingAnchorForRow(row accountScheduleRow, prevAnchor time.Time, havePrev bool, rules *campaignScheduleRules) (time.Time, error) {
+	if !havePrev {
+		return clampToWindow(row.SendAt.In(rules.Timezone), rules.WindowStartTOD, rules.WindowEndTOD, rules.SendDays, rules.Timezone), nil
+	}
+
+	step, ok := rules.StepByNumber[row.StepNumber]
+	if !ok {
+		return time.Time{}, fmt.Errorf("campaign %d is missing step %d", row.CampaignID, row.StepNumber)
+	}
+	return nextScheduledTime(prevAnchor, step.Delay, rules.WindowStartTOD, rules.WindowEndTOD, rules.SendDays, rules.Timezone), nil
+}
+
+func (q *leadScheduleQueue) advance(assignedAt time.Time) error {
+	q.anchorTime = assignedAt.In(q.rules.Timezone)
+	for idx := q.nextIdx + 1; idx < len(q.rows); idx++ {
+		row := q.rows[idx]
+		if row.Status != "pending" {
+			continue
+		}
+
+		step, ok := q.rules.StepByNumber[row.StepNumber]
+		if !ok {
+			return fmt.Errorf("campaign %d is missing step %d", row.CampaignID, row.StepNumber)
+		}
+
+		q.nextIdx = idx
+		q.nextAt = nextScheduledTime(q.anchorTime, step.Delay, q.rules.WindowStartTOD, q.rules.WindowEndTOD, q.rules.SendDays, q.rules.Timezone)
+		q.hasNext = true
+		return nil
+	}
+
+	q.hasNext = false
+	return nil
+}
+
+func allocateDailyLimitedSendAt(earliest time.Time, rules *campaignScheduleRules, usage map[string]int, dailyLimit int) time.Time {
+	sendAt := clampToWindow(earliest.In(rules.Timezone), rules.WindowStartTOD, rules.WindowEndTOD, rules.SendDays, rules.Timezone)
+	for usage[dailyLimitDateKey(sendAt)] >= dailyLimit {
+		sendAt = nextScheduledTime(sendAt, 1, rules.WindowStartTOD, rules.WindowEndTOD, rules.SendDays, rules.Timezone)
+	}
+	usage[dailyLimitDateKey(sendAt)]++
+	return sendAt
+}
+
+func accountIDInClauseQuery(format string, accountIDs []int64) (string, []any) {
+	placeholders := make([]string, len(accountIDs))
+	args := make([]any, len(accountIDs))
+	for i, accountID := range accountIDs {
+		placeholders[i] = "?"
+		args[i] = accountID
+	}
+	return fmt.Sprintf(format, strings.Join(placeholders, ",")), args
+}
+
+func uniqueSortedInt64s(values []int64) []int64 {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[int64]bool{}
+	var unique []int64
+	for _, value := range values {
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		unique = append(unique, value)
+	}
+	sort.Slice(unique, func(i, j int) bool { return unique[i] < unique[j] })
+	return unique
+}
+
+func scheduleLeadKey(campaignID, leadID int64) string {
+	return fmt.Sprintf("%d:%d", campaignID, leadID)
+}
+
+func dailyLimitDateKey(t time.Time) string {
+	return t.UTC().Format("2006-01-02")
 }
 
 // timeOfDay represents an hour:minute pair.

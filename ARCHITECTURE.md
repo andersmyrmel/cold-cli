@@ -152,11 +152,19 @@ tick starts
 │      GROUP BY account_id
 │      (uses config default_timezone for correct day boundary)
 │
-├─ 4. SELECT * FROM scheduled_sends
-│     WHERE send_at <= now AND status = 'pending'
-│     (filter: account under daily limit, within send window + send day)
+├─ 4. Rebalance pending scheduled_sends for active/draft campaigns
+│      sharing each active account
+│      - use account daily_limit capacity derived from sent events
+│      - preserve step delays per lead
+│      - for in-flight leads, anchor future follow-ups from actual sent_at
 │
-├─ 5. For each send:
+├─ 5. SELECT * FROM scheduled_sends
+│     WHERE send_at <= now AND status = 'pending'
+│     (campaign must be active; send window + send day still checked at tick)
+│
+├─ 6. For each send:
+│      ├─ re-read scheduled_sends row before sending
+│      │   (skip if no longer pending or rebalanced into the future)
 │      ├─ load sequence from DB content (fallback to file for pre-migration)
 │      ├─ load lead fields including custom_fields JSON
 │      ├─ render template (strings.ReplaceAll)
@@ -170,22 +178,24 @@ tick starts
 │      ├─ validate message_id/thread_id returned (else mark failed)
 │      ├─ if step 1: backfill thread_id + parent_message_id
 │      │   onto all future scheduled_sends for this lead+campaign
+│      ├─ rebalance that account again so future pending sends
+│      │   inherit the actual sent_at anchor
 │      ├─ increment in-memory daily count
 │      └─ sleep 90-140 sec (random)
 │
-├─ 6. Log summary to tick.log, print human-readable summary
+├─ 7. Log summary to tick.log, print human-readable summary
 │
 └─ release lock
 ```
 
 ## Eager Scheduling
 
-All send times pre-computed at campaign creation. Each send = a `scheduled_sends` row.
+All send times are stored eagerly in `scheduled_sends`, then deterministically rebalanced for sender capacity whenever schedule reality changes. Each send remains a concrete row with a concrete `send_at`.
 
 Enables:
-- `campaign preview` to show full schedule before activating
+- `campaign preview` to show a realistic, sender-capacity-aware schedule before activating
 - Agent review of the timeline
-- tick is trivially simple: `SELECT WHERE send_at <= now AND status = 'pending'`
+- tick, preview, and daily-limit warnings all use the same rebalance logic
 - `campaign update` can recalculate `pending` rows in place when send days/window/timezone change
 - Unsent leads get a fresh first-pending anchor from `max(now, start_date)` under the updated window/day/timezone rules; in-flight leads keep their sent-history anchor
 
@@ -198,11 +208,12 @@ At `campaign create` (or `clone` / `add-leads`):
 4. Assign variants (round-robin across leads for each step that has variants)
 5. Compute `send_at` for each lead+step:
    - Step 1: campaign start time + offset based on lead position
-   - Step N: previous step's send_at + delay days
+   - Step N: previous step's current anchor + delay days
    - Clamp to send window (start/end hours)
    - Skip non-send days (e.g., weekends)
    - Add jitter within min/max gap range
 6. INSERT all `scheduled_sends` rows with status='pending'
+7. Rebalance pending sends across all active/draft campaigns sharing each account so daily limits are already reflected in preview
 
 ### Catch-Up After Laptop Sleep
 
@@ -210,7 +221,7 @@ tick processes all overdue sends (`send_at <= now`) with normal 90-140 sec gaps.
 
 ## Account Rotation
 
-Round-robin assignment at schedule time (not send time). All steps for a given lead use the same account (required for Gmail thread continuity). Assignment is deterministic and visible in `campaign preview`.
+Round-robin assignment at initial schedule time (not dynamic per send). All steps for a given lead use the same account (required for Gmail thread continuity). Account-aware rebalance can move timestamps across days, but never reassigns a lead to a different account.
 
 ## Reply/Bounce/Unsubscribe Handling
 
@@ -219,6 +230,7 @@ Round-robin assignment at schedule time (not send time). All steps for a given l
 - **Unsubscribe detected** (keyword matching: "unsubscribe", "remove me", "opt out", etc.) → lead blacklisted globally, all pending sends across all campaigns cancelled, `'unsubscribe'` event recorded
 - **Bounce detected** → `leads.global_status = 'bounced'` (global), `campaign_leads.status = 'bounced'`, pending sends skipped
 - Daily send counts derived from `COUNT(*) FROM events WHERE type='sent'` with timezone-aware day boundary
+- When a send drifts later than planned, future pending rows for that lead are re-anchored from actual `sent_at`, not the stale planned time
 
 ## Template Engine
 
@@ -394,5 +406,5 @@ All commands support `--json` for agent consumption. No interactive prompts, eve
 | 22 | List-Unsubscribe header | Opt-in (off by default) | Cold email should look like 1-to-1, not marketing |
 | 23 | Domain diagnostics | DNS + WHOIS, no external APIs | Works offline, no rate limits on DNS |
 | 24 | Campaign resolution | Accept name or numeric ID | Users instinctively use IDs from `campaign list` |
-| 25 | Preview warnings | Show daily limit overflow inline | Only warn when sends exceed limit, no noise otherwise |
+| 25 | Preview warnings | Run the same rebalance as preview/tick before warning | Warning output matches real sender-capacity schedule |
 | 26 | Account re-add | Reactivate removed accounts on `add` | Remove shouldn't be a permanent one-way door |

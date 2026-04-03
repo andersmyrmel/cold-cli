@@ -57,7 +57,8 @@ func WriteDefaultConfig(path string) error {
 	content := `# cold-cli configuration
 # These are defaults for new campaigns. Per-account daily_limit is set via:
 #   cold-cli account add <email> --daily-limit N
-# The account's daily_limit is the one enforced at send time.
+# The account's daily_limit is the one used by schedule rebalance, preview,
+# warnings, and tick. Sent counts still come from the events table.
 
 default_timezone: America/New_York
 default_daily_limit: 50

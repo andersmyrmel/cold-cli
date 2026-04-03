@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -206,6 +207,89 @@ func TestGetDailyLimitWarnings_NoWarnings(t *testing.T) {
 	}
 	if len(warnings) != 0 {
 		t.Errorf("expected 0 warnings, got %d", len(warnings))
+	}
+}
+
+func TestGetCampaignPreview_RebalancesStaleRowsUsingTickLogic(t *testing.T) {
+	db := testDB(t)
+
+	seqYAML := `name: Test
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Step 1"
+`
+
+	db.Exec("INSERT INTO accounts (id, email, daily_limit) VALUES (1, 'sender@x.com', 1)")
+	db.Exec(`INSERT INTO campaigns (id, name, status, sequence_file, sequence_content, send_window_start, send_window_end, send_days, timezone)
+		VALUES (1, 'campaign-a', 'active', 'seq.yml', ?, '09:00', '17:00', '0,1,2,3,4,5,6', 'UTC')`, seqYAML)
+	db.Exec(`INSERT INTO campaigns (id, name, status, sequence_file, sequence_content, send_window_start, send_window_end, send_days, timezone)
+		VALUES (2, 'campaign-b', 'active', 'seq.yml', ?, '09:00', '17:00', '0,1,2,3,4,5,6', 'UTC')`, seqYAML)
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (2, 1)")
+	db.Exec("INSERT INTO leads (id, email, first_name, domain) VALUES (1, 'a@x.com', 'Alice', 'x.com')")
+	db.Exec("INSERT INTO leads (id, email, first_name, domain) VALUES (2, 'b@x.com', 'Bob', 'x.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (2, 2, 'active')")
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at, status)
+		VALUES (1, 1, 1, 1, 0, '2026-04-07T09:00:00Z', 'pending')`)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at, status)
+		VALUES (2, 2, 1, 1, 0, '2026-04-07T09:00:00Z', 'pending')`)
+
+	_, _, preview, err := GetCampaignPreview(db, "campaign-b")
+	if err != nil {
+		t.Fatalf("previewing campaign-b: %v", err)
+	}
+	if len(preview) != 1 {
+		t.Fatalf("expected 1 preview row, got %d", len(preview))
+	}
+	if preview[0].SendAt != "2026-04-08T09:00:00Z" {
+		t.Fatalf("expected preview rebalance to defer to 2026-04-08T09:00:00Z, got %q", preview[0].SendAt)
+	}
+}
+
+func TestGetDailyLimitWarnings_MatchesRebalancedPreview(t *testing.T) {
+	db := testDB(t)
+
+	seqYAML := `name: Test
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Step 1"
+`
+
+	db.Exec("INSERT INTO accounts (id, email, daily_limit) VALUES (1, 'sender@x.com', 1)")
+	db.Exec(`INSERT INTO campaigns (id, name, status, sequence_file, sequence_content, send_window_start, send_window_end, send_days, timezone)
+		VALUES (1, 'campaign-a', 'draft', 'seq.yml', ?, '09:00', '17:00', '0,1,2,3,4,5,6', 'UTC')`, seqYAML)
+	db.Exec(`INSERT INTO campaigns (id, name, status, sequence_file, sequence_content, send_window_start, send_window_end, send_days, timezone)
+		VALUES (2, 'campaign-b', 'draft', 'seq.yml', ?, '09:00', '17:00', '0,1,2,3,4,5,6', 'UTC')`, seqYAML)
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (2, 1)")
+	db.Exec("INSERT INTO leads (id, email, first_name, domain) VALUES (1, 'a@x.com', 'Alice', 'x.com')")
+	db.Exec("INSERT INTO leads (id, email, first_name, domain) VALUES (2, 'b@x.com', 'Bob', 'x.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (2, 2, 'active')")
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at, status)
+		VALUES (1, 1, 1, 1, 0, '2026-04-07T09:00:00Z', 'pending')`)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at, status)
+		VALUES (2, 2, 1, 1, 0, '2026-04-07T09:00:00Z', 'pending')`)
+
+	warnings, err := GetDailyLimitWarnings(db)
+	if err != nil {
+		t.Fatalf("getting daily limit warnings: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected warnings to reflect rebalanced schedule and be empty, got %+v", warnings)
+	}
+
+	_, _, preview, err := GetCampaignPreview(db, "campaign-b")
+	if err != nil {
+		t.Fatalf("previewing campaign-b: %v", err)
+	}
+	if len(preview) != 1 || preview[0].SendAt != "2026-04-08T09:00:00Z" {
+		t.Fatalf("expected preview to match warning-rebalanced schedule, got %+v", preview)
 	}
 }
 
@@ -1218,6 +1302,174 @@ func TestCreateCampaign_SendDaysOverride(t *testing.T) {
 	db.QueryRow("SELECT send_at FROM scheduled_sends WHERE campaign_id = ?", result.ID).Scan(&sendAt)
 	if !strings.Contains(sendAt, "2026-06-13") {
 		t.Errorf("expected send_at on Saturday 2026-06-13 from the override, got %q", sendAt)
+	}
+}
+
+func TestCreateCampaign_RebalancesAcrossCampaignsForAccountDailyLimit(t *testing.T) {
+	db := testDB(t)
+	tmpDir := t.TempDir()
+	t.Setenv("COLD_CLI_DATA_DIR", tmpDir)
+
+	origNow := timeNow
+	timeNow = func() time.Time { return time.Date(2026, time.April, 7, 9, 0, 0, 0, time.UTC) }
+	t.Cleanup(func() { timeNow = origNow })
+
+	os.WriteFile(tmpDir+"/config.yml", []byte("default_timezone: UTC\ndefault_daily_limit: 1\nmin_gap_seconds: 0\nmax_gap_seconds: 0\nsend_window_start: \"09:00\"\nsend_window_end: \"17:00\"\nsend_days: \"0,1,2,3,4,5,6\"\n"), 0644)
+
+	seqFile := tmpDir + "/seq.yml"
+	os.WriteFile(seqFile, []byte("name: Test\nsteps:\n  - step: 1\n    delay: 0\n    subject: \"Hi {{first_name}}\"\n    body: \"Hello {{first_name}}\"\n"), 0644)
+
+	leads1 := tmpDir + "/leads-1.csv"
+	os.WriteFile(leads1, []byte("email,first_name\na@x.com,Alice\n"), 0644)
+	leads2 := tmpDir + "/leads-2.csv"
+	os.WriteFile(leads2, []byte("email,first_name\nb@x.com,Bob\n"), 0644)
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 1)")
+
+	if _, err := CreateCampaign(db, CreateCampaignOpts{
+		Name:          "campaign-a",
+		SequenceFile:  seqFile,
+		LeadsFile:     leads1,
+		AccountEmails: []string{"sender@x.com"},
+	}); err != nil {
+		t.Fatalf("creating first campaign: %v", err)
+	}
+
+	if _, err := CreateCampaign(db, CreateCampaignOpts{
+		Name:          "campaign-b",
+		SequenceFile:  seqFile,
+		LeadsFile:     leads2,
+		AccountEmails: []string{"sender@x.com"},
+	}); err != nil {
+		t.Fatalf("creating second campaign: %v", err)
+	}
+
+	var firstSendAt, secondSendAt string
+	db.QueryRow("SELECT send_at FROM scheduled_sends WHERE campaign_id = 1").Scan(&firstSendAt)
+	db.QueryRow("SELECT send_at FROM scheduled_sends WHERE campaign_id = 2").Scan(&secondSendAt)
+
+	if firstSendAt != "2026-04-07T09:00:00Z" {
+		t.Fatalf("expected first campaign on 2026-04-07T09:00:00Z, got %q", firstSendAt)
+	}
+	if secondSendAt != "2026-04-08T09:00:00Z" {
+		t.Fatalf("expected second campaign to defer to 2026-04-08T09:00:00Z, got %q", secondSendAt)
+	}
+}
+
+func TestGetCampaignPreview_ShowsAccountAwareDeferredSchedule(t *testing.T) {
+	db := testDB(t)
+	tmpDir := t.TempDir()
+	t.Setenv("COLD_CLI_DATA_DIR", tmpDir)
+
+	origNow := timeNow
+	timeNow = func() time.Time { return time.Date(2026, time.April, 7, 9, 0, 0, 0, time.UTC) }
+	t.Cleanup(func() { timeNow = origNow })
+
+	os.WriteFile(tmpDir+"/config.yml", []byte("default_timezone: UTC\ndefault_daily_limit: 1\nmin_gap_seconds: 0\nmax_gap_seconds: 0\nsend_window_start: \"09:00\"\nsend_window_end: \"17:00\"\nsend_days: \"0,1,2,3,4,5,6\"\n"), 0644)
+
+	seqFile := tmpDir + "/seq.yml"
+	os.WriteFile(seqFile, []byte("name: Test\nsteps:\n  - step: 1\n    delay: 0\n    subject: \"Hi {{first_name}}\"\n    body: \"Hello {{first_name}}\"\n"), 0644)
+
+	leads1 := tmpDir + "/leads-1.csv"
+	os.WriteFile(leads1, []byte("email,first_name\na@x.com,Alice\n"), 0644)
+	leads2 := tmpDir + "/leads-2.csv"
+	os.WriteFile(leads2, []byte("email,first_name\nb@x.com,Bob\n"), 0644)
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 1)")
+
+	if _, err := CreateCampaign(db, CreateCampaignOpts{
+		Name:          "campaign-a",
+		SequenceFile:  seqFile,
+		LeadsFile:     leads1,
+		AccountEmails: []string{"sender@x.com"},
+	}); err != nil {
+		t.Fatalf("creating first campaign: %v", err)
+	}
+	if _, err := CreateCampaign(db, CreateCampaignOpts{
+		Name:          "campaign-b",
+		SequenceFile:  seqFile,
+		LeadsFile:     leads2,
+		AccountEmails: []string{"sender@x.com"},
+	}); err != nil {
+		t.Fatalf("creating second campaign: %v", err)
+	}
+
+	_, _, preview, err := GetCampaignPreview(db, "campaign-b")
+	if err != nil {
+		t.Fatalf("previewing second campaign: %v", err)
+	}
+	if len(preview) != 1 {
+		t.Fatalf("expected 1 preview row, got %d", len(preview))
+	}
+	if preview[0].SendAt != "2026-04-08T09:00:00Z" {
+		t.Fatalf("expected preview send_at 2026-04-08T09:00:00Z, got %q", preview[0].SendAt)
+	}
+}
+
+func TestCreateCampaign_TueThuCadencePreservedUnderDailyLimit(t *testing.T) {
+	db := testDB(t)
+	tmpDir := t.TempDir()
+	t.Setenv("COLD_CLI_DATA_DIR", tmpDir)
+
+	origNow := timeNow
+	timeNow = func() time.Time { return time.Date(2026, time.April, 7, 9, 0, 0, 0, time.UTC) }
+	t.Cleanup(func() { timeNow = origNow })
+
+	os.WriteFile(tmpDir+"/config.yml", []byte("default_timezone: UTC\ndefault_daily_limit: 1\nmin_gap_seconds: 0\nmax_gap_seconds: 0\nsend_window_start: \"09:00\"\nsend_window_end: \"17:00\"\nsend_days: \"2,3,4\"\n"), 0644)
+
+	seqFile := tmpDir + "/seq.yml"
+	os.WriteFile(seqFile, []byte("name: Test\nsteps:\n  - step: 1\n    delay: 0\n    subject: \"Hi {{first_name}}\"\n    body: \"Step 1\"\n  - step: 2\n    delay: 4\n    body: \"Step 2\"\n  - step: 3\n    delay: 7\n    body: \"Step 3\"\n"), 0644)
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 1)")
+
+	for i, lead := range []string{"alice", "bob", "carol"} {
+		leadsFile := tmpDir + fmt.Sprintf("/leads-%d.csv", i)
+		os.WriteFile(leadsFile, []byte(fmt.Sprintf("email,first_name\n%s@x.com,%s\n", lead, strings.Title(lead))), 0644)
+		if _, err := CreateCampaign(db, CreateCampaignOpts{
+			Name:          fmt.Sprintf("campaign-%d", i+1),
+			SequenceFile:  seqFile,
+			LeadsFile:     leadsFile,
+			AccountEmails: []string{"sender@x.com"},
+		}); err != nil {
+			t.Fatalf("creating campaign %d: %v", i+1, err)
+		}
+	}
+
+	rows, err := db.Query(`
+		SELECT ss.step_number, ss.send_at
+		FROM scheduled_sends ss
+		ORDER BY ss.step_number, ss.send_at, ss.campaign_id`)
+	if err != nil {
+		t.Fatalf("querying schedule: %v", err)
+	}
+	defer rows.Close()
+
+	expected := map[int][]string{
+		1: {"2026-04-07T09:00:00Z", "2026-04-08T09:00:00Z", "2026-04-09T09:00:00Z"},
+		2: {"2026-04-14T09:00:00Z", "2026-04-15T09:00:00Z", "2026-04-16T09:00:00Z"},
+		3: {"2026-04-21T09:00:00Z", "2026-04-22T09:00:00Z", "2026-04-23T09:00:00Z"},
+	}
+
+	actual := map[int][]string{}
+	for rows.Next() {
+		var stepNumber int
+		var sendAt string
+		if err := rows.Scan(&stepNumber, &sendAt); err != nil {
+			t.Fatalf("scanning schedule row: %v", err)
+		}
+		actual[stepNumber] = append(actual[stepNumber], sendAt)
+	}
+
+	for stepNumber, want := range expected {
+		got := actual[stepNumber]
+		if len(got) != len(want) {
+			t.Fatalf("step %d: expected %d sends, got %d", stepNumber, len(want), len(got))
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("step %d slot %d: expected %s, got %s", stepNumber, i, want[i], got[i])
+			}
+		}
 	}
 }
 

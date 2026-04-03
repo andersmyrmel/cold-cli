@@ -258,8 +258,22 @@ func TestTick_DailyLimitEnforcement(t *testing.T) {
 	if result.Sent != 1 {
 		t.Errorf("expected 1 sent, got %d", result.Sent)
 	}
-	if result.Skipped != 1 {
-		t.Errorf("expected 1 skipped (daily limit), got %d", result.Skipped)
+	if result.Skipped != 0 {
+		t.Errorf("expected 0 skipped after proactive rebalance, got %d", result.Skipped)
+	}
+
+	var secondStatus, secondSendAt string
+	db.QueryRow("SELECT status, send_at FROM scheduled_sends WHERE lead_id = ? AND campaign_id = ?", leadIDs[1], campaignID).
+		Scan(&secondStatus, &secondSendAt)
+	if secondStatus != "pending" {
+		t.Fatalf("expected second send to remain pending, got %q", secondStatus)
+	}
+	movedAt, err := parseDBTimestamp(secondSendAt)
+	if err != nil {
+		t.Fatalf("parsing rescheduled send_at: %v", err)
+	}
+	if !movedAt.After(now) {
+		t.Fatalf("expected second send to be deferred after %s, got %s", now.Format(time.RFC3339), secondSendAt)
 	}
 }
 
@@ -301,6 +315,69 @@ func TestTick_Step1BackfillsThreadID(t *testing.T) {
 		campaignID, leadIDs[0]).Scan(&step1MessageID)
 	if step1MessageID != "<sent-1@example.com>" {
 		t.Errorf("expected step 1 message_id '<sent-1@example.com>', got %q", step1MessageID)
+	}
+}
+
+func TestTick_RebalancesFollowUpsFromActualSentTime(t *testing.T) {
+	db := testDB(t)
+	now := time.Date(2026, time.April, 8, 9, 0, 0, 0, time.UTC)
+
+	seqYAML := `name: Test
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Step 1"
+  - step: 2
+    delay: 4
+    body: "Step 2"
+  - step: 3
+    delay: 7
+    body: "Step 3"
+`
+
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 10)")
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content, send_window_start, send_window_end, send_days, timezone)
+		VALUES ('delayed', 'active', 'seq.yml', ?, '09:00', '17:00', '0,1,2,3,4,5,6', 'UTC')`, seqYAML)
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('alice@x.com', 'Alice', 'Acme', 'x.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+
+	insertPendingSend(t, db, 1, 1, 1, 1, now.Add(-24*time.Hour))
+	insertPendingSend(t, db, 1, 1, 1, 2, now.Add(3*24*time.Hour))
+	insertPendingSend(t, db, 1, 1, 1, 3, now.Add(10*24*time.Hour))
+
+	mock := &MockGWS{
+		SendMsgID:        "gmail-msg-1",
+		SendThreadID:     "thread-1",
+		SendRFCMessageID: "<sent-1@example.com>",
+	}
+
+	result, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+	if result.Sent != 1 {
+		t.Fatalf("expected 1 sent, got %d", result.Sent)
+	}
+
+	var step2SendAt, step3SendAt, threadID, parentMessageID string
+	db.QueryRow("SELECT send_at, thread_id, parent_message_id FROM scheduled_sends WHERE campaign_id = 1 AND lead_id = 1 AND step_number = 2").
+		Scan(&step2SendAt, &threadID, &parentMessageID)
+	db.QueryRow("SELECT send_at FROM scheduled_sends WHERE campaign_id = 1 AND lead_id = 1 AND step_number = 3").
+		Scan(&step3SendAt)
+
+	if step2SendAt != "2026-04-12T09:00:00Z" {
+		t.Fatalf("expected step 2 to move to 2026-04-12T09:00:00Z, got %q", step2SendAt)
+	}
+	if step3SendAt != "2026-04-19T09:00:00Z" {
+		t.Fatalf("expected step 3 to chain from the moved step 2, got %q", step3SendAt)
+	}
+	if threadID != "thread-1" {
+		t.Fatalf("expected thread_id 'thread-1', got %q", threadID)
+	}
+	if parentMessageID != "<sent-1@example.com>" {
+		t.Fatalf("expected parent_message_id '<sent-1@example.com>', got %q", parentMessageID)
 	}
 }
 

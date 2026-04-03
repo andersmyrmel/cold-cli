@@ -95,9 +95,15 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 	// Build account lookup
 	accountMap := map[int64]Account{}
 	dailyLimits := map[int64]int{}
+	var accountIDs []int64
 	for _, a := range accounts {
 		accountMap[a.ID] = a
 		dailyLimits[a.ID] = a.DailyLimit
+		accountIDs = append(accountIDs, a.ID)
+	}
+
+	if err := RebalancePendingSchedules(cfg.DB, accountIDs); err != nil {
+		return nil, fmt.Errorf("rebalancing pending schedules: %w", err)
 	}
 
 	// 4. Find due sends from active campaigns
@@ -120,8 +126,23 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 
 	// 6. Send loop
 	for i, send := range dueSends {
+		currentSend, currentSendAt, ok, err := refreshPendingSend(cfg.DB, send)
+		if err != nil {
+			return nil, fmt.Errorf("refreshing pending send %d: %w", send.ID, err)
+		}
+		if !ok {
+			continue
+		}
+		if currentSendAt.After(now) && !cfg.SendNow {
+			continue
+		}
+		send = currentSend
+
 		// Check daily limit
 		if dailyCounts[send.AccountID] >= dailyLimits[send.AccountID] {
+			if err := RebalancePendingSchedules(cfg.DB, []int64{send.AccountID}); err != nil {
+				return nil, fmt.Errorf("rebalancing account %d after daily limit hit: %w", send.AccountID, err)
+			}
 			result.Skipped++
 			continue
 		}
@@ -273,6 +294,10 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			}
 		}
 
+		if err := RebalancePendingSchedules(cfg.DB, []int64{send.AccountID}); err != nil {
+			return nil, fmt.Errorf("rebalancing account %d after send: %w", send.AccountID, err)
+		}
+
 		dailyCounts[send.AccountID]++
 		result.Sent++
 
@@ -412,6 +437,39 @@ func loadAllPendingSends(db *sql.DB) ([]dueSend, error) {
 		sends = append(sends, s)
 	}
 	return sends, nil
+}
+
+func refreshPendingSend(db *sql.DB, send dueSend) (dueSend, time.Time, bool, error) {
+	var status string
+	var sendAtStr string
+	var campaignStatus string
+	var threadID, parentMessageID string
+	err := db.QueryRow(`
+		SELECT ss.status, ss.send_at, c.status, ss.thread_id, ss.parent_message_id
+		FROM scheduled_sends ss
+		JOIN campaigns c ON c.id = ss.campaign_id
+		WHERE ss.id = ?`,
+		send.ID,
+	).Scan(&status, &sendAtStr, &campaignStatus, &threadID, &parentMessageID)
+	if err == sql.ErrNoRows {
+		return dueSend{}, time.Time{}, false, nil
+	}
+	if err != nil {
+		return dueSend{}, time.Time{}, false, err
+	}
+
+	sendAt, err := parseDBTimestamp(sendAtStr)
+	if err != nil {
+		return dueSend{}, time.Time{}, false, err
+	}
+
+	if status != "pending" || campaignStatus != "active" {
+		return dueSend{}, sendAt, false, nil
+	}
+
+	send.ThreadID = threadID
+	send.ParentMessageID = parentMessageID
+	return send, sendAt, true, nil
 }
 
 func isInSendWindow(db *sql.DB, campaignID int64, now time.Time) bool {

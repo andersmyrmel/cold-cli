@@ -3,6 +3,7 @@ package internal
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -628,6 +629,111 @@ func TestCampaignStateTransitions_DB(t *testing.T) {
 	affected, _ := res.RowsAffected()
 	if affected != 0 {
 		t.Error("should not transition active → draft via paused check")
+	}
+}
+
+func TestRebalancePendingSchedules_Idempotent(t *testing.T) {
+	db := testDB(t)
+
+	seqYAML := `name: Test
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Step 1"
+`
+
+	db.Exec("INSERT INTO accounts (id, email, daily_limit) VALUES (1, 'sender@x.com', 1)")
+	db.Exec(`INSERT INTO campaigns (id, name, status, sequence_file, sequence_content, send_window_start, send_window_end, send_days, timezone)
+		VALUES (1, 'campaign-a', 'draft', 'seq.yml', ?, '09:00', '17:00', '0,1,2,3,4,5,6', 'UTC')`, seqYAML)
+	db.Exec(`INSERT INTO campaigns (id, name, status, sequence_file, sequence_content, send_window_start, send_window_end, send_days, timezone)
+		VALUES (2, 'campaign-b', 'draft', 'seq.yml', ?, '09:00', '17:00', '0,1,2,3,4,5,6', 'UTC')`, seqYAML)
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (2, 1)")
+	db.Exec("INSERT INTO leads (id, email, first_name, domain) VALUES (1, 'a@x.com', 'Alice', 'x.com')")
+	db.Exec("INSERT INTO leads (id, email, first_name, domain) VALUES (2, 'b@x.com', 'Bob', 'x.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (2, 2, 'active')")
+	db.Exec(`INSERT INTO scheduled_sends (id, campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 1, 1, '2026-04-07T09:00:00Z', 'pending')`)
+	db.Exec(`INSERT INTO scheduled_sends (id, campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (2, 2, 2, 1, 1, '2026-04-07T09:00:00Z', 'pending')`)
+
+	if err := RebalancePendingSchedules(db, []int64{1}); err != nil {
+		t.Fatalf("first rebalance: %v", err)
+	}
+
+	var afterFirst []string
+	rows, err := db.Query("SELECT send_at FROM scheduled_sends ORDER BY id")
+	if err != nil {
+		t.Fatalf("querying first schedule: %v", err)
+	}
+	for rows.Next() {
+		var sendAt string
+		rows.Scan(&sendAt)
+		afterFirst = append(afterFirst, sendAt)
+	}
+	rows.Close()
+
+	if err := RebalancePendingSchedules(db, []int64{1}); err != nil {
+		t.Fatalf("second rebalance: %v", err)
+	}
+
+	var afterSecond []string
+	rows, err = db.Query("SELECT send_at FROM scheduled_sends ORDER BY id")
+	if err != nil {
+		t.Fatalf("querying second schedule: %v", err)
+	}
+	for rows.Next() {
+		var sendAt string
+		rows.Scan(&sendAt)
+		afterSecond = append(afterSecond, sendAt)
+	}
+	rows.Close()
+
+	if !reflect.DeepEqual(afterFirst, afterSecond) {
+		t.Fatalf("expected idempotent rebalance, first=%v second=%v", afterFirst, afterSecond)
+	}
+}
+
+func TestRebalancePendingSchedules_DoesNotMutateSentRows(t *testing.T) {
+	db := testDB(t)
+
+	seqYAML := `name: Test
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Step 1"
+  - step: 2
+    delay: 4
+    body: "Step 2"
+`
+
+	db.Exec("INSERT INTO accounts (id, email, daily_limit) VALUES (1, 'sender@x.com', 10)")
+	db.Exec(`INSERT INTO campaigns (id, name, status, sequence_file, sequence_content, send_window_start, send_window_end, send_days, timezone)
+		VALUES (1, 'campaign-a', 'active', 'seq.yml', ?, '09:00', '17:00', '0,1,2,3,4,5,6', 'UTC')`, seqYAML)
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+	db.Exec("INSERT INTO leads (id, email, first_name, domain) VALUES (1, 'a@x.com', 'Alice', 'x.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec(`INSERT INTO scheduled_sends (id, campaign_id, lead_id, account_id, step_number, send_at, status, sent_at)
+		VALUES (1, 1, 1, 1, 1, '2026-04-07T09:00:00Z', 'sent', '2026-04-09T11:00:00Z')`)
+	db.Exec(`INSERT INTO scheduled_sends (id, campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (2, 1, 1, 1, 2, '2026-04-11T09:00:00Z', 'pending')`)
+
+	if err := RebalancePendingSchedules(db, []int64{1}); err != nil {
+		t.Fatalf("rebalance: %v", err)
+	}
+
+	var sentSendAt, followUpSendAt string
+	db.QueryRow("SELECT send_at FROM scheduled_sends WHERE id = 1").Scan(&sentSendAt)
+	db.QueryRow("SELECT send_at FROM scheduled_sends WHERE id = 2").Scan(&followUpSendAt)
+
+	if sentSendAt != "2026-04-07T09:00:00Z" {
+		t.Fatalf("sent row was mutated to %q", sentSendAt)
+	}
+	if followUpSendAt != "2026-04-13T11:00:00Z" {
+		t.Fatalf("expected follow-up to measure delay from actual sent time, got %q", followUpSendAt)
 	}
 }
 

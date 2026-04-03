@@ -174,8 +174,20 @@ func UpdateAccount(db *sql.DB, email string, opts UpdateAccountOpts) error {
 		if *opts.DailyLimit < 1 {
 			return fmt.Errorf("daily limit must be at least 1")
 		}
-		if _, err := db.Exec("UPDATE accounts SET daily_limit = ? WHERE id = ?", *opts.DailyLimit, id); err != nil {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("starting transaction: %w", err)
+		}
+		defer tx.Rollback()
+
+		if _, err := tx.Exec("UPDATE accounts SET daily_limit = ? WHERE id = ?", *opts.DailyLimit, id); err != nil {
 			return fmt.Errorf("updating daily limit: %w", err)
+		}
+		if err := rebalancePendingSchedulesTx(tx, []int64{id}); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing: %w", err)
 		}
 	}
 	return nil
@@ -183,18 +195,18 @@ func UpdateAccount(db *sql.DB, email string, opts UpdateAccountOpts) error {
 
 // DomainCheck is the result of checking one DNS aspect.
 type DomainCheck struct {
-	Name    string `json:"name"`
-	Passed  bool   `json:"passed"`
-	Detail  string `json:"detail"`
-	Fix     string `json:"fix,omitempty"`
+	Name   string `json:"name"`
+	Passed bool   `json:"passed"`
+	Detail string `json:"detail"`
+	Fix    string `json:"fix,omitempty"`
 }
 
 // DomainDiagnostic is the full result of CheckDomain.
 type DomainDiagnostic struct {
-	Domain string        `json:"domain"`
-	Checks []DomainCheck `json:"checks"`
-	Score  int           `json:"score"`
-	MaxScore int         `json:"max_score"`
+	Domain   string        `json:"domain"`
+	Checks   []DomainCheck `json:"checks"`
+	Score    int           `json:"score"`
+	MaxScore int           `json:"max_score"`
 }
 
 // CheckDomain runs DNS diagnostics for email deliverability.

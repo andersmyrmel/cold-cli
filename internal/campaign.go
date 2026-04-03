@@ -256,6 +256,10 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 		}
 	}
 
+	if err := rebalancePendingSchedulesTx(tx, accountIDs); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("committing: %w", err)
 	}
@@ -290,6 +294,14 @@ func GetCampaignPreview(db *sql.DB, name string) (campaignID int64, status strin
 	}
 	if err != nil {
 		return 0, "", nil, fmt.Errorf("looking up campaign: %w", err)
+	}
+
+	accountIDs, err := loadCampaignAccountIDs(db, campaignID)
+	if err != nil {
+		return 0, "", nil, fmt.Errorf("loading campaign accounts: %w", err)
+	}
+	if err := RebalancePendingSchedules(db, accountIDs); err != nil {
+		return 0, "", nil, fmt.Errorf("rebalancing preview schedule: %w", err)
 	}
 
 	rows, err := db.Query(`
@@ -328,6 +340,14 @@ type DailyLimitWarning struct {
 // GetDailyLimitWarnings checks all pending sends across all active campaigns for each account
 // and returns warnings for days that exceed the account's daily limit.
 func GetDailyLimitWarnings(db *sql.DB) ([]DailyLimitWarning, error) {
+	accountIDs, err := loadPendingActiveDraftAccountIDs(db)
+	if err != nil {
+		return nil, fmt.Errorf("loading warning accounts: %w", err)
+	}
+	if err := RebalancePendingSchedules(db, accountIDs); err != nil {
+		return nil, fmt.Errorf("rebalancing warning schedule: %w", err)
+	}
+
 	rows, err := db.Query(`
 		SELECT DATE(ss.send_at) as send_date, a.email, COUNT(*) as cnt, a.daily_limit
 		FROM scheduled_sends ss
@@ -479,8 +499,9 @@ func GetCampaignRenderedPreview(db *sql.DB, name string, leadEmail string) ([]Re
 
 // CampaignStateTransition changes a campaign's status with validation.
 func CampaignStateTransition(db *sql.DB, name, action, fromStatus, toStatus string) error {
+	var campaignID int64
 	var currentStatus string
-	err := db.QueryRow("SELECT status FROM campaigns WHERE name = ?", name).Scan(&currentStatus)
+	err := db.QueryRow("SELECT id, status FROM campaigns WHERE name = ?", name).Scan(&campaignID, &currentStatus)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("campaign %q not found", name)
 	}
@@ -492,11 +513,27 @@ func CampaignStateTransition(db *sql.DB, name, action, fromStatus, toStatus stri
 		return fmt.Errorf("cannot %s campaign %q: current status is %q (expected %q)", action, name, currentStatus, fromStatus)
 	}
 
-	if _, err := db.Exec("UPDATE campaigns SET status = ? WHERE name = ?", toStatus, name); err != nil {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("UPDATE campaigns SET status = ? WHERE id = ?", toStatus, campaignID); err != nil {
 		return fmt.Errorf("updating campaign: %w", err)
 	}
 
-	return nil
+	if currentStatus == "paused" || toStatus == "paused" {
+		accountIDs, err := loadCampaignAccountIDsTx(tx, campaignID)
+		if err != nil {
+			return fmt.Errorf("loading campaign accounts: %w", err)
+		}
+		if err := rebalancePendingSchedulesTx(tx, accountIDs); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
 // SendNowResult is returned by SendNowCampaign.
@@ -902,6 +939,10 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 		return nil, err
 	}
 
+	if err := rebalancePendingSchedulesTx(tx, accountIDs); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("committing: %w", err)
 	}
@@ -1007,6 +1048,10 @@ func AddLeadsToCampaign(db *sql.DB, campaignName, leadsFile, leadsInline string)
 	leadsAdded, sendsAdded, err := insertLeadsAndSchedule(tx, campID, accountIDs, records, seq,
 		windowStart, windowEnd, sendDays, tz, minGap, maxGap)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := rebalancePendingSchedulesTx(tx, accountIDs); err != nil {
 		return nil, err
 	}
 
@@ -1318,18 +1363,36 @@ func RetryCampaign(db *sql.DB, name string, step *int) (*RetryCampaignResult, er
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	var res sql.Result
 	if step != nil {
-		res, err = db.Exec(`UPDATE scheduled_sends SET status = 'pending', send_at = ?
+		res, err = tx.Exec(`UPDATE scheduled_sends SET status = 'pending', send_at = ?
 			WHERE campaign_id = ? AND status = 'failed' AND step_number = ?`,
 			now, campaignID, *step)
 	} else {
-		res, err = db.Exec(`UPDATE scheduled_sends SET status = 'pending', send_at = ?
+		res, err = tx.Exec(`UPDATE scheduled_sends SET status = 'pending', send_at = ?
 			WHERE campaign_id = ? AND status = 'failed'`,
 			now, campaignID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("retrying sends: %w", err)
+	}
+
+	accountIDs, err := loadCampaignAccountIDsTx(tx, campaignID)
+	if err != nil {
+		return nil, fmt.Errorf("loading campaign accounts: %w", err)
+	}
+	if err := rebalancePendingSchedulesTx(tx, accountIDs); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing: %w", err)
 	}
 
 	affected, _ := res.RowsAffected()
@@ -1571,5 +1634,76 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 		}
 	}
 
+	accountIDs, err := loadCampaignAccountIDsTx(tx, current.ID)
+	if err != nil {
+		return fmt.Errorf("loading campaign accounts: %w", err)
+	}
+	if err := rebalancePendingSchedulesTx(tx, accountIDs); err != nil {
+		return err
+	}
+
 	return tx.Commit()
+}
+
+func loadCampaignAccountIDsTx(tx *sql.Tx, campaignID int64) ([]int64, error) {
+	rows, err := tx.Query("SELECT account_id FROM campaign_accounts WHERE campaign_id = ? ORDER BY account_id", campaignID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accountIDs []int64
+	for rows.Next() {
+		var accountID int64
+		if err := rows.Scan(&accountID); err != nil {
+			return nil, err
+		}
+		accountIDs = append(accountIDs, accountID)
+	}
+
+	return accountIDs, rows.Err()
+}
+
+func loadCampaignAccountIDs(db *sql.DB, campaignID int64) ([]int64, error) {
+	rows, err := db.Query("SELECT account_id FROM campaign_accounts WHERE campaign_id = ? ORDER BY account_id", campaignID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accountIDs []int64
+	for rows.Next() {
+		var accountID int64
+		if err := rows.Scan(&accountID); err != nil {
+			return nil, err
+		}
+		accountIDs = append(accountIDs, accountID)
+	}
+
+	return accountIDs, rows.Err()
+}
+
+func loadPendingActiveDraftAccountIDs(db *sql.DB) ([]int64, error) {
+	rows, err := db.Query(`
+		SELECT DISTINCT ss.account_id
+		FROM scheduled_sends ss
+		JOIN campaigns c ON c.id = ss.campaign_id
+		WHERE ss.status = 'pending'
+		  AND c.status IN ('active', 'draft')
+		ORDER BY ss.account_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accountIDs []int64
+	for rows.Next() {
+		var accountID int64
+		if err := rows.Scan(&accountID); err != nil {
+			return nil, err
+		}
+		accountIDs = append(accountIDs, accountID)
+	}
+
+	return accountIDs, rows.Err()
 }

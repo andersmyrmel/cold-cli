@@ -35,10 +35,10 @@ internal/                 — single flat package, all application logic
 
 These are settled — do not revisit without explicit instruction:
 
-1. **Eager scheduling** — all sends pre-computed into `scheduled_sends` table at campaign creation. Do NOT use lazy/rolling `next_send_at` on campaign_leads.
+1. **Eager scheduling** — all sends stored in `scheduled_sends`; then deterministically rebalanced across active/draft campaigns sharing an account. Do NOT use lazy/rolling `next_send_at` on campaign_leads.
 2. **GWSClient interface** — gws interaction goes through an interface (`SendEmail`, `ListMessages`). Real impl calls subprocess. Tests use a mock.
 3. **Template rendering** — `strings.ReplaceAll` for `{{placeholder}}` substitution with alias resolution (`name` → `first_name`, etc.). Unresolved variables stripped at send time (not sent literally). No Go `text/template`. No template engine.
-4. **Daily limits** — count from events table (`SELECT COUNT(*) ... WHERE type='sent' AND timestamp >= today`). No mutable `sends_today` counter on accounts.
+4. **Daily limits** — count from events table (`SELECT COUNT(*) ... WHERE type='sent' AND timestamp >= today`) and apply them through shared rebalance logic used by preview, warnings, and tick. No mutable `sends_today` counter on accounts.
 5. **Account rotation** — round-robin at schedule time. All steps for one lead use the same account (thread continuity).
 6. **Thread management** — after step 1 send, backfill `thread_id` and `parent_message_id` onto all remaining `scheduled_sends` for that lead+campaign.
 7. **Error isolation** — gws send failure marks that one `scheduled_sends` row as `'failed'` and continues. Never crash the whole tick. Emails with empty subject/body after rendering are also marked `failed` (not sent).
@@ -74,7 +74,7 @@ cancelled → user-cancelled (pause/blacklist)
 
 6 tables: `accounts`, `campaigns`, `campaign_accounts`, `leads`, `campaign_leads`, `scheduled_sends`, `events`. See ARCHITECTURE.md for full schema.
 
-Key: `scheduled_sends` is the core table. Each row is a self-contained send instruction with pre-computed `send_at`, assigned `account_id`, `variant_index`, and (after step 1 sends) `thread_id` + `parent_message_id`. Failed sends store the reason in `error_message` and insert a `'failed'` event.
+Key: `scheduled_sends` is the core table. Each row is a self-contained send instruction with current `send_at`, assigned `account_id`, `variant_index`, and (after step 1 sends) `thread_id` + `parent_message_id`. Pending rows may be rebalanced later to reflect account daily limits or actual sent-time drift. Failed sends store the reason in `error_message` and insert a `'failed'` event.
 
 ## CSV Import Rules
 
