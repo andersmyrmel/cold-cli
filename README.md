@@ -176,21 +176,21 @@ All send times are pre-computed when you create a campaign. Each send becomes a 
 
 `tick` is a single idempotent command that does everything per invocation:
 
-1. Poll inbox for replies → match via In-Reply-To headers → pause lead
+1. Poll inbox for replies → match via In-Reply-To headers → mark lead replied
 2. Poll inbox for bounces → detect via thread matching → mark bounced
 3. Detect unsubscribe requests → auto-blacklist lead globally
 4. Rebalance pending sends for the affected sender accounts using real daily-limit capacity
 5. Find sends where `send_at <= now` and campaign is active
 6. Re-check each pending row just before send so stale preloaded rows cannot fire
-5. Send each email via gws with 90-140 second random gaps
-6. After each successful send, rebalance that sender again so future follow-ups chain from actual send time
-7. Respect daily limits, send windows, and send days
+7. Send each email via gws with 90-140 second random gaps
+8. After each successful send, rebalance that sender again so future follow-ups chain from actual send time
+9. Respect daily limits, send windows, and send days
 
 Run it manually, via cron (`*/10 * * * *`), or have an agent call it. All tick activity is logged to `~/.cold-cli/tick.log` as structured JSON.
 
 ### Reply & Unsubscribe Detection
 
-Matches inbox messages to sent emails using `In-Reply-To` headers. When a reply is detected, remaining sends for that lead are cancelled. With `stop_on_domain_reply`, all leads on the same domain are paused.
+Matches inbox messages to sent emails using `In-Reply-To` headers. When a reply is detected, the lead is marked `replied` and remaining sends for that lead are cancelled. With `stop_on_domain_reply`, all other leads on the same domain are paused.
 
 Unsubscribe requests ("unsubscribe", "remove me", "opt out", etc.) are auto-detected and blacklist the lead globally across all campaigns.
 

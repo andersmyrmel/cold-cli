@@ -72,7 +72,7 @@ leads
 
 campaign_leads
 ├─ campaign_id, lead_id
-├─ status (active/completed/replied/bounced/paused)
+├─ status (active/replied/bounced/paused)
 └─ started_at
 
 scheduled_sends
@@ -251,8 +251,9 @@ Simple `strings.ReplaceAll` for `{{placeholder}}` substitution. No template engi
 
 ```go
 type GWSClient interface {
-    SendEmail(account, to, rawMsg string) (msgID, threadID string, err error)
-    ListMessages(account, query string) ([]Message, error)
+    SendEmail(account, to, rawMsg, threadID string) (msgID, threadID string, err error)
+    ListMessages(account, query string) ([]GWSMessage, error)
+    GetMessage(account, msgID string) (*GWSMessage, error)
 }
 ```
 
@@ -300,7 +301,7 @@ cold-cli campaign remove-lead <name|id> <email>
 cold-cli campaign preview <name|id> [--render] [--lead <email>]
 cold-cli campaign activate [--send-now] / pause/resume/status <name|id>
 cold-cli campaign send-now <name|id>
-cold-cli campaign update <name|id> [--send-days "..."] [--send-window-start HH:MM] [--send-window-end HH:MM] [--timezone TZ]
+cold-cli campaign update <name|id> [--sequence path] [--send-days "..."] [--send-window-start HH:MM] [--send-window-end HH:MM] [--timezone TZ] [--min-gap N] [--max-gap N]
 cold-cli campaign list/delete/retry <name|id>
 
 cold-cli tick [--dry-run] [--now]
@@ -308,7 +309,7 @@ cold-cli tick [--dry-run] [--now]
 cold-cli stats [campaign] [--leads] [--variants]
 cold-cli log [campaign] [--limit N]
 
-cold-cli lead list [--domain X] [--status X]
+cold-cli lead list [--domain X] [--status X] [--limit N]
 cold-cli lead pause/resume/blacklist <email|domain>
 ```
 
@@ -361,6 +362,7 @@ All commands support `--json` for agent consumption. No interactive prompts, eve
      │  data.db) │         ├──────────────┤
      │           │         │ SendEmail()  │
      └───────────┘         │ ListMessages()│
+                           │ GetMessage() │
                            └──────┬───────┘
      ┌───────────┐                │
      │ tick.log  │                ▼
