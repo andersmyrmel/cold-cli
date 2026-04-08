@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,17 +12,37 @@ import (
 	"github.com/anders/cold-cli/internal"
 )
 
-// buildCLI builds the cold-cli binary into a temp dir and returns its path.
-func buildCLI(t *testing.T) string {
-	t.Helper()
-	bin := filepath.Join(t.TempDir(), "cold-cli")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
-	cmd.Dir = filepath.Join(".") // cmd/cold-cli
+var testCLIPath string
+
+func TestMain(m *testing.M) {
+	tmpDir, err := os.MkdirTemp("", "cold-cli-test-bin-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "creating temp dir for cold-cli test binary: %v\n", err)
+		os.Exit(1)
+	}
+
+	testCLIPath = filepath.Join(tmpDir, "cold-cli")
+	cmd := exec.Command("go", "build", "-o", testCLIPath, ".")
+	cmd.Dir = "."
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("building cold-cli: %v\n%s", err, out)
+		fmt.Fprintf(os.Stderr, "building cold-cli test binary: %v\n%s", err, out)
+		_ = os.RemoveAll(tmpDir)
+		os.Exit(1)
 	}
-	return bin
+
+	code := m.Run()
+	_ = os.RemoveAll(tmpDir)
+	os.Exit(code)
+}
+
+// buildCLI returns the shared cold-cli test binary path.
+func buildCLI(t *testing.T) string {
+	t.Helper()
+	if testCLIPath == "" {
+		t.Fatal("cold-cli test binary was not built")
+	}
+	return testCLIPath
 }
 
 // setupTestEnv creates a temp data dir and returns the bin path and env.
