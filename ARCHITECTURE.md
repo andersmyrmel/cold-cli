@@ -1,6 +1,6 @@
 # cold-cli Architecture
 
-Open-source, agent-first CLI cold email sequence engine in Go. Built on top of [gws CLI](https://github.com/nicholasgasior/gws) for Gmail API operations.
+Open-source, agent-first CLI cold email sequence engine in Go. Built on top of [gws CLI](https://github.com/googleworkspace/cli) for Gmail API operations.
 
 ## Problem
 

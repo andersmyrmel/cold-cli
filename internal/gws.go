@@ -238,7 +238,7 @@ func (g *GWSCLI) run(account string, args ...string) (stdout, stderr []byte, err
 func CheckGWSInstalled() error {
 	_, err := exec.LookPath("gws")
 	if err != nil {
-		return fmt.Errorf("gws CLI not found on PATH — install from https://github.com/nicholasgasior/gws")
+		return fmt.Errorf("gws CLI not found on PATH — install from https://github.com/googleworkspace/cli")
 	}
 	return nil
 }

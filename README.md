@@ -2,7 +2,7 @@
 
 Open-source CLI cold email sequence engine. Single binary, SQLite storage, no SaaS.
 
-Built on [gws](https://github.com/nicholasgasior/gws) for Gmail API access. Works great with coding agents (Claude Code, Cursor, etc.) or directly from the terminal.
+Built on [gws](https://github.com/googleworkspace/cli) for Gmail API access. Works great with coding agents (Claude Code, Cursor, etc.) or directly from the terminal.
 
 ## Install
 
@@ -10,7 +10,7 @@ Built on [gws](https://github.com/nicholasgasior/gws) for Gmail API access. Work
 go install github.com/anders/cold-cli/cmd/cold-cli@latest
 ```
 
-Requires [gws](https://github.com/nicholasgasior/gws) for Gmail integration.
+Requires [gws](https://github.com/googleworkspace/cli) for Gmail integration.
 
 ## Quickstart
 
