@@ -168,6 +168,44 @@ steps:
 	}
 }
 
+func TestGetCampaignRenderedPreview_UsesCustomFieldsAndShowsStrippedVars(t *testing.T) {
+	db := testDB(t)
+
+	seqYAML := `name: Test
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}} the {{title}}"
+    body: "Hello {{first_name}} from {{company}} {{missing}}"
+`
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content,
+		send_window_start, send_window_end, send_days, timezone)
+		VALUES ('custom-render-test', 'draft', 'seq.yml', ?, '09:00', '17:00', '1,2,3,4,5', 'UTC')`, seqYAML)
+
+	db.Exec(`INSERT INTO leads (email, first_name, company, domain, custom_fields)
+		VALUES ('alice@acme.com', 'Alice', 'Acme', 'acme.com', '{"title":"CTO"}')`)
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at) VALUES (1, 1, 1, 1, 0, '2025-01-01')")
+
+	rendered, err := GetCampaignRenderedPreview(db, "custom-render-test", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rendered) != 1 {
+		t.Fatalf("expected 1 rendered email, got %d", len(rendered))
+	}
+	if rendered[0].Subject != "Hi Alice the CTO" {
+		t.Errorf("expected custom field in rendered subject, got %q", rendered[0].Subject)
+	}
+	if strings.Contains(rendered[0].Body, "{{missing}}") {
+		t.Errorf("expected missing placeholder to be stripped, got %q", rendered[0].Body)
+	}
+	if len(rendered[0].StrippedVars) != 1 || rendered[0].StrippedVars[0] != "missing" {
+		t.Errorf("expected stripped_vars [missing], got %#v", rendered[0].StrippedVars)
+	}
+}
+
 func TestGetCampaignRenderedPreview_LeadNotInCampaign(t *testing.T) {
 	db := testDB(t)
 

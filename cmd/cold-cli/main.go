@@ -608,6 +608,9 @@ var campaignPreviewCmd = &cobra.Command{
 				}
 				fmt.Printf("Step %d (variant %d) | %s -> %s\n", e.StepNumber, e.VariantIndex, e.AccountEmail, e.LeadEmail)
 				fmt.Printf("Subject: %s\n\n", e.Subject)
+				if len(e.StrippedVars) > 0 {
+					fmt.Printf("Stripped vars: %s\n\n", strings.Join(e.StrippedVars, ", "))
+				}
 				fmt.Println(e.Body)
 				fmt.Println()
 			}
@@ -1518,7 +1521,7 @@ func init() {
 	campaignCreateCmd.Flags().String("accounts", "", "comma-separated account emails")
 	campaignCreateCmd.Flags().String("start-date", "", "start date (YYYY-MM-DD); default: tomorrow")
 	campaignCreateCmd.Flags().String("send-days", "", "campaign send days override: numbers (0=Sun,1=Mon,...,6=Sat) or names (mon,tue,wed)")
-	campaignPreviewCmd.Flags().Bool("render", false, "show rendered email content with templates filled in")
+	campaignPreviewCmd.Flags().Bool("render", false, "show rendered email content with templates filled in, including stripped placeholder warnings")
 	campaignPreviewCmd.Flags().String("lead", "", "show rendered preview for a specific lead email (use with --render)")
 	campaignUpdateCmd.Flags().String("sequence", "", "path to new sequence YAML file")
 	campaignUpdateCmd.Flags().String("send-window-start", "", "send window start (HH:MM)")

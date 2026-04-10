@@ -113,6 +113,7 @@ func BuildEmailForSend(
 	allStripped = append(allStripped, stripped...)
 	body, stripped = StripUnresolved(body)
 	allStripped = append(allStripped, stripped...)
+	allStripped = uniqueStrings(allStripped)
 
 	return EmailParams{
 		FromName:     seq.Defaults.FromName,
@@ -122,6 +123,23 @@ func BuildEmailForSend(
 		Body:         body,
 		StrippedVars: allStripped,
 	}
+}
+
+func uniqueStrings(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 // plainTextToHTML converts plain text body to minimal HTML.

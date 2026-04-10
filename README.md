@@ -121,7 +121,7 @@ cold-cli campaign clone <source> --name <new> --leads <csv>
 cold-cli campaign add-leads <name|id> --leads <csv>    # or --leads-inline '...'
 cold-cli campaign remove-lead <name|id> <email>        # remove one lead from a campaign
 cold-cli campaign preview <name|id>        # see full schedule before activating
-cold-cli campaign preview <name|id> --render  # see rendered emails for first lead
+cold-cli campaign preview <name|id> --render  # see rendered emails for first lead, with stripped-var warnings
 cold-cli campaign preview <name|id> --render --lead <email>  # render for specific lead
 cold-cli campaign activate <name|id>       # start sending
 cold-cli campaign activate <name|id> --send-now  # activate and send immediately

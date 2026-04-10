@@ -377,12 +377,13 @@ func GetDailyLimitWarnings(db *sql.DB) ([]DailyLimitWarning, error) {
 
 // RenderedEmail is a preview of an actual email with templates filled in.
 type RenderedEmail struct {
-	StepNumber   int    `json:"step_number"`
-	VariantIndex int    `json:"variant_index"`
-	LeadEmail    string `json:"lead_email"`
-	AccountEmail string `json:"account_email"`
-	Subject      string `json:"subject"`
-	Body         string `json:"body"`
+	StepNumber   int      `json:"step_number"`
+	VariantIndex int      `json:"variant_index"`
+	LeadEmail    string   `json:"lead_email"`
+	AccountEmail string   `json:"account_email"`
+	Subject      string   `json:"subject"`
+	Body         string   `json:"body"`
+	StrippedVars []string `json:"stripped_vars,omitempty"`
 }
 
 // GetCampaignRenderedPreview returns rendered emails for a specific lead (or the first lead) in a campaign.
@@ -452,17 +453,9 @@ func GetCampaignRenderedPreview(db *sql.DB, name string, leadEmail string) ([]Re
 	}
 	rows.Close()
 
-	// Load lead fields (custom_fields JSON + standard fields)
-	var firstName, lastName, company, domain, customJSON string
-	db.QueryRow("SELECT first_name, last_name, company, domain, custom_fields FROM leads WHERE id = ?",
-		firstLeadID).Scan(&firstName, &lastName, &company, &domain, &customJSON)
-
-	fields := map[string]string{
-		"email":      firstLeadEmail,
-		"first_name": firstName,
-		"last_name":  lastName,
-		"company":    company,
-		"domain":     domain,
+	fields, err := loadLeadFields(db, firstLeadID)
+	if err != nil {
+		return nil, fmt.Errorf("loading lead fields: %w", err)
 	}
 
 	// Get all sends for this lead in this campaign
@@ -491,6 +484,7 @@ func GetCampaignRenderedPreview(db *sql.DB, name string, leadEmail string) ([]Re
 			AccountEmail: accEmail,
 			Subject:      params.Subject,
 			Body:         params.Body,
+			StrippedVars: params.StrippedVars,
 		})
 	}
 
