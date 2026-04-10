@@ -518,6 +518,7 @@ var campaignCmd = &cobra.Command{
 var campaignCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a new campaign from a sequence YAML and leads CSV",
+	Long:  "Create a new campaign from a sequence YAML and leads CSV. Leads may optionally include a schedule_timezone CSV column for per-lead timezone scheduling while still using the campaign send window and send days.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		seqFile, _ := cmd.Flags().GetString("sequence")
@@ -761,6 +762,7 @@ var campaignDeleteCmd = &cobra.Command{
 var campaignUpdateCmd = &cobra.Command{
 	Use:   "update <name|id>",
 	Short: "Update campaign settings (sequence, send window, days, gaps)",
+	Long:  "Update campaign-level settings such as sequence, send window, send days, timezone, and gaps. Lead-level schedule_timezone overrides from CSV remain lead-specific and are not changed by this command.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		db, err := openDB()
@@ -833,6 +835,7 @@ var campaignUpdateCmd = &cobra.Command{
 var campaignCloneCmd = &cobra.Command{
 	Use:   "clone <source-name|id>",
 	Short: "Clone a campaign with new leads (copies sequence + settings)",
+	Long:  "Clone a campaign with new leads while copying sequence and campaign settings. Leads may optionally include a schedule_timezone CSV column for per-lead timezone scheduling.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
@@ -894,6 +897,7 @@ var campaignCloneCmd = &cobra.Command{
 var campaignAddLeadsCmd = &cobra.Command{
 	Use:   "add-leads <name|id>",
 	Short: "Add new leads to an existing campaign",
+	Long:  "Add new leads to an existing campaign. Leads may optionally include a schedule_timezone CSV column for per-lead timezone scheduling under the campaign's existing send window and send days.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		leadsFile, _ := cmd.Flags().GetString("leads")
@@ -1475,9 +1479,9 @@ steps:
 			return fmt.Errorf("writing sequence file: %w", err)
 		}
 
-		leadsContent := `email,first_name,last_name,company
-alice@example.com,Alice,Smith,Acme Corp
-bob@example.com,Bob,Jones,Widget Inc
+		leadsContent := `email,first_name,last_name,company,schedule_timezone
+alice@example.com,Alice,Smith,Acme Corp,America/New_York
+bob@example.com,Bob,Jones,Widget Inc,Europe/Oslo
 `
 		if err := os.WriteFile(leadsPath, []byte(leadsContent), 0644); err != nil {
 			return fmt.Errorf("writing leads file: %w", err)
@@ -1492,7 +1496,7 @@ bob@example.com,Bob,Jones,Widget Inc
 
 		fmt.Printf("Created example files:\n")
 		fmt.Printf("  %s  — edit your email sequence here\n", seqPath)
-		fmt.Printf("  %s     — add your leads here\n", leadsPath)
+		fmt.Printf("  %s     — add your leads here (optional: schedule_timezone)\n", leadsPath)
 		fmt.Printf("\nThen create a campaign:\n")
 		fmt.Printf("  cold-cli campaign create --name my-campaign --sequence %s --leads %s --accounts you@gmail.com\n", seqPath, leadsPath)
 		return nil
@@ -1516,8 +1520,8 @@ func init() {
 	campaignCreateCmd.Flags().String("name", "", "campaign name")
 	campaignCreateCmd.Flags().String("sequence", "", "path to sequence YAML file")
 	campaignCreateCmd.Flags().String("sequence-inline", "", "sequence YAML content (alternative to --sequence)")
-	campaignCreateCmd.Flags().String("leads", "", "path to leads CSV file")
-	campaignCreateCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads)")
+	campaignCreateCmd.Flags().String("leads", "", "path to leads CSV file (optional per-lead schedule_timezone column supported)")
+	campaignCreateCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads; optional per-lead schedule_timezone column supported)")
 	campaignCreateCmd.Flags().String("accounts", "", "comma-separated account emails")
 	campaignCreateCmd.Flags().String("start-date", "", "start date (YYYY-MM-DD); default: tomorrow")
 	campaignCreateCmd.Flags().String("send-days", "", "campaign send days override: numbers (0=Sun,1=Mon,...,6=Sat) or names (mon,tue,wed)")
@@ -1527,15 +1531,15 @@ func init() {
 	campaignUpdateCmd.Flags().String("send-window-start", "", "send window start (HH:MM)")
 	campaignUpdateCmd.Flags().String("send-window-end", "", "send window end (HH:MM)")
 	campaignUpdateCmd.Flags().String("send-days", "", "send days: numbers (0=Sun,1=Mon,...,6=Sat) or names (mon,tue,wed)")
-	campaignUpdateCmd.Flags().String("timezone", "", "timezone (e.g. America/New_York)")
+	campaignUpdateCmd.Flags().String("timezone", "", "campaign default timezone (e.g. America/New_York); leads with schedule_timezone keep their override")
 	campaignUpdateCmd.Flags().Int("min-gap", 0, "minimum seconds between sends")
 	campaignUpdateCmd.Flags().Int("max-gap", 0, "maximum seconds between sends")
 	campaignCloneCmd.Flags().String("name", "", "new campaign name")
-	campaignCloneCmd.Flags().String("leads", "", "path to leads CSV file")
-	campaignCloneCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads)")
+	campaignCloneCmd.Flags().String("leads", "", "path to leads CSV file (optional per-lead schedule_timezone column supported)")
+	campaignCloneCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads; optional per-lead schedule_timezone column supported)")
 	campaignCloneCmd.Flags().String("accounts", "", "comma-separated account emails (default: reuse source accounts)")
-	campaignAddLeadsCmd.Flags().String("leads", "", "path to leads CSV file")
-	campaignAddLeadsCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads)")
+	campaignAddLeadsCmd.Flags().String("leads", "", "path to leads CSV file (optional per-lead schedule_timezone column supported)")
+	campaignAddLeadsCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads; optional per-lead schedule_timezone column supported)")
 	campaignRetryCmd.Flags().Int("step", 0, "only retry failed sends for this step number")
 	campaignActivateCmd.Flags().Bool("send-now", false, "set all pending sends to now so they send immediately")
 	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignRemoveLeadCmd, campaignUpdateCmd, campaignCloneCmd, campaignAddLeadsCmd, campaignInitCmd, campaignRetryCmd, campaignSendNowCmd)

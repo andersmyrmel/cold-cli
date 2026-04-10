@@ -87,16 +87,26 @@ steps:
 ## Leads CSV
 
 ```csv
-email,first_name,company
-john@acme.com,John,Acme Inc
-jane@bigcorp.com,Jane,BigCorp
+email,first_name,company,schedule_timezone
+john@acme.com,John,Acme Inc,America/New_York
+jane@bigcorp.com,Jane,BigCorp,Europe/Oslo
 ```
 
 `email` is the only required column. All other columns are driven by what `{{placeholders}}` your sequence uses. Extra columns beyond the built-in fields (`first_name`, `last_name`, `company`) are stored as custom fields and available for templates at send time.
 
+Supported scheduling override columns:
+- `schedule_timezone` - optional IANA timezone per lead, for example `America/New_York` or `Europe/Oslo`
+
+Scheduling behavior:
+- Campaign `timezone` is still the default for leads without `schedule_timezone`
+- Campaign send window and send days remain campaign-level settings
+- If `schedule_timezone` is present, that lead uses the campaign window interpreted in that lead's local timezone
+- If leads need materially different local windows, split campaigns by geography for now
+
 - **Validation at creation** - mismatched variables produce actionable errors with "Did you mean?" suggestions
 - **Aliases** - common names like `{{name}}` → `first_name` are resolved automatically
 - **Reserved names blocked** - CSV columns named `subject`, `body`, `step`, `delay`, or `variant` are rejected (they conflict with sequence YAML fields)
+- **Schedule override validation** - invalid `schedule_timezone` values fail campaign creation / add-leads with a clear error
 - **Reimport updates** - if a lead already exists, its fields are updated from the new CSV (not silently skipped)
 - **Safety at send time** - unresolved variables are stripped (never sent literally); emails with empty subject or body are not sent
 
@@ -167,10 +177,14 @@ All send times are pre-computed when you create a campaign. Each send becomes a 
 - schedules are rebalanced across `active` and `draft` campaigns that share an account
 - `tick` uses the same rebalance logic as preview before loading due rows
 - Agents can review and approve the full timeline
+- Optional lead-level `schedule_timezone` overrides use the campaign send window in each lead's local timezone
 - `campaign update --send-days/--send-window-*/--timezone` recalculates existing `pending` sends without touching `sent`, `failed`, `skipped`, or `cancelled` rows
 - For leads with no sent history, update recomputes the first pending send from `max(now, campaign start date)` under the new window/day/timezone rules, then chains later pending sends from that new anchor
 - For leads already in flight, update preserves sent history and only reschedules future pending sends
 - If a prior step is actually sent later than planned, future pending follow-ups are re-anchored from the actual `sent_at` so configured delays still hold
+
+Current limitation:
+- Only timezone is lead-specific today. Send window start/end and send days are still campaign-level.
 
 ### Tick Engine
 
@@ -233,6 +247,10 @@ cold-cli campaign add-leads q1-outreach --leads more-leads.csv
 ```
 
 Automatically skips leads already in the campaign, blacklisted, or bounced.
+
+For mixed geographies, you can either:
+- use one campaign with per-lead `schedule_timezone` when the same local window is acceptable for everyone
+- split campaigns by geography when regions need different local windows or send days
 
 ### Domain Diagnostics
 
