@@ -67,6 +67,7 @@ campaign_accounts
 leads
 ├─ id, email, first_name, last_name, company, domain
 ├─ custom_fields (json)
+│  └─ optional scheduling override: `schedule_timezone`
 ├─ global_status (active/blacklisted/bounced)
 └─ created_at
 
@@ -208,12 +209,18 @@ At `campaign create` (or `clone` / `add-leads`):
 4. Assign variants (round-robin across leads for each step that has variants)
 5. Compute `send_at` for each lead+step:
    - Step 1: campaign start time + offset based on lead position
+   - Optional lead override: `schedule_timezone` in CSV/custom fields overrides the campaign timezone for that lead only
    - Step N: previous step's current anchor + delay days
    - Clamp to send window (start/end hours)
    - Skip non-send days (e.g., weekends)
    - Add jitter within min/max gap range
 6. INSERT all `scheduled_sends` rows with status='pending'
 7. Rebalance pending sends across all active/draft campaigns sharing each account so daily limits are already reflected in preview
+
+Notes:
+- `schedule_timezone` is backward-compatible because campaign `timezone` remains the default for leads without an override.
+- Send window and send days are still campaign-level settings; they are interpreted in each lead's effective timezone.
+- If leads need materially different local windows, split campaigns by geography for now.
 
 ### Catch-Up After Laptop Sleep
 

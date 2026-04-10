@@ -147,7 +147,7 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		}
 
 		// Check send window and send day — if outside, leave as pending for next tick
-		if !isInSendWindow(cfg.DB, send.CampaignID, now) {
+		if !isInSendWindow(cfg.DB, send.CampaignID, send.LeadID, now) {
 			continue
 		}
 
@@ -471,15 +471,30 @@ func refreshPendingSend(db *sql.DB, send dueSend) (dueSend, time.Time, bool, err
 	return send, sendAt, true, nil
 }
 
-func isInSendWindow(db *sql.DB, campaignID int64, now time.Time) bool {
-	var windowStart, windowEnd, tzName, sendDaysStr string
-	err := db.QueryRow("SELECT send_window_start, send_window_end, timezone, send_days FROM campaigns WHERE id = ?",
-		campaignID).Scan(&windowStart, &windowEnd, &tzName, &sendDaysStr)
+func isInSendWindow(db *sql.DB, campaignID, leadID int64, now time.Time) bool {
+	var windowStart, windowEnd, tzName, sendDaysStr, leadEmail, customFields string
+	err := db.QueryRow(`
+		SELECT c.send_window_start, c.send_window_end, c.timezone, c.send_days, l.email, l.custom_fields
+		FROM campaigns c
+		JOIN leads l ON l.id = ?
+		WHERE c.id = ?`,
+		leadID, campaignID,
+	).Scan(&windowStart, &windowEnd, &tzName, &sendDaysStr, &leadEmail, &customFields)
 	if err != nil {
 		return true // default to allowing if we can't check
 	}
 
-	tz, err := time.LoadLocation(tzName)
+	leadFields, err := buildLeadFields(leadEmail, "", "", "", "", customFields, true)
+	if err != nil {
+		return true
+	}
+
+	defaultTZ, err := time.LoadLocation(tzName)
+	if err != nil {
+		return true
+	}
+
+	tz, err := ResolveLeadScheduleTimezone(leadFields, defaultTZ)
 	if err != nil {
 		return true
 	}

@@ -912,23 +912,44 @@ func TestIsInSendWindow_ChecksDay(t *testing.T) {
 	// Campaign with weekday-only send days and 09:00-17:00 window
 	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, send_window_start, send_window_end,
 		send_days, timezone) VALUES ('test', 'active', 'testdata/seq.yml', '09:00', '17:00', '1,2,3,4,5', 'UTC')`)
+	db.Exec(`INSERT INTO leads (id, email) VALUES (1, 'test@example.com')`)
 
 	// Saturday at noon — should be outside send days
 	saturday := time.Date(2025, 1, 4, 12, 0, 0, 0, time.UTC)
-	if isInSendWindow(db, 1, saturday) {
+	if isInSendWindow(db, 1, 1, saturday) {
 		t.Error("expected isInSendWindow=false on Saturday with weekday-only send_days")
 	}
 
 	// Monday at noon — should be in window
 	monday := time.Date(2025, 1, 6, 12, 0, 0, 0, time.UTC)
-	if !isInSendWindow(db, 1, monday) {
+	if !isInSendWindow(db, 1, 1, monday) {
 		t.Error("expected isInSendWindow=true on Monday at noon")
 	}
 
 	// Monday at 8am — in send day but before window
 	mondayEarly := time.Date(2025, 1, 6, 8, 0, 0, 0, time.UTC)
-	if isInSendWindow(db, 1, mondayEarly) {
+	if isInSendWindow(db, 1, 1, mondayEarly) {
 		t.Error("expected isInSendWindow=false on Monday at 8am (before 09:00 window)")
+	}
+}
+
+func TestIsInSendWindow_UsesLeadScheduleTimezone(t *testing.T) {
+	db := testDB(t)
+
+	db.Exec(`INSERT INTO campaigns (id, name, status, sequence_file, send_window_start, send_window_end,
+		send_days, timezone) VALUES (1, 'test', 'active', 'testdata/seq.yml', '09:00', '17:00', '1,2,3,4,5', 'UTC')`)
+	db.Exec(`INSERT INTO leads (id, email, custom_fields) VALUES (1, 'la@example.com', '{"schedule_timezone":"America/Los_Angeles"}')`)
+
+	// Noon UTC is 04:00 in Los Angeles, so this should still be outside the window.
+	mondayNoonUTC := time.Date(2025, 1, 6, 12, 0, 0, 0, time.UTC)
+	if isInSendWindow(db, 1, 1, mondayNoonUTC) {
+		t.Error("expected lead-specific timezone to block send before local 09:00")
+	}
+
+	// 18:00 UTC is 10:00 in Los Angeles, which should be inside the window.
+	mondayEighteenUTC := time.Date(2025, 1, 6, 18, 0, 0, 0, time.UTC)
+	if !isInSendWindow(db, 1, 1, mondayEighteenUTC) {
+		t.Error("expected lead-specific timezone to allow send during local window")
 	}
 }
 

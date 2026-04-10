@@ -100,6 +100,7 @@ type ScheduleConfig struct {
 	AccountIDs      []int64
 	Leads           []LeadForSchedule
 	Sequence        *Sequence
+	StartDate       string
 	SendWindowStart string // "09:00"
 	SendWindowEnd   string // "17:00"
 	SendDays        []time.Weekday
@@ -147,8 +148,22 @@ func ComputeSchedule(cfg ScheduleConfig) ([]ScheduledSendRow, error) {
 	}
 
 	var rows []ScheduledSendRow
+	baseNow := timeNow()
 
 	for leadIdx, lead := range cfg.Leads {
+		leadTZ, err := ResolveLeadScheduleTimezone(lead.Fields, cfg.Timezone)
+		if err != nil {
+			return nil, err
+		}
+
+		leadStart := cfg.StartTime.In(leadTZ)
+		if strings.TrimSpace(cfg.StartDate) != "" {
+			leadStart, err = campaignStartAnchor(baseNow.In(leadTZ), cfg.StartDate, windowStart, leadTZ)
+			if err != nil {
+				return nil, fmt.Errorf("invalid start date %q (expected YYYY-MM-DD): %w", cfg.StartDate, err)
+			}
+		}
+
 		// Round-robin: all steps for one lead use the same account
 		accountID := cfg.AccountIDs[leadIdx%len(cfg.AccountIDs)]
 
@@ -167,7 +182,7 @@ func ComputeSchedule(cfg ScheduleConfig) ([]ScheduledSendRow, error) {
 			if stepIdx == 0 {
 				// Step 1: start time + offset based on lead position
 				// Spread leads across the first send window using jitter
-				sendAt = cfg.StartTime
+				sendAt = leadStart
 				// Add per-lead offset: lead position * random gap
 				gapSec := cfg.MinGapSeconds
 				if cfg.MaxGapSeconds > cfg.MinGapSeconds {
@@ -175,12 +190,12 @@ func ComputeSchedule(cfg ScheduleConfig) ([]ScheduledSendRow, error) {
 				}
 				sendAt = sendAt.Add(time.Duration(leadIdx*gapSec) * time.Second)
 			} else {
-				sendAt = nextScheduledTime(prevSendAt, step.Delay, windowStart, windowEnd, cfg.SendDays, cfg.Timezone)
+				sendAt = nextScheduledTime(prevSendAt, step.Delay, windowStart, windowEnd, cfg.SendDays, leadTZ)
 			}
 
 			if stepIdx == 0 {
 				// Step 1 still needs clamping after applying the per-lead offset.
-				sendAt = clampToWindow(sendAt, windowStart, windowEnd, cfg.SendDays, cfg.Timezone)
+				sendAt = clampToWindow(sendAt, windowStart, windowEnd, cfg.SendDays, leadTZ)
 			}
 
 			rows = append(rows, ScheduledSendRow{
@@ -214,12 +229,14 @@ type accountScheduleRow struct {
 	ID         int64
 	CampaignID int64
 	LeadID     int64
+	LeadEmail  string
 	AccountID  int64
 	StepNumber int
 	Status     string
 	SendAt     time.Time
 	SentAt     time.Time
 	HasSentAt  bool
+	ScheduleTZ string
 }
 
 type leadScheduleQueue struct {
@@ -403,11 +420,12 @@ func loadAccountDailyLimitsTx(tx *sql.Tx, accountIDs []int64) (map[int64]int, er
 
 func loadAccountScheduleRowsTx(tx *sql.Tx, accountIDs []int64) ([]accountScheduleRow, map[int64]*campaignScheduleRules, error) {
 	query, args := accountIDInClauseQuery(`
-		SELECT ss.id, ss.campaign_id, ss.lead_id, ss.account_id, ss.step_number, ss.status,
+		SELECT ss.id, ss.campaign_id, ss.lead_id, l.email, ss.account_id, ss.step_number, ss.status,
 			ss.send_at, COALESCE(ss.sent_at, ''), c.sequence_file, c.sequence_content,
-			c.send_window_start, c.send_window_end, c.send_days, c.timezone
+			c.send_window_start, c.send_window_end, c.send_days, c.timezone, l.custom_fields
 		FROM scheduled_sends ss
 		JOIN campaigns c ON c.id = ss.campaign_id
+		JOIN leads l ON l.id = ss.lead_id
 		WHERE ss.account_id IN (%s)
 		  AND c.status IN ('active', 'draft')
 		ORDER BY ss.account_id, ss.campaign_id, ss.lead_id, ss.step_number, ss.id`,
@@ -425,12 +443,19 @@ func loadAccountScheduleRowsTx(tx *sql.Tx, accountIDs []int64) ([]accountSchedul
 		var row accountScheduleRow
 		var sendAtStr, sentAtStr string
 		var seqFile, seqContent, sendWindowStart, sendWindowEnd, sendDaysStr, timezoneName string
+		var customFields string
 		if err := rows.Scan(
-			&row.ID, &row.CampaignID, &row.LeadID, &row.AccountID, &row.StepNumber, &row.Status,
-			&sendAtStr, &sentAtStr, &seqFile, &seqContent, &sendWindowStart, &sendWindowEnd, &sendDaysStr, &timezoneName,
+			&row.ID, &row.CampaignID, &row.LeadID, &row.LeadEmail, &row.AccountID, &row.StepNumber, &row.Status,
+			&sendAtStr, &sentAtStr, &seqFile, &seqContent, &sendWindowStart, &sendWindowEnd, &sendDaysStr, &timezoneName, &customFields,
 		); err != nil {
 			return nil, nil, err
 		}
+
+		leadFields, err := buildLeadFields(row.LeadEmail, "", "", "", "", customFields, true)
+		if err != nil {
+			return nil, nil, fmt.Errorf("loading lead %s scheduling overrides: %w", row.LeadEmail, err)
+		}
+		row.ScheduleTZ = strings.TrimSpace(leadFields[ScheduleTimezoneField])
 
 		row.SendAt, err = parseDBTimestamp(sendAtStr)
 		if err != nil {
@@ -524,8 +549,13 @@ func loadSentUsageByAccountTx(tx *sql.Tx, accountIDs []int64) (map[int64]map[str
 }
 
 func newLeadScheduleQueue(rows []accountScheduleRow, rules *campaignScheduleRules) (*leadScheduleQueue, error) {
+	queueRules, err := effectiveScheduleRulesForLead(rules, rows[0])
+	if err != nil {
+		return nil, err
+	}
+
 	queue := &leadScheduleQueue{
-		rules:   rules,
+		rules:   queueRules,
 		rows:    rows,
 		nextIdx: -1,
 	}
@@ -554,6 +584,21 @@ func newLeadScheduleQueue(rows []accountScheduleRow, rules *campaignScheduleRule
 	}
 
 	return queue, nil
+}
+
+func effectiveScheduleRulesForLead(base *campaignScheduleRules, row accountScheduleRow) (*campaignScheduleRules, error) {
+	fields := map[string]string{
+		"email":               row.LeadEmail,
+		ScheduleTimezoneField: row.ScheduleTZ,
+	}
+	tz, err := ResolveLeadScheduleTimezone(fields, base.Timezone)
+	if err != nil {
+		return nil, err
+	}
+
+	clone := *base
+	clone.Timezone = tz
+	return &clone, nil
 }
 
 func firstPendingAnchorForRow(row accountScheduleRow, prevAnchor time.Time, havePrev bool, rules *campaignScheduleRules) (time.Time, error) {

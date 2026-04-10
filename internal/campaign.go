@@ -89,6 +89,9 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 	if err != nil {
 		return nil, err
 	}
+	if err := ValidateLeadScheduleOverrides(records); err != nil {
+		return nil, err
+	}
 
 	placeholders := seq.CollectPlaceholders()
 	validationWarnings, err := ValidateLeadFields(records, placeholders)
@@ -237,6 +240,7 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 			AccountIDs:      accountIDs,
 			Leads:           leadsForSchedule,
 			Sequence:        seq,
+			StartDate:       opts.StartDate,
 			SendWindowStart: cfg.SendWindowStart,
 			SendWindowEnd:   cfg.SendWindowEnd,
 			SendDays:        sendDays,
@@ -872,6 +876,9 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 	if err != nil {
 		return nil, err
 	}
+	if err := ValidateLeadScheduleOverrides(records); err != nil {
+		return nil, err
+	}
 
 	placeholders := seq.CollectPlaceholders()
 	cloneWarnings, err := ValidateLeadFields(records, placeholders)
@@ -960,7 +967,7 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 		}
 
 		added, sends, err := insertLeadsAndSchedule(tx, out.campaignID, accountIDs, records, seq,
-			src.WindowStart, src.WindowEnd, sendDays, tz, src.MinGap, src.MaxGap)
+			"", src.WindowStart, src.WindowEnd, sendDays, tz, src.MinGap, src.MaxGap)
 		if err != nil {
 			return out, err
 		}
@@ -1002,12 +1009,12 @@ type AddLeadsResult struct {
 func AddLeadsToCampaign(db *sql.DB, campaignName, leadsFile, leadsInline string) (*AddLeadsResult, error) {
 	// Load campaign
 	var campID int64
-	var seqFile, seqContent, windowStart, windowEnd, sendDaysStr, tzName string
+	var seqFile, seqContent, startDate, windowStart, windowEnd, sendDaysStr, tzName string
 	var minGap, maxGap int
-	err := db.QueryRow(`SELECT id, sequence_file, sequence_content, send_window_start, send_window_end,
+	err := db.QueryRow(`SELECT id, sequence_file, sequence_content, start_date, send_window_start, send_window_end,
 		send_days, timezone, min_gap_seconds, max_gap_seconds
 		FROM campaigns WHERE name = ?`, campaignName).
-		Scan(&campID, &seqFile, &seqContent, &windowStart, &windowEnd, &sendDaysStr, &tzName, &minGap, &maxGap)
+		Scan(&campID, &seqFile, &seqContent, &startDate, &windowStart, &windowEnd, &sendDaysStr, &tzName, &minGap, &maxGap)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("campaign %q not found", campaignName)
 	}
@@ -1034,6 +1041,9 @@ func AddLeadsToCampaign(db *sql.DB, campaignName, leadsFile, leadsInline string)
 		records, _, err = ParseLeadsCSV(leadsFile)
 	}
 	if err != nil {
+		return nil, err
+	}
+	if err := ValidateLeadScheduleOverrides(records); err != nil {
 		return nil, err
 	}
 
@@ -1082,7 +1092,7 @@ func AddLeadsToCampaign(db *sql.DB, campaignName, leadsFile, leadsInline string)
 	result, err := withRetryTx(db, func(tx *sql.Tx) (addResult, error) {
 		var out addResult
 		added, sends, err := insertLeadsAndSchedule(tx, campID, accountIDs, records, seq,
-			windowStart, windowEnd, sendDays, tz, minGap, maxGap)
+			startDate, windowStart, windowEnd, sendDays, tz, minGap, maxGap)
 		if err != nil {
 			return out, err
 		}
@@ -1111,7 +1121,7 @@ func AddLeadsToCampaign(db *sql.DB, campaignName, leadsFile, leadsInline string)
 // Returns the number of leads added and sends created.
 func insertLeadsAndSchedule(tx *sql.Tx, campaignID int64, accountIDs []int64,
 	records []LeadRecord, seq *Sequence,
-	windowStart, windowEnd string, sendDays []time.Weekday, tz *time.Location,
+	startDate, windowStart, windowEnd string, sendDays []time.Weekday, tz *time.Location,
 	minGap, maxGap int) (leadsAdded int, sendsAdded int, err error) {
 
 	var leadsForSchedule []LeadForSchedule
@@ -1180,6 +1190,7 @@ func insertLeadsAndSchedule(tx *sql.Tx, campaignID int64, accountIDs []int64,
 		AccountIDs:      accountIDs,
 		Leads:           leadsForSchedule,
 		Sequence:        seq,
+		StartDate:       startDate,
 		SendWindowStart: windowStart,
 		SendWindowEnd:   windowEnd,
 		SendDays:        sendDays,
@@ -1240,11 +1251,13 @@ func reschedulePendingSends(tx *sql.Tx, campaignID int64, seq *Sequence,
 	type scheduledSendState struct {
 		ID         int64
 		LeadID     int64
+		LeadEmail  string
 		StepNumber int
 		Status     string
 		SendAt     time.Time
 		SentAt     time.Time
 		HasSentAt  bool
+		ScheduleTZ string
 	}
 
 	stepByNumber := make(map[int]SequenceStep, len(seq.Steps))
@@ -1253,10 +1266,11 @@ func reschedulePendingSends(tx *sql.Tx, campaignID int64, seq *Sequence,
 	}
 
 	rows, err := tx.Query(`
-		SELECT id, lead_id, step_number, status, send_at, COALESCE(sent_at, '')
-		FROM scheduled_sends
-		WHERE campaign_id = ?
-		ORDER BY lead_id, step_number`, campaignID)
+		SELECT ss.id, ss.lead_id, l.email, ss.step_number, ss.status, ss.send_at, COALESCE(ss.sent_at, ''), l.custom_fields
+		FROM scheduled_sends ss
+		JOIN leads l ON l.id = ss.lead_id
+		WHERE ss.campaign_id = ?
+		ORDER BY ss.lead_id, ss.step_number`, campaignID)
 	if err != nil {
 		return fmt.Errorf("loading scheduled sends: %w", err)
 	}
@@ -1266,10 +1280,16 @@ func reschedulePendingSends(tx *sql.Tx, campaignID int64, seq *Sequence,
 	var leadOrder []int64
 	for rows.Next() {
 		var send scheduledSendState
-		var sendAtStr, sentAtStr string
-		if err := rows.Scan(&send.ID, &send.LeadID, &send.StepNumber, &send.Status, &sendAtStr, &sentAtStr); err != nil {
+		var sendAtStr, sentAtStr, customFields string
+		if err := rows.Scan(&send.ID, &send.LeadID, &send.LeadEmail, &send.StepNumber, &send.Status, &sendAtStr, &sentAtStr, &customFields); err != nil {
 			return fmt.Errorf("scanning scheduled send: %w", err)
 		}
+
+		leadFields, err := buildLeadFields(send.LeadEmail, "", "", "", "", customFields, true)
+		if err != nil {
+			return fmt.Errorf("loading lead %s scheduling overrides: %w", send.LeadEmail, err)
+		}
+		send.ScheduleTZ = strings.TrimSpace(leadFields[ScheduleTimezoneField])
 
 		send.SendAt, err = parseDBTimestamp(sendAtStr)
 		if err != nil {
@@ -1300,12 +1320,17 @@ func reschedulePendingSends(tx *sql.Tx, campaignID int64, seq *Sequence,
 	if err != nil {
 		return fmt.Errorf("invalid send_window_end: %w", err)
 	}
-	freshAnchor, err := campaignStartAnchor(timeNow().In(tz), startDate, windowStartTOD, tz)
-	if err != nil {
-		return fmt.Errorf("invalid start date %q (expected YYYY-MM-DD): %w", startDate, err)
-	}
 
 	for _, leadID := range leadOrder {
+		leadFields := map[string]string{
+			"email":               byLead[leadID][0].LeadEmail,
+			ScheduleTimezoneField: byLead[leadID][0].ScheduleTZ,
+		}
+		leadTZ, err := ResolveLeadScheduleTimezone(leadFields, tz)
+		if err != nil {
+			return err
+		}
+
 		hasSentHistory := false
 		for _, send := range byLead[leadID] {
 			if send.HasSentAt {
@@ -1316,6 +1341,10 @@ func reschedulePendingSends(tx *sql.Tx, campaignID int64, seq *Sequence,
 
 		var prevSendAt time.Time
 		var havePrev bool
+		freshAnchor, err := campaignStartAnchor(timeNow().In(leadTZ), startDate, windowStartTOD, leadTZ)
+		if err != nil {
+			return fmt.Errorf("invalid start date %q (expected YYYY-MM-DD): %w", startDate, err)
+		}
 
 		if !hasSentHistory {
 			for _, send := range byLead[leadID] {
@@ -1329,9 +1358,9 @@ func reschedulePendingSends(tx *sql.Tx, campaignID int64, seq *Sequence,
 					if !ok {
 						return fmt.Errorf("campaign sequence is missing step %d for pending send %d", send.StepNumber, send.ID)
 					}
-					nextSendAt = nextScheduledTime(prevSendAt, step.Delay, windowStartTOD, windowEndTOD, sendDays, tz)
+					nextSendAt = nextScheduledTime(prevSendAt, step.Delay, windowStartTOD, windowEndTOD, sendDays, leadTZ)
 				} else {
-					nextSendAt = clampToWindow(freshAnchor, windowStartTOD, windowEndTOD, sendDays, tz)
+					nextSendAt = clampToWindow(freshAnchor, windowStartTOD, windowEndTOD, sendDays, leadTZ)
 				}
 
 				if _, err := tx.Exec("UPDATE scheduled_sends SET send_at = ? WHERE id = ?",
@@ -1346,9 +1375,9 @@ func reschedulePendingSends(tx *sql.Tx, campaignID int64, seq *Sequence,
 		}
 
 		for _, send := range byLead[leadID] {
-			nextSendAt := send.SendAt.In(tz)
+			nextSendAt := send.SendAt.In(leadTZ)
 			if send.HasSentAt {
-				nextSendAt = send.SentAt.In(tz)
+				nextSendAt = send.SentAt.In(leadTZ)
 			}
 
 			if send.Status == "pending" {
@@ -1357,9 +1386,9 @@ func reschedulePendingSends(tx *sql.Tx, campaignID int64, seq *Sequence,
 					if !ok {
 						return fmt.Errorf("campaign sequence is missing step %d for pending send %d", send.StepNumber, send.ID)
 					}
-					nextSendAt = nextScheduledTime(prevSendAt, step.Delay, windowStartTOD, windowEndTOD, sendDays, tz)
+					nextSendAt = nextScheduledTime(prevSendAt, step.Delay, windowStartTOD, windowEndTOD, sendDays, leadTZ)
 				} else {
-					nextSendAt = clampToWindow(nextSendAt, windowStartTOD, windowEndTOD, sendDays, tz)
+					nextSendAt = clampToWindow(nextSendAt, windowStartTOD, windowEndTOD, sendDays, leadTZ)
 				}
 
 				if _, err := tx.Exec("UPDATE scheduled_sends SET send_at = ? WHERE id = ?",

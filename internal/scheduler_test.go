@@ -262,6 +262,47 @@ func TestComputeSchedule_WeekendSkipping(t *testing.T) {
 	}
 }
 
+func TestComputeSchedule_UsesLeadScheduleTimezoneOverride(t *testing.T) {
+	seq := &Sequence{
+		Steps: []SequenceStep{
+			{Step: 1, Delay: 0, Subject: "Hi", Body: "Hello"},
+		},
+	}
+
+	tzUTC := time.UTC
+	startTime := time.Date(2025, 1, 6, 12, 0, 0, 0, tzUTC)
+
+	rows, err := ComputeSchedule(ScheduleConfig{
+		CampaignID: 1,
+		AccountIDs: []int64{100, 200},
+		Leads: []LeadForSchedule{
+			{ID: 1, Fields: map[string]string{"email": "utc@example.com"}},
+			{ID: 2, Fields: map[string]string{"email": "la@example.com", ScheduleTimezoneField: "America/Los_Angeles"}},
+		},
+		Sequence:        seq,
+		SendWindowStart: "09:00",
+		SendWindowEnd:   "17:00",
+		SendDays:        []time.Weekday{time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday},
+		Timezone:        tzUTC,
+		MinGapSeconds:   0,
+		MaxGapSeconds:   0,
+		StartTime:       startTime,
+	})
+	if err != nil {
+		t.Fatalf("ComputeSchedule error: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+	if got := rows[0].SendAt.UTC().Format(time.RFC3339); got != "2025-01-06T12:00:00Z" {
+		t.Fatalf("expected UTC lead to keep noon UTC slot, got %s", got)
+	}
+	if got := rows[1].SendAt.UTC().Format(time.RFC3339); got != "2025-01-06T17:00:00Z" {
+		t.Fatalf("expected LA lead to clamp to 09:00 PT, got %s", got)
+	}
+}
+
 func TestComputeSchedule_WindowClamping(t *testing.T) {
 	seq := &Sequence{
 		Steps: []SequenceStep{

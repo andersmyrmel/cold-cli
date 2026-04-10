@@ -1840,6 +1840,52 @@ steps:
 	}
 }
 
+func TestCreateCampaign_RejectsInvalidScheduleTimezone(t *testing.T) {
+	db := testDB(t)
+	tmpDir := t.TempDir()
+	t.Setenv("COLD_CLI_DATA_DIR", tmpDir)
+
+	if err := os.WriteFile(tmpDir+"/config.yml", []byte("default_timezone: UTC\ndefault_daily_limit: 50\nmin_gap_seconds: 90\nmax_gap_seconds: 140\nsend_window_start: \"09:00\"\nsend_window_end: \"17:00\"\nsend_days: \"1,2,3,4,5\"\n"), 0644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	seqContent := `name: Test
+defaults:
+  from_name: Tester
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello"
+`
+	seqFile := tmpDir + "/seq.yml"
+	if err := os.WriteFile(seqFile, []byte(seqContent), 0644); err != nil {
+		t.Fatalf("writing sequence: %v", err)
+	}
+
+	leadsFile := tmpDir + "/leads.csv"
+	if err := os.WriteFile(leadsFile, []byte("email,first_name,schedule_timezone\nalice@acme.com,Alice,Not/A_Timezone\n"), 0644); err != nil {
+		t.Fatalf("writing leads: %v", err)
+	}
+
+	if _, err := db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)"); err != nil {
+		t.Fatalf("inserting account: %v", err)
+	}
+
+	_, err := CreateCampaign(db, CreateCampaignOpts{
+		Name:          "bad-schedule-timezone",
+		SequenceFile:  seqFile,
+		LeadsFile:     leadsFile,
+		AccountEmails: []string{"sender@x.com"},
+	})
+	if err == nil {
+		t.Fatal("expected invalid schedule timezone error")
+	}
+	if !strings.Contains(err.Error(), ScheduleTimezoneField) {
+		t.Fatalf("expected %s in error, got %v", ScheduleTimezoneField, err)
+	}
+}
+
 func TestCreateCampaign_UpdatesExistingLeadCustomFields(t *testing.T) {
 	db := testDB(t)
 	tmpDir := t.TempDir()
