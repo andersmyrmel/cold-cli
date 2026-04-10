@@ -2,7 +2,6 @@ package internal
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -536,27 +535,17 @@ func loadLeadFields(db *sql.DB, leadID int64) (map[string]string, error) {
 		return nil, err
 	}
 
-	fields := map[string]string{
-		"email":      email,
-		"first_name": firstName,
-		"last_name":  lastName,
-		"company":    company,
-		"domain":     domain,
-	}
-
-	// Parse custom_fields JSON and merge into fields
-	if customFields != "" && customFields != "{}" {
-		var cf map[string]string
-		if err := json.Unmarshal([]byte(customFields), &cf); err != nil {
-			slog.Warn("failed to parse custom_fields JSON",
-				"lead_id", leadID, "error", err)
-		} else {
-			for k, v := range cf {
-				if _, exists := fields[k]; !exists {
-					fields[k] = v
-				}
-			}
-		}
+	fields, err := buildLeadFields(email, firstName, lastName, company, domain, customFields, false)
+	if err != nil {
+		slog.Warn("failed to parse custom_fields JSON",
+			"lead_id", leadID, "error", err)
+		return map[string]string{
+			"email":      email,
+			"first_name": firstName,
+			"last_name":  lastName,
+			"company":    company,
+			"domain":     domain,
+		}, nil
 	}
 
 	return fields, nil

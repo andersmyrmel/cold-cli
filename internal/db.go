@@ -2,11 +2,15 @@ package internal
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 const schema = `
@@ -105,6 +109,12 @@ CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
 CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(domain);
 `
 
+const (
+	sqliteBusyTimeoutMS  = 5000
+	sqliteWriteAttempts  = 5
+	sqliteRetryBaseDelay = 50 * time.Millisecond
+)
+
 // DataDir returns the cold-cli data directory path.
 // Respects COLD_CLI_DATA_DIR env var for testing.
 func DataDir() string {
@@ -127,35 +137,32 @@ func EnsureDataDir() error {
 
 // OpenDB opens (or creates) the SQLite database and runs migrations.
 func OpenDB(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
-	// Enable WAL mode and foreign keys
-	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA foreign_keys=ON",
-	} {
-		if _, err := db.Exec(pragma); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("setting %s: %w", pragma, err)
-		}
-	}
-
-	if _, err := db.Exec(schema); err != nil {
+	if err := withBusyRetry(func() error {
+		_, err := db.Exec(schema)
+		return err
+	}); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("running schema migration: %w", err)
 	}
 
 	// Incremental migrations for existing databases
-	runMigrations(db)
+	if err := runMigrations(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	return db, nil
 }
 
 // runMigrations applies incremental schema changes to existing databases.
-func runMigrations(db *sql.DB) {
+func runMigrations(db *sql.DB) error {
 	migrations := []string{
 		"ALTER TABLE accounts ADD COLUMN gws_config_dir TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE campaigns ADD COLUMN sequence_content TEXT NOT NULL DEFAULT ''",
@@ -163,6 +170,119 @@ func runMigrations(db *sql.DB) {
 		"ALTER TABLE scheduled_sends ADD COLUMN error_message TEXT NOT NULL DEFAULT ''",
 	}
 	for _, m := range migrations {
-		db.Exec(m) // ignore errors (column may already exist)
+		if err := withBusyRetry(func() error {
+			_, err := db.Exec(m)
+			return err
+		}); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return fmt.Errorf("running migration %q: %w", m, err)
+		}
 	}
+	return nil
+}
+
+func sqliteDSN(path string) string {
+	q := url.Values{}
+	q.Add("_txlock", "immediate")
+	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMS))
+	q.Add("_pragma", "foreign_keys(1)")
+	q.Add("_pragma", "synchronous(NORMAL)")
+
+	if path == ":memory:" {
+		u := &url.URL{Scheme: "file", Opaque: ":memory:"}
+		u.RawQuery = q.Encode()
+		return u.String()
+	}
+
+	q.Add("_pragma", "journal_mode(WAL)")
+
+	if strings.HasPrefix(path, "file:") {
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		return path + sep + q.Encode()
+	}
+
+	u := &url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func withBusyRetry(fn func() error) error {
+	var lastErr error
+	for attempt := 0; attempt < sqliteWriteAttempts; attempt++ {
+		if err := fn(); err != nil {
+			lastErr = err
+			if !isSQLiteBusyError(err) || attempt == sqliteWriteAttempts-1 {
+				return err
+			}
+			time.Sleep(sqliteRetryDelay(attempt))
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
+func withRetryTx[T any](db *sql.DB, fn func(tx *sql.Tx) (T, error)) (T, error) {
+	var zero T
+	var lastErr error
+
+	for attempt := 0; attempt < sqliteWriteAttempts; attempt++ {
+		tx, err := db.Begin()
+		if err != nil {
+			lastErr = fmt.Errorf("starting transaction: %w", err)
+			if !isSQLiteBusyError(lastErr) || attempt == sqliteWriteAttempts-1 {
+				return zero, lastErr
+			}
+			time.Sleep(sqliteRetryDelay(attempt))
+			continue
+		}
+
+		result, err := fn(tx)
+		if err != nil {
+			_ = tx.Rollback()
+			lastErr = err
+			if !isSQLiteBusyError(err) || attempt == sqliteWriteAttempts-1 {
+				return zero, err
+			}
+			time.Sleep(sqliteRetryDelay(attempt))
+			continue
+		}
+
+		if err := tx.Commit(); err != nil {
+			_ = tx.Rollback()
+			lastErr = fmt.Errorf("committing: %w", err)
+			if !isSQLiteBusyError(lastErr) || attempt == sqliteWriteAttempts-1 {
+				return zero, lastErr
+			}
+			time.Sleep(sqliteRetryDelay(attempt))
+			continue
+		}
+
+		return result, nil
+	}
+
+	return zero, lastErr
+}
+
+func isSQLiteBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		switch sqliteErr.Code() {
+		case 5, 6:
+			return true
+		}
+	}
+
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "sqlite_busy") || strings.Contains(lower, "database is locked")
+}
+
+func sqliteRetryDelay(attempt int) time.Duration {
+	return sqliteRetryBaseDelay * time.Duration(1<<attempt)
 }

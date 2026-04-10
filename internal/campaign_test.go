@@ -1,8 +1,10 @@
 package internal
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -168,7 +170,7 @@ steps:
 	}
 }
 
-func TestGetCampaignRenderedPreview_UsesCustomFieldsAndShowsStrippedVars(t *testing.T) {
+func TestGetCampaignRenderedPreview_UsesCustomFields(t *testing.T) {
 	db := testDB(t)
 
 	seqYAML := `name: Test
@@ -176,7 +178,7 @@ steps:
   - step: 1
     delay: 0
     subject: "Hi {{first_name}} the {{title}}"
-    body: "Hello {{first_name}} from {{company}} {{missing}}"
+    body: "Hello {{first_name}} from {{company}}"
 `
 	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
 	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content,
@@ -198,11 +200,105 @@ steps:
 	if rendered[0].Subject != "Hi Alice the CTO" {
 		t.Errorf("expected custom field in rendered subject, got %q", rendered[0].Subject)
 	}
-	if strings.Contains(rendered[0].Body, "{{missing}}") {
-		t.Errorf("expected missing placeholder to be stripped, got %q", rendered[0].Body)
+	if !strings.Contains(rendered[0].Body, "Hello Alice from Acme") {
+		t.Errorf("expected rendered body to include built-in fields, got %q", rendered[0].Body)
 	}
-	if len(rendered[0].StrippedVars) != 1 || rendered[0].StrippedVars[0] != "missing" {
-		t.Errorf("expected stripped_vars [missing], got %#v", rendered[0].StrippedVars)
+	if len(rendered[0].StrippedVars) != 0 {
+		t.Errorf("expected no stripped vars, got %#v", rendered[0].StrippedVars)
+	}
+}
+
+func TestCreateCampaign_RenderedPreview_UsesCustomCSVFields(t *testing.T) {
+	db := testDB(t)
+	tmpDir := t.TempDir()
+	t.Setenv("COLD_CLI_DATA_DIR", tmpDir)
+
+	if err := os.WriteFile(tmpDir+"/config.yml", []byte("default_timezone: UTC\ndefault_daily_limit: 50\nmin_gap_seconds: 90\nmax_gap_seconds: 140\nsend_window_start: \"09:00\"\nsend_window_end: \"17:00\"\nsend_days: \"1,2,3,4,5\"\n"), 0644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	if _, err := db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)"); err != nil {
+		t.Fatalf("inserting account: %v", err)
+	}
+
+	seqInline := `name: Test
+defaults:
+  from_name: Anders
+steps:
+  - step: 1
+    delay: 0
+    subject: "{{subject_1}}"
+    body: |
+      Hi {{first_name}},
+
+      {{opening_1}}
+
+      Anders
+`
+	leadsInline := "email,first_name,last_name,company,subject_1,opening_1\ntest@example.com,Alice,Smith,Acme,hello subject,Saw your page builder roundup.\n"
+
+	if _, err := CreateCampaign(db, CreateCampaignOpts{
+		Name:           "custom-csv-preview",
+		SequenceInline: seqInline,
+		LeadsInline:    leadsInline,
+		AccountEmails:  []string{"sender@x.com"},
+	}); err != nil {
+		t.Fatalf("CreateCampaign error: %v", err)
+	}
+
+	rendered, err := GetCampaignRenderedPreview(db, "custom-csv-preview", "test@example.com")
+	if err != nil {
+		t.Fatalf("GetCampaignRenderedPreview error: %v", err)
+	}
+	if len(rendered) != 1 {
+		t.Fatalf("expected 1 rendered email, got %d", len(rendered))
+	}
+	if rendered[0].Subject != "hello subject" {
+		t.Fatalf("expected custom subject field to render, got %q", rendered[0].Subject)
+	}
+	if !strings.Contains(rendered[0].Body, "Saw your page builder roundup.") {
+		t.Fatalf("expected custom body field to render, got %q", rendered[0].Body)
+	}
+}
+
+func TestGetCampaignRenderedPreview_FailsOnMissingTemplateFields(t *testing.T) {
+	db := testDB(t)
+
+	seqYAML := `name: Test
+steps:
+  - step: 1
+    delay: 0
+    subject: "{{title}}"
+    body: "Hello {{first_name}}"
+`
+	if _, err := db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)"); err != nil {
+		t.Fatalf("inserting account: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content,
+		send_window_start, send_window_end, send_days, timezone)
+		VALUES ('invalid-render', 'draft', 'seq.yml', ?, '09:00', '17:00', '1,2,3,4,5', 'UTC')`, seqYAML); err != nil {
+		t.Fatalf("inserting campaign: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO leads (email, first_name, company, domain)
+		VALUES ('alice@acme.com', 'Alice', 'Acme', 'acme.com')`); err != nil {
+		t.Fatalf("inserting lead: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')"); err != nil {
+		t.Fatalf("linking lead: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at) VALUES (1, 1, 1, 1, 0, '2025-01-01')"); err != nil {
+		t.Fatalf("inserting scheduled send: %v", err)
+	}
+
+	_, err := GetCampaignRenderedPreview(db, "invalid-render", "")
+	if err == nil {
+		t.Fatal("expected preview validation error")
+	}
+	if !strings.Contains(err.Error(), "failed template validation") {
+		t.Fatalf("expected validation failure context, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "{{title}}") {
+		t.Fatalf("expected missing variable name in error, got: %v", err)
 	}
 }
 
@@ -1791,5 +1887,88 @@ steps:
 	}
 	if !strings.Contains(customJSON, `"slug":"new-slug"`) {
 		t.Errorf("expected updated custom_fields with new-slug, got %q", customJSON)
+	}
+}
+
+func TestCreateCampaign_RetriesUnderWriteContention(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("COLD_CLI_DATA_DIR", tmpDir)
+
+	if err := os.WriteFile(tmpDir+"/config.yml", []byte("default_timezone: UTC\ndefault_daily_limit: 50\nmin_gap_seconds: 90\nmax_gap_seconds: 140\nsend_window_start: \"09:00\"\nsend_window_end: \"17:00\"\nsend_days: \"1,2,3,4,5\"\n"), 0644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	dbPath := filepath.Join(tmpDir, "data.db")
+	db1, err := OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("opening db1: %v", err)
+	}
+	defer db1.Close()
+
+	db2, err := OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("opening db2: %v", err)
+	}
+	defer db2.Close()
+
+	if _, err := db1.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)"); err != nil {
+		t.Fatalf("inserting account: %v", err)
+	}
+
+	lockHeld := make(chan struct{})
+	lockDone := make(chan error, 1)
+	releaseLock := make(chan struct{})
+
+	go func() {
+		_, err := withRetryTx(db1, func(tx *sql.Tx) (struct{}, error) {
+			if _, err := tx.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('locker@x.com', 50)"); err != nil {
+				return struct{}{}, err
+			}
+			close(lockHeld)
+			<-releaseLock
+			return struct{}{}, nil
+		})
+		lockDone <- err
+	}()
+
+	<-lockHeld
+	time.AfterFunc(150*time.Millisecond, func() { close(releaseLock) })
+
+	seqInline := `name: Test
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello"`
+	leadsInline := "email,first_name\nalice@x.com,Alice\n"
+
+	_, err = CreateCampaign(db2, CreateCampaignOpts{
+		Name:           "contention-test",
+		SequenceInline: seqInline,
+		LeadsInline:    leadsInline,
+		AccountEmails:  []string{"sender@x.com"},
+	})
+	if err != nil {
+		t.Fatalf("CreateCampaign under write contention failed: %v", err)
+	}
+
+	if err := <-lockDone; err != nil {
+		t.Fatalf("lock holder failed: %v", err)
+	}
+
+	var campaigns int
+	if err := db2.QueryRow("SELECT COUNT(*) FROM campaigns WHERE name = 'contention-test'").Scan(&campaigns); err != nil {
+		t.Fatalf("counting campaigns: %v", err)
+	}
+	if campaigns != 1 {
+		t.Fatalf("expected 1 created campaign, got %d", campaigns)
+	}
+
+	var sends int
+	if err := db2.QueryRow("SELECT COUNT(*) FROM scheduled_sends").Scan(&sends); err != nil {
+		t.Fatalf("counting scheduled sends: %v", err)
+	}
+	if sends != 1 {
+		t.Fatalf("expected 1 scheduled send, got %d", sends)
 	}
 }
