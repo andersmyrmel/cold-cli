@@ -28,6 +28,7 @@ type MockGWS struct {
 	SendRFCMessageID string
 	ListError        error
 	GetError         error
+	ListCalls        []MockListCall
 }
 
 type MockSentEmail struct {
@@ -35,6 +36,12 @@ type MockSentEmail struct {
 	To       string
 	RawMsg   string
 	ThreadID string
+}
+
+type MockListCall struct {
+	Account          string
+	Query            string
+	IncludeSpamTrash bool
 }
 
 func (m *MockGWS) SendEmail(account, to, rawMsg, threadID string) (string, string, error) {
@@ -60,7 +67,13 @@ func (m *MockGWS) SendEmail(account, to, rawMsg, threadID string) (string, strin
 	return msgID, sentThreadID, nil
 }
 
-func (m *MockGWS) ListMessages(account, query string) ([]GWSMessage, error) {
+func (m *MockGWS) ListMessages(account, query string, includeSpamTrash ...bool) ([]GWSMessage, error) {
+	include := len(includeSpamTrash) > 0 && includeSpamTrash[0]
+	m.ListCalls = append(m.ListCalls, MockListCall{
+		Account:          account,
+		Query:            query,
+		IncludeSpamTrash: include,
+	})
 	if m.ListError != nil {
 		return nil, m.ListError
 	}
@@ -102,7 +115,7 @@ func (m *failFirstMockGWS) SendEmail(account, to, rawMsg, threadID string) (stri
 	return fmt.Sprintf("msg-%d", m.callCount), fmt.Sprintf("thread-%d", m.callCount), nil
 }
 
-func (m *failFirstMockGWS) ListMessages(account, query string) ([]GWSMessage, error) {
+func (m *failFirstMockGWS) ListMessages(account, query string, includeSpamTrash ...bool) ([]GWSMessage, error) {
 	return nil, nil
 }
 

@@ -81,6 +81,40 @@ func TestProcessBounces_Dedup(t *testing.T) {
 	}
 }
 
+func TestProcessBounces_IncludesSpamTrash(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	mock := &MockGWS{}
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+
+	if _, err := ProcessBounces(db, mock, accounts); err != nil {
+		t.Fatalf("ProcessBounces error: %v", err)
+	}
+	if len(mock.ListCalls) != 1 {
+		t.Fatalf("expected 1 ListMessages call, got %d", len(mock.ListCalls))
+	}
+	if !mock.ListCalls[0].IncludeSpamTrash {
+		t.Fatal("bounce polling should include spam/trash so NDRs in Spam are detected")
+	}
+}
+
+func TestProcessReplies_DoesNotIncludeSpamTrash(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	mock := &MockGWS{}
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+
+	if _, _, err := ProcessReplies(db, mock, accounts); err != nil {
+		t.Fatalf("ProcessReplies error: %v", err)
+	}
+	if len(mock.ListCalls) != 1 {
+		t.Fatalf("expected 1 ListMessages call, got %d", len(mock.ListCalls))
+	}
+	if mock.ListCalls[0].IncludeSpamTrash {
+		t.Fatal("reply polling should stay inbox-scoped and not include spam/trash")
+	}
+}
+
 func TestProcessBounces_FiltersDaemonAddress(t *testing.T) {
 	// Should not extract "mailer-daemon@google.com" as the bounced email
 	email := extractBouncedEmail("mailer-daemon@google.com says: delivery to john@acme.com failed", "")

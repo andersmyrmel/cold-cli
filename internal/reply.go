@@ -228,7 +228,7 @@ func ProcessBounces(db *sql.DB, gws GWSClient, accounts []Account) (int, error) 
 	afterFilter := fmt.Sprintf("(from:mailer-daemon OR from:postmaster) after:%d", lastPoll.Unix())
 
 	for _, account := range accounts {
-		messages, err := gws.ListMessages(account.Email, afterFilter)
+		messages, err := gws.ListMessages(account.Email, afterFilter, true)
 		if err != nil {
 			return bouncesFound, fmt.Errorf("listing bounce messages for %s: %w", account.Email, err)
 		}

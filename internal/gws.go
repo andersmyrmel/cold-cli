@@ -15,7 +15,7 @@ import (
 // GWSClient is the interface for Gmail operations via gws CLI.
 type GWSClient interface {
 	SendEmail(account, to, rawMsg, threadID string) (msgID, sentThreadID string, err error)
-	ListMessages(account, query string) ([]GWSMessage, error)
+	ListMessages(account, query string, includeSpamTrash ...bool) ([]GWSMessage, error)
 	GetMessage(account, msgID string) (*GWSMessage, error)
 }
 
@@ -112,11 +112,14 @@ func (g *GWSCLI) SendEmail(account, to, rawMsg, threadID string) (string, string
 }
 
 // ListMessages lists messages matching a Gmail search query.
-func (g *GWSCLI) ListMessages(account, query string) ([]GWSMessage, error) {
+func (g *GWSCLI) ListMessages(account, query string, includeSpamTrash ...bool) ([]GWSMessage, error) {
 	params := map[string]any{
 		"userId":     "me",
 		"q":          query,
 		"maxResults": 25,
+	}
+	if len(includeSpamTrash) > 0 && includeSpamTrash[0] {
+		params["includeSpamTrash"] = true
 	}
 	paramsJSON, _ := json.Marshal(params)
 
