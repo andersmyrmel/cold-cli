@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -18,12 +19,22 @@ import (
 
 var jsonOutput bool
 
-func openDB() (*sql.DB, error) {
-	dbPath := internal.DBPath()
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("cold-cli not initialized — run 'cold-cli init' first")
+func openStore() (*internal.Store, error) {
+	if internal.CurrentDialect() == internal.DialectSQLite {
+		dbPath := internal.DBPath()
+		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+			return nil, fmt.Errorf("cold-cli not initialized — run 'cold-cli init' first")
+		}
 	}
-	return internal.OpenDB(dbPath)
+	return internal.OpenStore()
+}
+
+func openDB() (*sql.DB, error) {
+	store, err := openStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.DB, nil
 }
 
 func printJSON(v any) error {
@@ -47,11 +58,11 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("creating data directory: %w", err)
 		}
 
-		db, err := internal.OpenDB(internal.DBPath())
+		store, err := internal.OpenStore()
 		if err != nil {
 			return err
 		}
-		db.Close()
+		defer store.Close()
 
 		configPath := internal.ConfigPath()
 		if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -65,7 +76,7 @@ var initCmd = &cobra.Command{
 		if jsonOutput {
 			result := map[string]any{
 				"data_dir": dataDir,
-				"database": internal.DBPath(),
+				"database": store.DisplayTarget(),
 				"config":   configPath,
 				"gws_ok":   gwsErr == nil,
 			}
@@ -76,7 +87,7 @@ var initCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Initialized cold-cli at %s\n", dataDir)
-		fmt.Printf("  database: %s\n", internal.DBPath())
+		fmt.Printf("  database: %s\n", store.DisplayTarget())
 		fmt.Printf("  config:   %s\n", configPath)
 		if gwsErr != nil {
 			fmt.Printf("  warning:  %s\n", gwsErr)
@@ -1177,7 +1188,16 @@ var tickCmd = &cobra.Command{
 			if err := internal.EnsureDataDir(); err != nil {
 				return err
 			}
-			lockFile, err := internal.AcquireTickLock()
+		}
+
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+
+		if !dryRun {
+			lock, err := store.AcquireTickLock(context.Background())
 			if err != nil {
 				if jsonOutput {
 					return printJSON(map[string]any{"status": "locked", "message": "tick already running"})
@@ -1185,14 +1205,10 @@ var tickCmd = &cobra.Command{
 				fmt.Println("tick already running")
 				return nil
 			}
-			defer lockFile.Close()
+			defer lock.Close()
 		}
 
-		db, err := openDB()
-		if err != nil {
-			return err
-		}
-		defer db.Close()
+		db := store.DB
 
 		// Load timezone for daily limit calculation
 		cfg, _ := internal.LoadConfig()

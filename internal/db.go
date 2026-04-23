@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"modernc.org/sqlite"
 )
 
@@ -109,6 +110,94 @@ CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
 CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(domain);
 `
 
+var postgresSchemaStatements = []string{
+	`CREATE TABLE IF NOT EXISTS accounts (
+		id BIGSERIAL PRIMARY KEY,
+		email TEXT NOT NULL UNIQUE,
+		daily_limit INTEGER NOT NULL DEFAULT 50,
+		last_send_at TIMESTAMPTZ,
+		status TEXT NOT NULL DEFAULT 'active',
+		gws_config_dir TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE TABLE IF NOT EXISTS campaigns (
+		id BIGSERIAL PRIMARY KEY,
+		name TEXT NOT NULL UNIQUE,
+		status TEXT NOT NULL DEFAULT 'draft',
+		sequence_file TEXT NOT NULL,
+		sequence_content TEXT NOT NULL DEFAULT '',
+		start_date TEXT NOT NULL DEFAULT '',
+		stop_on_reply INTEGER NOT NULL DEFAULT 1,
+		stop_on_domain_reply INTEGER NOT NULL DEFAULT 0,
+		send_window_start TEXT NOT NULL DEFAULT '09:00',
+		send_window_end TEXT NOT NULL DEFAULT '17:00',
+		send_days TEXT NOT NULL DEFAULT '1,2,3,4,5',
+		timezone TEXT NOT NULL DEFAULT 'America/New_York',
+		min_gap_seconds INTEGER NOT NULL DEFAULT 90,
+		max_gap_seconds INTEGER NOT NULL DEFAULT 140,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`,
+	`CREATE TABLE IF NOT EXISTS campaign_accounts (
+		campaign_id BIGINT NOT NULL REFERENCES campaigns(id),
+		account_id BIGINT NOT NULL REFERENCES accounts(id),
+		PRIMARY KEY (campaign_id, account_id)
+	)`,
+	`CREATE TABLE IF NOT EXISTS leads (
+		id BIGSERIAL PRIMARY KEY,
+		email TEXT NOT NULL UNIQUE,
+		first_name TEXT NOT NULL DEFAULT '',
+		last_name TEXT NOT NULL DEFAULT '',
+		company TEXT NOT NULL DEFAULT '',
+		domain TEXT NOT NULL DEFAULT '',
+		custom_fields TEXT NOT NULL DEFAULT '{}',
+		global_status TEXT NOT NULL DEFAULT 'active',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`,
+	`CREATE TABLE IF NOT EXISTS campaign_leads (
+		campaign_id BIGINT NOT NULL REFERENCES campaigns(id),
+		lead_id BIGINT NOT NULL REFERENCES leads(id),
+		status TEXT NOT NULL DEFAULT 'active',
+		started_at TIMESTAMPTZ,
+		PRIMARY KEY (campaign_id, lead_id)
+	)`,
+	`CREATE TABLE IF NOT EXISTS scheduled_sends (
+		id BIGSERIAL PRIMARY KEY,
+		campaign_id BIGINT NOT NULL REFERENCES campaigns(id),
+		lead_id BIGINT NOT NULL REFERENCES leads(id),
+		account_id BIGINT NOT NULL REFERENCES accounts(id),
+		step_number INTEGER NOT NULL,
+		variant_index INTEGER NOT NULL DEFAULT 0,
+		send_at TIMESTAMPTZ NOT NULL,
+		status TEXT NOT NULL DEFAULT 'pending',
+		thread_id TEXT NOT NULL DEFAULT '',
+		parent_message_id TEXT NOT NULL DEFAULT '',
+		message_id TEXT NOT NULL DEFAULT '',
+		sent_at TIMESTAMPTZ,
+		error_message TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE TABLE IF NOT EXISTS events (
+		id BIGSERIAL PRIMARY KEY,
+		campaign_id BIGINT NOT NULL REFERENCES campaigns(id),
+		lead_id BIGINT NOT NULL REFERENCES leads(id),
+		account_id BIGINT NOT NULL REFERENCES accounts(id),
+		type TEXT NOT NULL,
+		step_number INTEGER NOT NULL,
+		message_id TEXT NOT NULL DEFAULT '',
+		thread_id TEXT NOT NULL DEFAULT '',
+		timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		metadata TEXT NOT NULL DEFAULT '{}'
+	)`,
+	`CREATE TABLE IF NOT EXISTS kv (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_sends_pending ON scheduled_sends(status, send_at) WHERE status = 'pending'`,
+	`CREATE INDEX IF NOT EXISTS idx_events_account_day ON events(account_id, type, timestamp)`,
+	`CREATE INDEX IF NOT EXISTS idx_events_message_id ON events(message_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_events_thread_id ON events(thread_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email)`,
+	`CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(domain)`,
+}
+
 const (
 	sqliteBusyTimeoutMS  = 5000
 	sqliteWriteAttempts  = 5
@@ -137,32 +226,42 @@ func EnsureDataDir() error {
 
 // OpenDB opens (or creates) the SQLite database and runs migrations.
 func OpenDB(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", sqliteDSN(path))
+	store, err := openStore(storeOpenConfig{
+		dialect:    DialectSQLite,
+		sqlitePath: path,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("opening database: %w", err)
+		return nil, err
 	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	return store.DB, nil
+}
 
+func bootstrapSQLiteSchema(db *sql.DB) error {
 	if err := withBusyRetry(func() error {
 		_, err := db.Exec(schema)
 		return err
 	}); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("running schema migration: %w", err)
+		return fmt.Errorf("running schema migration: %w", err)
 	}
 
-	// Incremental migrations for existing databases
-	if err := runMigrations(db); err != nil {
-		db.Close()
-		return nil, err
+	if err := runSQLiteMigrations(db); err != nil {
+		return err
 	}
 
-	return db, nil
+	return nil
 }
 
-// runMigrations applies incremental schema changes to existing databases.
-func runMigrations(db *sql.DB) error {
+func bootstrapPostgresSchema(db *sql.DB) error {
+	for _, stmt := range postgresSchemaStatements {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("running postgres schema statement %q: %w", stmt, err)
+		}
+	}
+	return nil
+}
+
+// runSQLiteMigrations applies incremental schema changes to existing databases.
+func runSQLiteMigrations(db *sql.DB) error {
 	migrations := []string{
 		"ALTER TABLE accounts ADD COLUMN gws_config_dir TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE campaigns ADD COLUMN sequence_content TEXT NOT NULL DEFAULT ''",

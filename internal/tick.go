@@ -5,10 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
-	"os"
-	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -308,25 +305,6 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 	}
 
 	return result, nil
-}
-
-// AcquireTickLock attempts to acquire the tick lock file.
-// Returns the lock file (which must be closed to release) or an error.
-func AcquireTickLock() (*os.File, error) {
-	lockPath := filepath.Join(DataDir(), "tick.lock")
-
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("opening lock file: %w", err)
-	}
-
-	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-	if err != nil {
-		f.Close()
-		return nil, fmt.Errorf("tick already running")
-	}
-
-	return f, nil
 }
 
 func loadActiveAccounts(db *sql.DB) ([]Account, error) {

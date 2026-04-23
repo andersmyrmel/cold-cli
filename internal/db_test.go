@@ -10,7 +10,7 @@ func TestOpenDB(t *testing.T) {
 	// Verify all tables exist
 	tables := []string{
 		"accounts", "campaigns", "campaign_accounts",
-		"leads", "campaign_leads", "scheduled_sends", "events",
+		"leads", "campaign_leads", "scheduled_sends", "events", "kv",
 	}
 	for _, table := range tables {
 		var name string
@@ -104,7 +104,7 @@ func TestOpenDB_TableColumns(t *testing.T) {
 	expected := []string{
 		"id", "campaign_id", "lead_id", "account_id",
 		"step_number", "variant_index", "send_at", "status",
-		"thread_id", "parent_message_id", "message_id", "sent_at",
+		"thread_id", "parent_message_id", "message_id", "sent_at", "error_message",
 	}
 	for _, col := range expected {
 		if !cols[col] {
@@ -192,5 +192,23 @@ func TestOpenDB_ScheduledSendDefaults(t *testing.T) {
 	}
 	if msgID != "" {
 		t.Errorf("expected default message_id '', got %q", msgID)
+	}
+}
+
+func TestOpenDB_IgnoresPostgresEnv(t *testing.T) {
+	t.Setenv("COLD_CLI_DATABASE_URL", "postgres://user:secret@localhost:5432/cold_cli")
+
+	db, err := OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("opening sqlite db with postgres env set: %v", err)
+	}
+	defer db.Close()
+
+	var enabled int
+	if err := db.QueryRow("PRAGMA foreign_keys").Scan(&enabled); err != nil {
+		t.Fatalf("checking sqlite pragma: %v", err)
+	}
+	if enabled != 1 {
+		t.Fatalf("expected sqlite database, foreign_keys=%d", enabled)
 	}
 }
