@@ -421,7 +421,7 @@ func loadAccountDailyLimitsTx(tx *Tx, accountIDs []int64) (map[int64]int, error)
 func loadAccountScheduleRowsTx(tx *Tx, accountIDs []int64) ([]accountScheduleRow, map[int64]*campaignScheduleRules, error) {
 	query, args := accountIDInClauseQuery(`
 		SELECT ss.id, ss.campaign_id, ss.lead_id, l.email, ss.account_id, ss.step_number, ss.status,
-			ss.send_at, COALESCE(ss.sent_at, ''), c.sequence_file, c.sequence_content,
+			CAST(ss.send_at AS TEXT), CASE WHEN ss.sent_at IS NULL THEN NULL ELSE CAST(ss.sent_at AS TEXT) END, c.sequence_file, c.sequence_content,
 			c.send_window_start, c.send_window_end, c.send_days, c.timezone, l.custom_fields
 		FROM scheduled_sends ss
 		JOIN campaigns c ON c.id = ss.campaign_id
@@ -441,7 +441,8 @@ func loadAccountScheduleRowsTx(tx *Tx, accountIDs []int64) ([]accountScheduleRow
 	rulesByCampaign := map[int64]*campaignScheduleRules{}
 	for rows.Next() {
 		var row accountScheduleRow
-		var sendAtStr, sentAtStr string
+		var sendAtStr string
+		var sentAtStr sql.NullString
 		var seqFile, seqContent, sendWindowStart, sendWindowEnd, sendDaysStr, timezoneName string
 		var customFields string
 		if err := rows.Scan(
@@ -461,8 +462,8 @@ func loadAccountScheduleRowsTx(tx *Tx, accountIDs []int64) ([]accountScheduleRow
 		if err != nil {
 			return nil, nil, fmt.Errorf("parsing send_at for send %d: %w", row.ID, err)
 		}
-		if sentAtStr != "" {
-			row.SentAt, err = parseDBTimestamp(sentAtStr)
+		if sentAtStr.Valid && sentAtStr.String != "" {
+			row.SentAt, err = parseDBTimestamp(sentAtStr.String)
 			if err != nil {
 				return nil, nil, fmt.Errorf("parsing sent_at for send %d: %w", row.ID, err)
 			}

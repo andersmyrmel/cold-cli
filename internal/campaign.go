@@ -1216,9 +1216,23 @@ type RetryCampaignResult struct {
 }
 
 func parseDBTimestamp(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if len(value) >= len("2006-01-02 15:04:05+00") {
+		suffix := value[len(value)-3:]
+		if (strings.HasPrefix(suffix, "+") || strings.HasPrefix(suffix, "-")) &&
+			suffix[1] >= '0' && suffix[1] <= '9' &&
+			suffix[2] >= '0' && suffix[2] <= '9' {
+			value = value + ":00"
+		}
+	}
+
 	layouts := []string{
 		time.RFC3339Nano,
 		time.RFC3339,
+		"2006-01-02 15:04:05.999999999Z07:00",
+		"2006-01-02 15:04:05.999999999Z07",
+		"2006-01-02 15:04:05Z07:00",
+		"2006-01-02 15:04:05Z07",
 		"2006-01-02 15:04:05",
 		"2006-01-02",
 	}
@@ -1258,7 +1272,8 @@ func reschedulePendingSends(tx *Tx, campaignID int64, seq *Sequence,
 	}
 
 	rows, err := tx.Query(`
-		SELECT ss.id, ss.lead_id, l.email, ss.step_number, ss.status, ss.send_at, COALESCE(ss.sent_at, ''), l.custom_fields
+		SELECT ss.id, ss.lead_id, l.email, ss.step_number, ss.status, CAST(ss.send_at AS TEXT),
+			CASE WHEN ss.sent_at IS NULL THEN NULL ELSE CAST(ss.sent_at AS TEXT) END, l.custom_fields
 		FROM scheduled_sends ss
 		JOIN leads l ON l.id = ss.lead_id
 		WHERE ss.campaign_id = ?
@@ -1272,7 +1287,8 @@ func reschedulePendingSends(tx *Tx, campaignID int64, seq *Sequence,
 	var leadOrder []int64
 	for rows.Next() {
 		var send scheduledSendState
-		var sendAtStr, sentAtStr, customFields string
+		var sendAtStr, customFields string
+		var sentAtStr sql.NullString
 		if err := rows.Scan(&send.ID, &send.LeadID, &send.LeadEmail, &send.StepNumber, &send.Status, &sendAtStr, &sentAtStr, &customFields); err != nil {
 			return fmt.Errorf("scanning scheduled send: %w", err)
 		}
@@ -1287,8 +1303,8 @@ func reschedulePendingSends(tx *Tx, campaignID int64, seq *Sequence,
 		if err != nil {
 			return fmt.Errorf("parsing send_at for send %d: %w", send.ID, err)
 		}
-		if sentAtStr != "" {
-			send.SentAt, err = parseDBTimestamp(sentAtStr)
+		if sentAtStr.Valid && sentAtStr.String != "" {
+			send.SentAt, err = parseDBTimestamp(sentAtStr.String)
 			if err != nil {
 				return fmt.Errorf("parsing sent_at for send %d: %w", send.ID, err)
 			}
