@@ -262,7 +262,7 @@ func RebalancePendingSchedules(db *sql.DB, accountIDs []int64) error {
 		return nil
 	}
 
-	tx, err := db.Begin()
+	tx, err := beginTx(db)
 	if err != nil {
 		return fmt.Errorf("starting transaction: %w", err)
 	}
@@ -275,7 +275,7 @@ func RebalancePendingSchedules(db *sql.DB, accountIDs []int64) error {
 	return tx.Commit()
 }
 
-func rebalancePendingSchedulesTx(tx *sql.Tx, accountIDs []int64) error {
+func rebalancePendingSchedulesTx(tx *Tx, accountIDs []int64) error {
 	accountIDs = uniqueSortedInt64s(accountIDs)
 	if len(accountIDs) == 0 {
 		return nil
@@ -395,7 +395,7 @@ func rebalancePendingSchedulesTx(tx *sql.Tx, accountIDs []int64) error {
 	return nil
 }
 
-func loadAccountDailyLimitsTx(tx *sql.Tx, accountIDs []int64) (map[int64]int, error) {
+func loadAccountDailyLimitsTx(tx *Tx, accountIDs []int64) (map[int64]int, error) {
 	query, args := accountIDInClauseQuery(
 		"SELECT id, daily_limit FROM accounts WHERE id IN (%s)",
 		accountIDs,
@@ -418,7 +418,7 @@ func loadAccountDailyLimitsTx(tx *sql.Tx, accountIDs []int64) (map[int64]int, er
 	return limits, rows.Err()
 }
 
-func loadAccountScheduleRowsTx(tx *sql.Tx, accountIDs []int64) ([]accountScheduleRow, map[int64]*campaignScheduleRules, error) {
+func loadAccountScheduleRowsTx(tx *Tx, accountIDs []int64) ([]accountScheduleRow, map[int64]*campaignScheduleRules, error) {
 	query, args := accountIDInClauseQuery(`
 		SELECT ss.id, ss.campaign_id, ss.lead_id, l.email, ss.account_id, ss.step_number, ss.status,
 			ss.send_at, COALESCE(ss.sent_at, ''), c.sequence_file, c.sequence_content,
@@ -515,7 +515,7 @@ func loadAccountScheduleRowsTx(tx *sql.Tx, accountIDs []int64) ([]accountSchedul
 	return scheduledRows, rulesByCampaign, rows.Err()
 }
 
-func loadSentUsageByAccountTx(tx *sql.Tx, accountIDs []int64) (map[int64]map[string]int, error) {
+func loadSentUsageByAccountTx(tx *Tx, accountIDs []int64) (map[int64]map[string]int, error) {
 	query, args := accountIDInClauseQuery(
 		"SELECT account_id, timestamp FROM events WHERE type = 'sent' AND account_id IN (%s)",
 		accountIDs,

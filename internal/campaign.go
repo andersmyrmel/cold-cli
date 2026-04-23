@@ -17,7 +17,7 @@ func ResolveCampaignName(db *sql.DB, nameOrID string) (string, error) {
 	// Try as numeric ID first
 	if id, err := strconv.ParseInt(nameOrID, 10, 64); err == nil {
 		var name string
-		err := db.QueryRow("SELECT name FROM campaigns WHERE id = ?", id).Scan(&name)
+		err := queryRowDB(db, "SELECT name FROM campaigns WHERE id = ?", id).Scan(&name)
 		if err == sql.ErrNoRows {
 			return "", fmt.Errorf("campaign with ID %d not found", id)
 		}
@@ -28,7 +28,7 @@ func ResolveCampaignName(db *sql.DB, nameOrID string) (string, error) {
 	}
 	// Otherwise treat as name — verify it exists
 	var name string
-	err := db.QueryRow("SELECT name FROM campaigns WHERE name = ?", nameOrID).Scan(&name)
+	err := queryRowDB(db, "SELECT name FROM campaigns WHERE name = ?", nameOrID).Scan(&name)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("campaign %q not found", nameOrID)
 	}
@@ -103,7 +103,7 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 	for _, email := range opts.AccountEmails {
 		email = strings.TrimSpace(email)
 		var id int64
-		err := db.QueryRow("SELECT id FROM accounts WHERE email = ? AND status = 'active'", email).Scan(&id)
+		err := queryRowDB(db, "SELECT id FROM accounts WHERE email = ? AND status = 'active'", email).Scan(&id)
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("account %s not found or not active", email)
 		}
@@ -157,26 +157,25 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 		sendCount  int
 	}
 
-	res, err := withRetryTx(db, func(tx *sql.Tx) (createResult, error) {
+	res, err := withRetryTx(db, func(tx *Tx) (createResult, error) {
 		var out createResult
 
-		inserted, err := tx.Exec(`
+		err := tx.QueryRow(`
 			INSERT INTO campaigns (name, status, sequence_file, sequence_content, start_date, send_window_start, send_window_end,
 				send_days, timezone, min_gap_seconds, max_gap_seconds)
-			VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 			opts.Name, seqFile, string(seqContent),
 			opts.StartDate,
 			cfg.SendWindowStart, cfg.SendWindowEnd,
 			sendDaysStr, cfg.DefaultTimezone,
 			cfg.MinGapSeconds, cfg.MaxGapSeconds,
-		)
+		).Scan(&out.campaignID)
 		if err != nil {
-			if strings.Contains(err.Error(), "UNIQUE") {
+			if isUniqueConstraintError(err) {
 				return out, fmt.Errorf("campaign %q already exists", opts.Name)
 			}
 			return out, fmt.Errorf("inserting campaign: %w", err)
 		}
-		out.campaignID, _ = inserted.LastInsertId()
 
 		for _, accID := range accountIDs {
 			if _, err := tx.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (?, ?)", out.campaignID, accID); err != nil {
@@ -193,8 +192,9 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 			company := rec.Fields["company"]
 			customJSON := BuildCustomFieldsJSON(rec.Fields)
 
-			if _, err := tx.Exec(`INSERT OR IGNORE INTO leads (email, first_name, last_name, company, domain, custom_fields)
-				VALUES (?, ?, ?, ?, ?, ?)`,
+			if _, err := tx.Exec(`INSERT INTO leads (email, first_name, last_name, company, domain, custom_fields)
+				VALUES (?, ?, ?, ?, ?, ?)
+				ON CONFLICT(email) DO NOTHING`,
 				email, firstName, lastName, company, domain, customJSON,
 			); err != nil {
 				return out, fmt.Errorf("upserting lead %s: %w", email, err)
@@ -222,7 +222,7 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 
 			if _, err := tx.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (?, ?, 'active')",
 				out.campaignID, leadID); err != nil {
-				if strings.Contains(err.Error(), "UNIQUE") {
+				if isUniqueConstraintError(err) {
 					return out, fmt.Errorf("lead %s is already in this campaign", email)
 				}
 				return out, fmt.Errorf("linking lead %s: %w", email, err)
@@ -300,7 +300,7 @@ type PreviewRow struct {
 
 // GetCampaignPreview returns the full scheduled send list for a campaign.
 func GetCampaignPreview(db *sql.DB, name string) (campaignID int64, status string, preview []PreviewRow, err error) {
-	err = db.QueryRow("SELECT id, status FROM campaigns WHERE name = ?", name).Scan(&campaignID, &status)
+	err = queryRowDB(db, "SELECT id, status FROM campaigns WHERE name = ?", name).Scan(&campaignID, &status)
 	if err == sql.ErrNoRows {
 		return 0, "", nil, fmt.Errorf("campaign %q not found", name)
 	}
@@ -316,7 +316,7 @@ func GetCampaignPreview(db *sql.DB, name string) (campaignID int64, status strin
 		return 0, "", nil, fmt.Errorf("rebalancing preview schedule: %w", err)
 	}
 
-	rows, err := db.Query(`
+	rows, err := queryDB(db, `
 		SELECT ss.step_number, ss.variant_index, ss.send_at, ss.status,
 			l.email, a.email, ss.error_message
 		FROM scheduled_sends ss
@@ -360,7 +360,7 @@ func GetDailyLimitWarnings(db *sql.DB) ([]DailyLimitWarning, error) {
 		return nil, fmt.Errorf("rebalancing warning schedule: %w", err)
 	}
 
-	rows, err := db.Query(`
+	rows, err := queryDB(db, `
 		SELECT DATE(ss.send_at) as send_date, a.email, COUNT(*) as cnt, a.daily_limit
 		FROM scheduled_sends ss
 		JOIN accounts a ON ss.account_id = a.id
@@ -402,7 +402,7 @@ type RenderedEmail struct {
 func GetCampaignRenderedPreview(db *sql.DB, name string, leadEmail string) ([]RenderedEmail, error) {
 	var campaignID int64
 	var seqContent string
-	err := db.QueryRow("SELECT id, sequence_content FROM campaigns WHERE name = ?", name).
+	err := queryRowDB(db, "SELECT id, sequence_content FROM campaigns WHERE name = ?", name).
 		Scan(&campaignID, &seqContent)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("campaign %q not found", name)
@@ -455,7 +455,7 @@ func GetCampaignRenderedPreview(db *sql.DB, name string, leadEmail string) ([]Re
 			LIMIT 1`
 		leadArgs = []any{campaignID}
 	}
-	rows, err := db.Query(leadQuery, leadArgs...)
+	rows, err := queryDB(db, leadQuery, leadArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("querying first lead: %w", err)
 	}
@@ -482,7 +482,7 @@ func GetCampaignRenderedPreview(db *sql.DB, name string, leadEmail string) ([]Re
 	}
 
 	// Get all sends for this lead in this campaign
-	sendRows, err := db.Query(`
+	sendRows, err := queryDB(db, `
 		SELECT ss.step_number, ss.variant_index, a.email
 		FROM scheduled_sends ss
 		JOIN accounts a ON ss.account_id = a.id
@@ -523,7 +523,7 @@ func GetCampaignRenderedPreview(db *sql.DB, name string, leadEmail string) ([]Re
 func CampaignStateTransition(db *sql.DB, name, action, fromStatus, toStatus string) error {
 	var campaignID int64
 	var currentStatus string
-	err := db.QueryRow("SELECT id, status FROM campaigns WHERE name = ?", name).Scan(&campaignID, &currentStatus)
+	err := queryRowDB(db, "SELECT id, status FROM campaigns WHERE name = ?", name).Scan(&campaignID, &currentStatus)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("campaign %q not found", name)
 	}
@@ -535,7 +535,7 @@ func CampaignStateTransition(db *sql.DB, name, action, fromStatus, toStatus stri
 		return fmt.Errorf("cannot %s campaign %q: current status is %q (expected %q)", action, name, currentStatus, fromStatus)
 	}
 
-	tx, err := db.Begin()
+	tx, err := beginTx(db)
 	if err != nil {
 		return fmt.Errorf("starting transaction: %w", err)
 	}
@@ -569,7 +569,7 @@ type SendNowResult struct {
 func SendNowCampaign(db *sql.DB, name string) (*SendNowResult, error) {
 	var campaignID int64
 	var status string
-	err := db.QueryRow("SELECT id, status FROM campaigns WHERE name = ?", name).Scan(&campaignID, &status)
+	err := queryRowDB(db, "SELECT id, status FROM campaigns WHERE name = ?", name).Scan(&campaignID, &status)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("campaign %q not found", name)
 	}
@@ -581,7 +581,7 @@ func SendNowCampaign(db *sql.DB, name string) (*SendNowResult, error) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := db.Exec(`UPDATE scheduled_sends SET send_at = ? WHERE campaign_id = ? AND status = 'pending'`, now, campaignID)
+	res, err := execDB(db, `UPDATE scheduled_sends SET send_at = ? WHERE campaign_id = ? AND status = 'pending'`, now, campaignID)
 	if err != nil {
 		return nil, fmt.Errorf("updating send times: %w", err)
 	}
@@ -627,7 +627,7 @@ func GetCampaignStatus(db *sql.DB, name string) (*CampaignStatusInfo, error) {
 		SendDays    string
 		CreatedAt   string
 	}
-	err := db.QueryRow(`SELECT id, status, sequence_file, timezone, send_window_start, send_window_end, send_days, created_at
+	err := queryRowDB(db, `SELECT id, status, sequence_file, timezone, send_window_start, send_window_end, send_days, created_at
 		FROM campaigns WHERE name = ?`, name).
 		Scan(&c.ID, &c.Status, &c.SeqFile, &c.Timezone, &c.WindowStart, &c.WindowEnd, &c.SendDays, &c.CreatedAt)
 	if err == sql.ErrNoRows {
@@ -637,7 +637,7 @@ func GetCampaignStatus(db *sql.DB, name string) (*CampaignStatusInfo, error) {
 		return nil, fmt.Errorf("looking up campaign: %w", err)
 	}
 
-	countRows, err := db.Query(`
+	countRows, err := queryDB(db, `
 		SELECT status, COUNT(*) FROM scheduled_sends
 		WHERE campaign_id = ? GROUP BY status`, c.ID)
 	if err != nil {
@@ -656,8 +656,8 @@ func GetCampaignStatus(db *sql.DB, name string) (*CampaignStatusInfo, error) {
 	}
 
 	var leadCount, accountCount int
-	db.QueryRow("SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = ?", c.ID).Scan(&leadCount)
-	db.QueryRow("SELECT COUNT(*) FROM campaign_accounts WHERE campaign_id = ?", c.ID).Scan(&accountCount)
+	queryRowDB(db, "SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = ?", c.ID).Scan(&leadCount)
+	queryRowDB(db, "SELECT COUNT(*) FROM campaign_accounts WHERE campaign_id = ?", c.ID).Scan(&accountCount)
 
 	info := &CampaignStatusInfo{
 		Name:       name,
@@ -676,7 +676,7 @@ func GetCampaignStatus(db *sql.DB, name string) (*CampaignStatusInfo, error) {
 	// Reply rate: replies / sent
 	sent := counts["sent"]
 	var replyCount int
-	db.QueryRow("SELECT COUNT(*) FROM events WHERE campaign_id = ? AND type = 'reply'", c.ID).Scan(&replyCount)
+	queryRowDB(db, "SELECT COUNT(*) FROM events WHERE campaign_id = ? AND type = 'reply'", c.ID).Scan(&replyCount)
 	if sent > 0 {
 		rate := float64(replyCount) / float64(sent) * 100
 		info.ReplyRate = &rate
@@ -684,7 +684,7 @@ func GetCampaignStatus(db *sql.DB, name string) (*CampaignStatusInfo, error) {
 
 	// Next pending send
 	var nextSend sql.NullString
-	db.QueryRow("SELECT MIN(send_at) FROM scheduled_sends WHERE campaign_id = ? AND status = 'pending'",
+	queryRowDB(db, "SELECT MIN(send_at) FROM scheduled_sends WHERE campaign_id = ? AND status = 'pending'",
 		c.ID).Scan(&nextSend)
 	if nextSend.Valid {
 		info.NextSendAt = &nextSend.String
@@ -692,7 +692,7 @@ func GetCampaignStatus(db *sql.DB, name string) (*CampaignStatusInfo, error) {
 
 	// Last sent
 	var lastSend sql.NullString
-	db.QueryRow("SELECT MAX(sent_at) FROM scheduled_sends WHERE campaign_id = ? AND status = 'sent'",
+	queryRowDB(db, "SELECT MAX(sent_at) FROM scheduled_sends WHERE campaign_id = ? AND status = 'sent'",
 		c.ID).Scan(&lastSend)
 	if lastSend.Valid {
 		info.LastSendAt = &lastSend.String
@@ -700,7 +700,7 @@ func GetCampaignStatus(db *sql.DB, name string) (*CampaignStatusInfo, error) {
 
 	// Failure reasons
 	if counts["failed"] > 0 {
-		frRows, err := db.Query(`
+		frRows, err := queryDB(db, `
 			SELECT error_message, COUNT(*) FROM scheduled_sends
 			WHERE campaign_id = ? AND status = 'failed' AND error_message != ''
 			GROUP BY error_message ORDER BY COUNT(*) DESC`, c.ID)
@@ -730,7 +730,7 @@ type CampaignListRow struct {
 
 // ListCampaigns returns all campaigns with lead and send counts.
 func ListCampaigns(db *sql.DB) ([]CampaignListRow, error) {
-	rows, err := db.Query(`
+	rows, err := queryDB(db, `
 		SELECT c.id, c.name, c.status,
 			(SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = c.id) as leads,
 			(SELECT COUNT(*) FROM scheduled_sends WHERE campaign_id = c.id) as sends,
@@ -791,7 +791,7 @@ func isContiguousRange(days []time.Weekday) bool {
 // DeleteCampaign deletes a campaign and all associated data.
 func DeleteCampaign(db *sql.DB, name string) (int64, error) {
 	var campaignID int64
-	err := db.QueryRow("SELECT id FROM campaigns WHERE name = ?", name).Scan(&campaignID)
+	err := queryRowDB(db, "SELECT id FROM campaigns WHERE name = ?", name).Scan(&campaignID)
 	if err == sql.ErrNoRows {
 		return 0, fmt.Errorf("campaign %q not found", name)
 	}
@@ -799,7 +799,7 @@ func DeleteCampaign(db *sql.DB, name string) (int64, error) {
 		return 0, fmt.Errorf("looking up campaign: %w", err)
 	}
 
-	tx, err := db.Begin()
+	tx, err := beginTx(db)
 	if err != nil {
 		return 0, fmt.Errorf("starting transaction: %w", err)
 	}
@@ -834,8 +834,8 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 		ID           int64
 		SeqFile      string
 		SeqContent   string
-		StopOnReply  bool
-		StopOnDomain bool
+		StopOnReply  int
+		StopOnDomain int
 		WindowStart  string
 		WindowEnd    string
 		SendDays     string
@@ -843,7 +843,7 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 		MinGap       int
 		MaxGap       int
 	}
-	err := db.QueryRow(`SELECT id, sequence_file, sequence_content, stop_on_reply, stop_on_domain_reply,
+	err := queryRowDB(db, `SELECT id, sequence_file, sequence_content, stop_on_reply, stop_on_domain_reply,
 		send_window_start, send_window_end, send_days, timezone, min_gap_seconds, max_gap_seconds
 		FROM campaigns WHERE name = ?`, opts.SourceName).
 		Scan(&src.ID, &src.SeqFile, &src.SeqContent, &src.StopOnReply, &src.StopOnDomain,
@@ -892,14 +892,14 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 		for _, email := range opts.Accounts {
 			email = strings.TrimSpace(email)
 			var id int64
-			if err := db.QueryRow("SELECT id FROM accounts WHERE email = ? AND status = 'active'", email).Scan(&id); err != nil {
+			if err := queryRowDB(db, "SELECT id FROM accounts WHERE email = ? AND status = 'active'", email).Scan(&id); err != nil {
 				return nil, fmt.Errorf("account %s not found or not active", email)
 			}
 			accountIDs = append(accountIDs, id)
 		}
 	} else {
 		// Reuse source campaign's accounts
-		rows, err := db.Query("SELECT account_id FROM campaign_accounts WHERE campaign_id = ?", src.ID)
+		rows, err := queryDB(db, "SELECT account_id FROM campaign_accounts WHERE campaign_id = ?", src.ID)
 		if err != nil {
 			return nil, fmt.Errorf("loading source accounts: %w", err)
 		}
@@ -928,37 +928,28 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 		return nil, fmt.Errorf("loading timezone: %w", err)
 	}
 
-	stopReply := 0
-	if src.StopOnReply {
-		stopReply = 1
-	}
-	stopDomain := 0
-	if src.StopOnDomain {
-		stopDomain = 1
-	}
-
 	type cloneResult struct {
 		campaignID int64
 		leadsAdded int
 		sendsAdded int
 	}
 
-	result, err := withRetryTx(db, func(tx *sql.Tx) (cloneResult, error) {
+	result, err := withRetryTx(db, func(tx *Tx) (cloneResult, error) {
 		var out cloneResult
 
-		res, err := tx.Exec(`
+		err := tx.QueryRow(`
 			INSERT INTO campaigns (name, status, sequence_file, sequence_content, start_date, stop_on_reply, stop_on_domain_reply,
 				send_window_start, send_window_end, send_days, timezone, min_gap_seconds, max_gap_seconds)
-			VALUES (?, 'draft', ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)`,
-			opts.NewName, src.SeqFile, src.SeqContent, stopReply, stopDomain,
-			src.WindowStart, src.WindowEnd, src.SendDays, src.Timezone, src.MinGap, src.MaxGap)
+			VALUES (?, 'draft', ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+			opts.NewName, src.SeqFile, src.SeqContent, src.StopOnReply, src.StopOnDomain,
+			src.WindowStart, src.WindowEnd, src.SendDays, src.Timezone, src.MinGap, src.MaxGap,
+		).Scan(&out.campaignID)
 		if err != nil {
-			if strings.Contains(err.Error(), "UNIQUE") {
+			if isUniqueConstraintError(err) {
 				return out, fmt.Errorf("campaign %q already exists", opts.NewName)
 			}
 			return out, fmt.Errorf("inserting campaign: %w", err)
 		}
-		out.campaignID, _ = res.LastInsertId()
 
 		for _, accID := range accountIDs {
 			if _, err := tx.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (?, ?)", out.campaignID, accID); err != nil {
@@ -1011,7 +1002,7 @@ func AddLeadsToCampaign(db *sql.DB, campaignName, leadsFile, leadsInline string)
 	var campID int64
 	var seqFile, seqContent, startDate, windowStart, windowEnd, sendDaysStr, tzName string
 	var minGap, maxGap int
-	err := db.QueryRow(`SELECT id, sequence_file, sequence_content, start_date, send_window_start, send_window_end,
+	err := queryRowDB(db, `SELECT id, sequence_file, sequence_content, start_date, send_window_start, send_window_end,
 		send_days, timezone, min_gap_seconds, max_gap_seconds
 		FROM campaigns WHERE name = ?`, campaignName).
 		Scan(&campID, &seqFile, &seqContent, &startDate, &windowStart, &windowEnd, &sendDaysStr, &tzName, &minGap, &maxGap)
@@ -1055,7 +1046,7 @@ func AddLeadsToCampaign(db *sql.DB, campaignName, leadsFile, leadsInline string)
 
 	// Get campaign accounts
 	var accountIDs []int64
-	rows, err := db.Query("SELECT account_id FROM campaign_accounts WHERE campaign_id = ?", campID)
+	rows, err := queryDB(db, "SELECT account_id FROM campaign_accounts WHERE campaign_id = ?", campID)
 	if err != nil {
 		return nil, fmt.Errorf("loading accounts: %w", err)
 	}
@@ -1089,7 +1080,7 @@ func AddLeadsToCampaign(db *sql.DB, campaignName, leadsFile, leadsInline string)
 		sendsAdded int
 	}
 
-	result, err := withRetryTx(db, func(tx *sql.Tx) (addResult, error) {
+	result, err := withRetryTx(db, func(tx *Tx) (addResult, error) {
 		var out addResult
 		added, sends, err := insertLeadsAndSchedule(tx, campID, accountIDs, records, seq,
 			startDate, windowStart, windowEnd, sendDays, tz, minGap, maxGap)
@@ -1119,7 +1110,7 @@ func AddLeadsToCampaign(db *sql.DB, campaignName, leadsFile, leadsInline string)
 // insertLeadsAndSchedule is the shared logic for creating leads and their scheduled sends.
 // It inserts/upserts leads, links them to the campaign, computes schedule, and inserts sends.
 // Returns the number of leads added and sends created.
-func insertLeadsAndSchedule(tx *sql.Tx, campaignID int64, accountIDs []int64,
+func insertLeadsAndSchedule(tx *Tx, campaignID int64, accountIDs []int64,
 	records []LeadRecord, seq *Sequence,
 	startDate, windowStart, windowEnd string, sendDays []time.Weekday, tz *time.Location,
 	minGap, maxGap int) (leadsAdded int, sendsAdded int, err error) {
@@ -1134,8 +1125,9 @@ func insertLeadsAndSchedule(tx *sql.Tx, campaignID int64, accountIDs []int64,
 
 		customJSON := BuildCustomFieldsJSON(rec.Fields)
 
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO leads (email, first_name, last_name, company, domain, custom_fields)
-			VALUES (?, ?, ?, ?, ?, ?)`,
+		if _, err := tx.Exec(`INSERT INTO leads (email, first_name, last_name, company, domain, custom_fields)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(email) DO NOTHING`,
 			email, firstName, lastName, company, domain, customJSON); err != nil {
 			return 0, 0, fmt.Errorf("upserting lead %s: %w", email, err)
 		}
@@ -1245,7 +1237,7 @@ func loadStoredCampaignSequence(seqFile, seqContent string) (*Sequence, error) {
 	return ParseSequence(seqFile)
 }
 
-func reschedulePendingSends(tx *sql.Tx, campaignID int64, seq *Sequence,
+func reschedulePendingSends(tx *Tx, campaignID int64, seq *Sequence,
 	startDate, windowStart, windowEnd string, sendDays []time.Weekday, tz *time.Location) error {
 
 	type scheduledSendState struct {
@@ -1428,7 +1420,7 @@ func campaignStartAnchor(now time.Time, startDate string, windowStart timeOfDay,
 // If step is non-nil, only retry failed sends for that specific step.
 func RetryCampaign(db *sql.DB, name string, step *int) (*RetryCampaignResult, error) {
 	var campaignID int64
-	err := db.QueryRow("SELECT id FROM campaigns WHERE name = ?", name).Scan(&campaignID)
+	err := queryRowDB(db, "SELECT id FROM campaigns WHERE name = ?", name).Scan(&campaignID)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("campaign %q not found", name)
 	}
@@ -1438,7 +1430,7 @@ func RetryCampaign(db *sql.DB, name string, step *int) (*RetryCampaignResult, er
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	tx, err := db.Begin()
+	tx, err := beginTx(db)
 	if err != nil {
 		return nil, fmt.Errorf("starting transaction: %w", err)
 	}
@@ -1522,7 +1514,7 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 		SendDays    string
 		Timezone    string
 	}
-	err := db.QueryRow(`SELECT id, sequence_file, sequence_content, start_date, send_window_start, send_window_end, send_days, timezone
+	err := queryRowDB(db, `SELECT id, sequence_file, sequence_content, start_date, send_window_start, send_window_end, send_days, timezone
 		FROM campaigns WHERE name = ?`, name).
 		Scan(&current.ID, &current.SeqFile, &current.SeqContent, &current.StartDate, &current.WindowStart, &current.WindowEnd, &current.SendDays, &current.Timezone)
 	if err == sql.ErrNoRows {
@@ -1586,7 +1578,7 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 	hasPendingSends := false
 	if shouldReschedulePending {
 		var pendingCount int
-		if err := db.QueryRow(
+		if err := queryRowDB(db,
 			"SELECT COUNT(*) FROM scheduled_sends WHERE campaign_id = ? AND status = 'pending'",
 			current.ID,
 		).Scan(&pendingCount); err != nil {
@@ -1670,7 +1662,7 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 		}{"sequence_content", newSeqContent})
 	}
 
-	_, err = withRetryTx(db, func(tx *sql.Tx) (struct{}, error) {
+	_, err = withRetryTx(db, func(tx *Tx) (struct{}, error) {
 		for _, u := range updates {
 			if _, err := tx.Exec("UPDATE campaigns SET "+u.col+" = ? WHERE id = ?", u.val, current.ID); err != nil {
 				return struct{}{}, fmt.Errorf("updating %s: %w", u.col, err)
@@ -1697,7 +1689,7 @@ func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
 	return err
 }
 
-func loadCampaignAccountIDsTx(tx *sql.Tx, campaignID int64) ([]int64, error) {
+func loadCampaignAccountIDsTx(tx *Tx, campaignID int64) ([]int64, error) {
 	rows, err := tx.Query("SELECT account_id FROM campaign_accounts WHERE campaign_id = ? ORDER BY account_id", campaignID)
 	if err != nil {
 		return nil, err
@@ -1717,7 +1709,7 @@ func loadCampaignAccountIDsTx(tx *sql.Tx, campaignID int64) ([]int64, error) {
 }
 
 func loadCampaignAccountIDs(db *sql.DB, campaignID int64) ([]int64, error) {
-	rows, err := db.Query("SELECT account_id FROM campaign_accounts WHERE campaign_id = ? ORDER BY account_id", campaignID)
+	rows, err := queryDB(db, "SELECT account_id FROM campaign_accounts WHERE campaign_id = ? ORDER BY account_id", campaignID)
 	if err != nil {
 		return nil, err
 	}
@@ -1736,7 +1728,7 @@ func loadCampaignAccountIDs(db *sql.DB, campaignID int64) ([]int64, error) {
 }
 
 func loadPendingActiveDraftAccountIDs(db *sql.DB) ([]int64, error) {
-	rows, err := db.Query(`
+	rows, err := queryDB(db, `
 		SELECT DISTINCT ss.account_id
 		FROM scheduled_sends ss
 		JOIN campaigns c ON c.id = ss.campaign_id

@@ -1218,7 +1218,7 @@ var tickCmd = &cobra.Command{
 		}
 
 		gwsCLI := internal.NewGWSCLI()
-		rows, err := db.Query("SELECT email, gws_config_dir FROM accounts WHERE status = 'active' AND gws_config_dir != ''")
+		rows, err := store.Query("SELECT email, gws_config_dir FROM accounts WHERE status = 'active' AND gws_config_dir != ''")
 		if err == nil {
 			defer rows.Close()
 			for rows.Next() {
@@ -1272,11 +1272,12 @@ var statsCmd = &cobra.Command{
 	Short: "Show send/reply/bounce statistics (per-campaign when name given, global otherwise)",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		db, err := openDB()
+		store, err := openStore()
 		if err != nil {
 			return err
 		}
-		defer db.Close()
+		defer store.Close()
+		db := store.DB
 
 		perLeads, _ := cmd.Flags().GetBool("leads")
 		perVariants, _ := cmd.Flags().GetBool("variants")
@@ -1287,7 +1288,7 @@ var statsCmd = &cobra.Command{
 				return err
 			}
 			var campaignID int64
-			err = db.QueryRow("SELECT id FROM campaigns WHERE name = ?", name).Scan(&campaignID)
+			err = store.QueryRow("SELECT id FROM campaigns WHERE name = ?", name).Scan(&campaignID)
 			if err != nil {
 				return fmt.Errorf("looking up campaign: %w", err)
 			}

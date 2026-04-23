@@ -1,7 +1,6 @@
 package internal
 
 import (
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1966,7 +1965,7 @@ func TestCreateCampaign_RetriesUnderWriteContention(t *testing.T) {
 	releaseLock := make(chan struct{})
 
 	go func() {
-		_, err := withRetryTx(db1, func(tx *sql.Tx) (struct{}, error) {
+		_, err := withRetryTx(db1, func(tx *Tx) (struct{}, error) {
 			if _, err := tx.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('locker@x.com', 50)"); err != nil {
 				return struct{}{}, err
 			}

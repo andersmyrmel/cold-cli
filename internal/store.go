@@ -148,6 +148,7 @@ func openStore(cfg storeOpenConfig) (*Store, error) {
 			return nil, err
 		}
 
+		registerDBDialect(db, dialect)
 		store.DB = db
 		store.target = cfg.sqlitePath
 		store.displayTarget = cfg.sqlitePath
@@ -168,6 +169,7 @@ func openStore(cfg storeOpenConfig) (*Store, error) {
 			return nil, err
 		}
 
+		registerDBDialect(db, dialect)
 		store.DB = db
 		store.target = cfg.postgresURL
 		store.displayTarget = redactDatabaseURL(cfg.postgresURL)
@@ -183,6 +185,7 @@ func (s *Store) Close() error {
 	if s == nil || s.DB == nil {
 		return nil
 	}
+	unregisterDBDialect(s.DB)
 	return s.DB.Close()
 }
 

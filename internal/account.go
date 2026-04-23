@@ -27,11 +27,11 @@ func AddAccount(db *sql.DB, email string, dailyLimit int, configDir string) (*Ad
 	// Check for existing removed account
 	var existingID int64
 	var existingStatus string
-	err := db.QueryRow("SELECT id, status FROM accounts WHERE email = ?", email).Scan(&existingID, &existingStatus)
+	err := queryRowDB(db, "SELECT id, status FROM accounts WHERE email = ?", email).Scan(&existingID, &existingStatus)
 	if err == nil {
 		if existingStatus == "removed" {
 			// Reactivate removed account
-			_, err := db.Exec("UPDATE accounts SET status = 'active', daily_limit = ?, gws_config_dir = ? WHERE id = ?",
+			_, err := execDB(db, "UPDATE accounts SET status = 'active', daily_limit = ?, gws_config_dir = ? WHERE id = ?",
 				dailyLimit, configDir, existingID)
 			if err != nil {
 				return nil, fmt.Errorf("reactivating account: %w", err)
@@ -47,15 +47,15 @@ func AddAccount(db *sql.DB, email string, dailyLimit int, configDir string) (*Ad
 		return nil, fmt.Errorf("account %s already exists (status: %s)", email, existingStatus)
 	}
 
-	result, err := db.Exec(
-		"INSERT INTO accounts (email, daily_limit, gws_config_dir) VALUES (?, ?, ?)",
+	var id int64
+	err = queryRowDB(
+		db,
+		"INSERT INTO accounts (email, daily_limit, gws_config_dir) VALUES (?, ?, ?) RETURNING id",
 		email, dailyLimit, configDir,
-	)
+	).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("adding account: %w", err)
 	}
-
-	id, _ := result.LastInsertId()
 	return &AddAccountResult{
 		ID:           id,
 		Email:        email,
@@ -75,7 +75,7 @@ type PauseAccountResult struct {
 func PauseAccount(db *sql.DB, email string) (*PauseAccountResult, error) {
 	var id int64
 	var status string
-	err := db.QueryRow("SELECT id, status FROM accounts WHERE email = ?", email).Scan(&id, &status)
+	err := queryRowDB(db, "SELECT id, status FROM accounts WHERE email = ?", email).Scan(&id, &status)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("account %s not found", email)
 	}
@@ -86,7 +86,7 @@ func PauseAccount(db *sql.DB, email string) (*PauseAccountResult, error) {
 		return nil, fmt.Errorf("account %s is already %s", email, status)
 	}
 
-	tx, err := db.Begin()
+	tx, err := beginTx(db)
 	if err != nil {
 		return nil, fmt.Errorf("starting transaction: %w", err)
 	}
@@ -107,7 +107,7 @@ func PauseAccount(db *sql.DB, email string) (*PauseAccountResult, error) {
 // ResumeAccount reactivates a paused account.
 func ResumeAccount(db *sql.DB, email string) error {
 	var status string
-	err := db.QueryRow("SELECT status FROM accounts WHERE email = ?", email).Scan(&status)
+	err := queryRowDB(db, "SELECT status FROM accounts WHERE email = ?", email).Scan(&status)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("account %s not found", email)
 	}
@@ -118,7 +118,7 @@ func ResumeAccount(db *sql.DB, email string) error {
 		return fmt.Errorf("account %s is %s (expected paused)", email, status)
 	}
 
-	_, err = db.Exec("UPDATE accounts SET status = 'active' WHERE email = ?", email)
+	_, err = execDB(db, "UPDATE accounts SET status = 'active' WHERE email = ?", email)
 	return err
 }
 
@@ -126,7 +126,7 @@ func ResumeAccount(db *sql.DB, email string) error {
 // The account row is kept (status='removed') because historical sends/events reference it.
 func RemoveAccount(db *sql.DB, email string) (*PauseAccountResult, error) {
 	var id int64
-	err := db.QueryRow("SELECT id FROM accounts WHERE email = ?", email).Scan(&id)
+	err := queryRowDB(db, "SELECT id FROM accounts WHERE email = ?", email).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("account %s not found", email)
 	}
@@ -134,7 +134,7 @@ func RemoveAccount(db *sql.DB, email string) (*PauseAccountResult, error) {
 		return nil, fmt.Errorf("looking up account: %w", err)
 	}
 
-	tx, err := db.Begin()
+	tx, err := beginTx(db)
 	if err != nil {
 		return nil, fmt.Errorf("starting transaction: %w", err)
 	}
@@ -162,7 +162,7 @@ type UpdateAccountOpts struct {
 func UpdateAccount(db *sql.DB, email string, opts UpdateAccountOpts) error {
 	var id int64
 	var status string
-	err := db.QueryRow("SELECT id, status FROM accounts WHERE email = ?", email).Scan(&id, &status)
+	err := queryRowDB(db, "SELECT id, status FROM accounts WHERE email = ?", email).Scan(&id, &status)
 	if err != nil {
 		return fmt.Errorf("account %s not found", email)
 	}
@@ -174,7 +174,7 @@ func UpdateAccount(db *sql.DB, email string, opts UpdateAccountOpts) error {
 		if *opts.DailyLimit < 1 {
 			return fmt.Errorf("daily limit must be at least 1")
 		}
-		tx, err := db.Begin()
+		tx, err := beginTx(db)
 		if err != nil {
 			return fmt.Errorf("starting transaction: %w", err)
 		}
@@ -408,7 +408,7 @@ type ListAccountsRow struct {
 
 // ListAccounts returns all accounts ordered by ID.
 func ListAccounts(db *sql.DB) ([]ListAccountsRow, error) {
-	rows, err := db.Query("SELECT id, email, daily_limit, status FROM accounts ORDER BY id")
+	rows, err := queryDB(db, "SELECT id, email, daily_limit, status FROM accounts ORDER BY id")
 	if err != nil {
 		return nil, fmt.Errorf("querying accounts: %w", err)
 	}

@@ -59,7 +59,7 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 
 	// Early exit: skip everything if no active campaigns
 	var activeCampaigns int
-	cfg.DB.QueryRow("SELECT COUNT(*) FROM campaigns WHERE status = 'active'").Scan(&activeCampaigns)
+	queryRowDB(cfg.DB, "SELECT COUNT(*) FROM campaigns WHERE status = 'active'").Scan(&activeCampaigns)
 	if activeCampaigns == 0 {
 		return result, nil
 	}
@@ -264,14 +264,14 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		}
 
 		// Mark sent
-		if _, err := cfg.DB.Exec(`UPDATE scheduled_sends SET status = 'sent', message_id = ?, sent_at = ?
+		if _, err := execDB(cfg.DB, `UPDATE scheduled_sends SET status = 'sent', message_id = ?, sent_at = ?
 			WHERE id = ?`, storedMessageID, now.UTC().Format(time.RFC3339), send.ID); err != nil {
 			slog.Error("email sent but failed to mark as sent in DB",
 				"send_id", send.ID, "message_id", storedMessageID, "error", err)
 		}
 
 		// Insert event
-		if _, err := cfg.DB.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		if _, err := execDB(cfg.DB, `INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
 			VALUES (?, ?, ?, 'sent', ?, ?, ?)`,
 			send.CampaignID, send.LeadID, send.AccountID, send.StepNumber, storedMessageID, threadID); err != nil {
 			slog.Error("failed to insert sent event",
@@ -280,7 +280,7 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 
 		// If step 1: backfill thread_id and parent_message_id on future sends
 		if send.StepNumber == 1 {
-			if _, err := cfg.DB.Exec(`UPDATE scheduled_sends
+			if _, err := execDB(cfg.DB, `UPDATE scheduled_sends
 				SET thread_id = ?, parent_message_id = ?
 				WHERE campaign_id = ? AND lead_id = ? AND step_number > 1 AND status = 'pending'`,
 				threadID, storedMessageID, send.CampaignID, send.LeadID); err != nil {
@@ -308,7 +308,7 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 }
 
 func loadActiveAccounts(db *sql.DB) ([]Account, error) {
-	rows, err := db.Query("SELECT id, email, daily_limit, status FROM accounts WHERE status = 'active'")
+	rows, err := queryDB(db, "SELECT id, email, daily_limit, status FROM accounts WHERE status = 'active'")
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +331,7 @@ func preloadDailyCounts(db *sql.DB, now time.Time, tz *time.Location) (map[int64
 	startOfDay := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, tz)
 	today := startOfDay.UTC().Format(time.RFC3339)
 
-	rows, err := db.Query(`
+	rows, err := queryDB(db, `
 		SELECT account_id, COUNT(*)
 		FROM events
 		WHERE type = 'sent' AND timestamp >= ?
@@ -363,7 +363,7 @@ type dueSend struct {
 }
 
 func loadDueSends(db *sql.DB, now time.Time) ([]dueSend, error) {
-	rows, err := db.Query(`
+	rows, err := queryDB(db, `
 		SELECT ss.id, ss.campaign_id, ss.lead_id, ss.account_id,
 			ss.step_number, ss.variant_index, ss.thread_id, ss.parent_message_id
 		FROM scheduled_sends ss
@@ -391,7 +391,7 @@ func loadDueSends(db *sql.DB, now time.Time) ([]dueSend, error) {
 }
 
 func loadAllPendingSends(db *sql.DB) ([]dueSend, error) {
-	rows, err := db.Query(`
+	rows, err := queryDB(db, `
 		SELECT ss.id, ss.campaign_id, ss.lead_id, ss.account_id,
 			ss.step_number, ss.variant_index, ss.thread_id, ss.parent_message_id
 		FROM scheduled_sends ss
@@ -421,7 +421,7 @@ func refreshPendingSend(db *sql.DB, send dueSend) (dueSend, time.Time, bool, err
 	var sendAtStr string
 	var campaignStatus string
 	var threadID, parentMessageID string
-	err := db.QueryRow(`
+	err := queryRowDB(db, `
 		SELECT ss.status, ss.send_at, c.status, ss.thread_id, ss.parent_message_id
 		FROM scheduled_sends ss
 		JOIN campaigns c ON c.id = ss.campaign_id
@@ -451,7 +451,7 @@ func refreshPendingSend(db *sql.DB, send dueSend) (dueSend, time.Time, bool, err
 
 func isInSendWindow(db *sql.DB, campaignID, leadID int64, now time.Time) bool {
 	var windowStart, windowEnd, tzName, sendDaysStr, leadEmail, customFields string
-	err := db.QueryRow(`
+	err := queryRowDB(db, `
 		SELECT c.send_window_start, c.send_window_end, c.timezone, c.send_days, l.email, l.custom_fields
 		FROM campaigns c
 		JOIN leads l ON l.id = ?
@@ -507,7 +507,7 @@ func isInSendWindow(db *sql.DB, campaignID, leadID int64, now time.Time) bool {
 
 func loadSequenceForCampaign(db *sql.DB, campaignID int64) (*Sequence, error) {
 	var seqFile, seqContent string
-	err := db.QueryRow("SELECT sequence_file, sequence_content FROM campaigns WHERE id = ?",
+	err := queryRowDB(db, "SELECT sequence_file, sequence_content FROM campaigns WHERE id = ?",
 		campaignID).Scan(&seqFile, &seqContent)
 	if err != nil {
 		return nil, err
@@ -521,7 +521,7 @@ func loadSequenceForCampaign(db *sql.DB, campaignID int64) (*Sequence, error) {
 
 func loadLeadFields(db *sql.DB, leadID int64) (map[string]string, error) {
 	var email, firstName, lastName, company, domain, customFields string
-	err := db.QueryRow(`SELECT email, first_name, last_name, company, domain, custom_fields
+	err := queryRowDB(db, `SELECT email, first_name, last_name, company, domain, custom_fields
 		FROM leads WHERE id = ?`, leadID).
 		Scan(&email, &firstName, &lastName, &company, &domain, &customFields)
 	if err != nil {
@@ -547,7 +547,7 @@ func loadLeadFields(db *sql.DB, leadID int64) (map[string]string, error) {
 // markSendFailed marks a scheduled send as failed and inserts a failed event.
 func markSendFailed(db *sql.DB, send dueSend, errorMsg string) {
 	markSendStatus(db, send.ID, "failed", errorMsg)
-	if _, err := db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, metadata)
+	if _, err := execDB(db, `INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, metadata)
 		VALUES (?, ?, ?, 'failed', ?, ?)`,
 		send.CampaignID, send.LeadID, send.AccountID, send.StepNumber, errorMsg); err != nil {
 		slog.Error("failed to insert failed event",
@@ -556,7 +556,7 @@ func markSendFailed(db *sql.DB, send dueSend, errorMsg string) {
 }
 
 func markSendStatus(db *sql.DB, sendID int64, status string, errorMsg string) {
-	if _, err := db.Exec("UPDATE scheduled_sends SET status = ?, error_message = ? WHERE id = ?", status, errorMsg, sendID); err != nil {
+	if _, err := execDB(db, "UPDATE scheduled_sends SET status = ?, error_message = ? WHERE id = ?", status, errorMsg, sendID); err != nil {
 		slog.Error("failed to mark send status",
 			"send_id", sendID, "status", status, "error", err)
 	}

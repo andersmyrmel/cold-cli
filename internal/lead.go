@@ -16,7 +16,7 @@ type PauseLeadResult struct {
 // PauseLead pauses a lead across all campaigns and cancels pending sends.
 func PauseLead(db *sql.DB, email string) (*PauseLeadResult, error) {
 	var leadID int64
-	err := db.QueryRow("SELECT id FROM leads WHERE email = ?", email).Scan(&leadID)
+	err := queryRowDB(db, "SELECT id FROM leads WHERE email = ?", email).Scan(&leadID)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("lead %s not found", email)
 	}
@@ -24,7 +24,7 @@ func PauseLead(db *sql.DB, email string) (*PauseLeadResult, error) {
 		return nil, fmt.Errorf("looking up lead: %w", err)
 	}
 
-	tx, err := db.Begin()
+	tx, err := beginTx(db)
 	if err != nil {
 		return nil, fmt.Errorf("starting transaction: %w", err)
 	}
@@ -69,7 +69,7 @@ type ResumeLeadResult struct {
 // ResumeLead resumes a paused lead: reactivates campaign_leads and restores cancelled sends.
 func ResumeLead(db *sql.DB, email string) (*ResumeLeadResult, error) {
 	var leadID int64
-	err := db.QueryRow("SELECT id FROM leads WHERE email = ?", email).Scan(&leadID)
+	err := queryRowDB(db, "SELECT id FROM leads WHERE email = ?", email).Scan(&leadID)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("lead %s not found", email)
 	}
@@ -79,12 +79,12 @@ func ResumeLead(db *sql.DB, email string) (*ResumeLeadResult, error) {
 
 	// Check global status - can't resume blacklisted/bounced leads
 	var globalStatus string
-	db.QueryRow("SELECT global_status FROM leads WHERE id = ?", leadID).Scan(&globalStatus)
+	queryRowDB(db, "SELECT global_status FROM leads WHERE id = ?", leadID).Scan(&globalStatus)
 	if globalStatus == "blacklisted" || globalStatus == "bounced" {
 		return nil, fmt.Errorf("lead %s is %s — cannot resume (use a new campaign to re-add)", email, globalStatus)
 	}
 
-	tx, err := db.Begin()
+	tx, err := beginTx(db)
 	if err != nil {
 		return nil, fmt.Errorf("starting transaction: %w", err)
 	}
@@ -135,7 +135,7 @@ type RemoveLeadResult struct {
 // RemoveLeadFromCampaign removes a single lead from a specific campaign.
 func RemoveLeadFromCampaign(db *sql.DB, campaignName, email string) (*RemoveLeadResult, error) {
 	var campaignID int64
-	err := db.QueryRow("SELECT id FROM campaigns WHERE name = ?", campaignName).Scan(&campaignID)
+	err := queryRowDB(db, "SELECT id FROM campaigns WHERE name = ?", campaignName).Scan(&campaignID)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("campaign %q not found", campaignName)
 	}
@@ -144,7 +144,7 @@ func RemoveLeadFromCampaign(db *sql.DB, campaignName, email string) (*RemoveLead
 	}
 
 	var leadID int64
-	err = db.QueryRow("SELECT id FROM leads WHERE email = ?", email).Scan(&leadID)
+	err = queryRowDB(db, "SELECT id FROM leads WHERE email = ?", email).Scan(&leadID)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("lead %s not found", email)
 	}
@@ -154,7 +154,7 @@ func RemoveLeadFromCampaign(db *sql.DB, campaignName, email string) (*RemoveLead
 
 	// Check lead is in this campaign
 	var clCount int
-	err = db.QueryRow("SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = ? AND lead_id = ?",
+	err = queryRowDB(db, "SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = ? AND lead_id = ?",
 		campaignID, leadID).Scan(&clCount)
 	if err != nil {
 		return nil, fmt.Errorf("checking campaign membership: %w", err)
@@ -163,7 +163,7 @@ func RemoveLeadFromCampaign(db *sql.DB, campaignName, email string) (*RemoveLead
 		return nil, fmt.Errorf("lead %s is not in campaign %q", email, campaignName)
 	}
 
-	tx, err := db.Begin()
+	tx, err := beginTx(db)
 	if err != nil {
 		return nil, fmt.Errorf("starting transaction: %w", err)
 	}
@@ -227,7 +227,7 @@ func ListLeads(db *sql.DB, domain, status string, limit int) ([]LeadListRow, err
 	query += " ORDER BY l.id DESC LIMIT ?"
 	args = append(args, limit)
 
-	rows, err := db.Query(query, args...)
+	rows, err := queryDB(db, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying leads: %w", err)
 	}
@@ -254,7 +254,7 @@ type BlacklistResult struct {
 
 // BlacklistLead blacklists a lead by email or all leads on a domain.
 func BlacklistLead(db *sql.DB, target string) (*BlacklistResult, error) {
-	tx, err := db.Begin()
+	tx, err := beginTx(db)
 	if err != nil {
 		return nil, fmt.Errorf("starting transaction: %w", err)
 	}

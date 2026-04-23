@@ -17,7 +17,7 @@ type CampaignStats struct {
 
 // GetAllCampaignStats returns sent/replied/bounced counts per campaign.
 func GetAllCampaignStats(db *sql.DB) ([]CampaignStats, error) {
-	rows, err := db.Query(`
+	rows, err := queryDB(db, `
 		SELECT c.name, c.status,
 			COALESCE(SUM(CASE WHEN e.type = 'sent' THEN 1 ELSE 0 END), 0) as sent,
 			COALESCE(SUM(CASE WHEN e.type = 'reply' THEN 1 ELSE 0 END), 0) as replies,
@@ -52,7 +52,7 @@ type StepStats struct {
 
 // GetCampaignStepStats returns per-step stats for a campaign.
 func GetCampaignStepStats(db *sql.DB, campaignID int64) ([]StepStats, error) {
-	rows, err := db.Query(`
+	rows, err := queryDB(db, `
 		SELECT e.step_number,
 			SUM(CASE WHEN e.type = 'sent' THEN 1 ELSE 0 END) as sent,
 			SUM(CASE WHEN e.type = 'reply' THEN 1 ELSE 0 END) as replies,
@@ -89,7 +89,7 @@ type VariantStats struct {
 
 // GetCampaignVariantStats returns per-step, per-variant stats for a campaign.
 func GetCampaignVariantStats(db *sql.DB, campaignID int64) ([]VariantStats, error) {
-	rows, err := db.Query(`
+	rows, err := queryDB(db, `
 		SELECT ss.step_number, ss.variant_index,
 			COUNT(DISTINCT CASE WHEN ss.status = 'sent' THEN ss.id END) as sent,
 			COUNT(DISTINCT CASE WHEN e.type = 'reply' THEN e.id END) as replies,
@@ -155,7 +155,7 @@ func GetEventLog(db *sql.DB, campaignName string, limit int) ([]EventLogRow, err
 	query += " ORDER BY e.timestamp DESC, e.id DESC LIMIT ?"
 	args = append(args, limit)
 
-	rows, err := db.Query(query, args...)
+	rows, err := queryDB(db, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying event log: %w", err)
 	}
@@ -174,7 +174,7 @@ func GetEventLog(db *sql.DB, campaignName string, limit int) ([]EventLogRow, err
 
 // GetCampaignLeadStats returns per-lead stats for a campaign.
 func GetCampaignLeadStats(db *sql.DB, campaignID int64) ([]LeadStatsRow, error) {
-	rows, err := db.Query(`
+	rows, err := queryDB(db, `
 		SELECT l.email, cl.status,
 			(SELECT COUNT(*) FROM events e WHERE e.lead_id = l.id AND e.campaign_id = ? AND e.type = 'sent') as steps_sent,
 			(SELECT MAX(e.timestamp) FROM events e WHERE e.lead_id = l.id AND e.campaign_id = ? AND e.type = 'reply') as reply_at

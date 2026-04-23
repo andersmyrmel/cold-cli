@@ -38,7 +38,7 @@ func buildLeadFields(email, firstName, lastName, company, domain, customFields s
 
 func loadLeadFieldsStrict(db *sql.DB, leadID int64) (map[string]string, error) {
 	var email, firstName, lastName, company, domain, customFields string
-	err := db.QueryRow(`SELECT email, first_name, last_name, company, domain, custom_fields
+	err := queryRowDB(db, `SELECT email, first_name, last_name, company, domain, custom_fields
 		FROM leads WHERE id = ?`, leadID).
 		Scan(&email, &firstName, &lastName, &company, &domain, &customFields)
 	if err != nil {
@@ -49,7 +49,7 @@ func loadLeadFieldsStrict(db *sql.DB, leadID int64) (map[string]string, error) {
 }
 
 func loadCampaignLeadRecords(db *sql.DB, campaignID int64) ([]LeadRecord, error) {
-	rows, err := db.Query(`
+	rows, err := queryDB(db, `
 		SELECT l.email, l.first_name, l.last_name, l.company, l.domain, l.custom_fields
 		FROM leads l
 		JOIN campaign_leads cl ON cl.lead_id = l.id

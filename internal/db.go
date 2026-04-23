@@ -323,12 +323,12 @@ func withBusyRetry(fn func() error) error {
 	return lastErr
 }
 
-func withRetryTx[T any](db *sql.DB, fn func(tx *sql.Tx) (T, error)) (T, error) {
+func withRetryTx[T any](db *sql.DB, fn func(tx *Tx) (T, error)) (T, error) {
 	var zero T
 	var lastErr error
 
 	for attempt := 0; attempt < sqliteWriteAttempts; attempt++ {
-		tx, err := db.Begin()
+		tx, err := beginTx(db)
 		if err != nil {
 			lastErr = fmt.Errorf("starting transaction: %w", err)
 			if !isSQLiteBusyError(lastErr) || attempt == sqliteWriteAttempts-1 {
