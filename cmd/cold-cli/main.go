@@ -46,11 +46,28 @@ func printJSON(v any) error {
 var rootCmd = &cobra.Command{
 	Use:   "cold-cli",
 	Short: "Agent-first CLI cold email sequence engine",
+	Long: strings.TrimSpace(`
+Agent-first CLI cold email sequence engine.
+
+Storage backend:
+  - SQLite by default at ~/.cold-cli/data.db
+  - Postgres when COLD_CLI_DATABASE_URL is set
+
+For Postgres worker deployments, use a direct connection string rather than a
+transaction-pooled/pooler URL because tick uses advisory locks.
+`),
 }
 
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize cold-cli data directory, database, and config",
+	Long: strings.TrimSpace(`
+Initialize cold-cli data directory, config, and the active database backend.
+
+Backend selection:
+  - SQLite by default at ~/.cold-cli/data.db
+  - Postgres when COLD_CLI_DATABASE_URL is set
+`),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dataDir := internal.DataDir()
 

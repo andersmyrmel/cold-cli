@@ -9,7 +9,9 @@ No CLI-native cold email sequence engine exists. SaaS tools (Instantly, Smartlea
 ## Tech Stack
 
 - **Go** single binary, no runtime deps
-- **SQLite** single file (`~/.cold-cli/data.db`), pure Go driver (`modernc.org/sqlite`, no CGO)
+- **SQLite or Postgres** storage
+  - SQLite local mode: `~/.cold-cli/data.db`, pure Go driver (`modernc.org/sqlite`, no CGO)
+  - Postgres shared/server mode: activated by `COLD_CLI_DATABASE_URL`
 - **gws CLI** subprocess calls for Gmail send + inbox polling
 - **Cobra** CLI framework (same as gh, docker, kubectl)
 - **YAML** sequence definitions and config (`~/.cold-cli/config.yml`)
@@ -23,7 +25,9 @@ cold-cli/
 ├─ cmd/cold-cli/
 │   └─ main.go              (CLI entry, Cobra commands)
 ├─ internal/
-│   ├─ db.go                (SQLite setup, migrations, indexes)
+│   ├─ db.go                (schema bootstrap, SQLite migrations, indexes)
+│   ├─ store.go             (dialect-aware open, backend selection, tick locking)
+│   ├─ sql_runner.go        (cross-dialect query execution + placeholder rebinding)
 │   ├─ models.go            (structs: Account, Lead, Campaign, etc.)
 │   ├─ tick.go              (tick engine: lock, poll, send loop)
 │   ├─ scheduler.go         (eager schedule computation, variant assignment)
@@ -130,8 +134,10 @@ Single idempotent command. Triggered by cron (`*/10 * * * *`), manual invocation
 ```
 tick starts
 │
-├─ acquire ~/.cold-cli/tick.lock (flock/fcntl)
-│   └─ locked? → print "tick already running", exit 0
+├─ acquire dialect-specific tick lock
+│   ├─ SQLite: ~/.cold-cli/tick.lock (flock/fcntl)
+│   └─ Postgres: advisory lock on a dedicated DB connection
+│      locked? → print "tick already running", exit 0
 │
 ├─ 1. Poll inbox (via gws, messages after last_poll_at)
 │      → match replies via In-Reply-To header, then thread-ID fallback
@@ -276,8 +282,8 @@ type GWSClient interface {
 - **gws send failure**: per-send isolation, mark `'failed'`, slog.Error, continue
 - **Missing message_id after step 1**: treated as send failure (prevents broken threading)
 - **DB write failure after send**: slog.Error with full context (send_id, message_id), continue
-- **Concurrent tick**: flock auto-releases on process exit; second tick exits cleanly
-- **Lock file after crash**: OS releases flock on process exit, no stale lock problem
+- **Concurrent tick**: SQLite uses flock, Postgres uses advisory locks; second tick exits cleanly
+- **Lock after crash**: SQLite flock and Postgres advisory locks both release on process exit / connection close
 - **Invalid campaign update**: timezone, time format, send days validated before writing; successful send-window/day/timezone updates recalculate pending `scheduled_sends`
 
 ## Domain Diagnostics
@@ -351,7 +357,7 @@ All commands support `--json` for agent consumption. No interactive prompts, eve
      │ scheduler  │  │  tick      │  │  stats /  │
      │            │  │  engine    │  │  log      │
      │ • compute  │  │            │  │           │
-     │   send_at  │  │ • flock    │  │ • agg by  │
+     │   send_at  │  │ • lock     │  │ • agg by  │
      │ • round-   │  │ • poll     │  │   campaign│
      │   robin    │  │   replies  │  │   /step   │
      │   accounts │  │ • detect   │  │   /variant│
@@ -362,15 +368,15 @@ All commands support `--json` for agent consumption. No interactive prompts, eve
      └─────┬──────┘  │ • slog    │
            │         └──┬───┬────┘
            ▼            │   │
-     ┌───────────┐      │   ▼
-     │  SQLite   │◄─────┘  ┌──────────────┐
-     │  (~/.cold-│         │  GWSClient   │
-     │  cli/     │         │  (interface)  │
-     │  data.db) │         ├──────────────┤
-     │           │         │ SendEmail()  │
-     └───────────┘         │ ListMessages()│
-                           │ GetMessage() │
-                           └──────┬───────┘
+     ┌────────────────────┐ │   ▼
+     │  Storage backend   │◄┘  ┌──────────────┐
+     │                    │    │  GWSClient   │
+     │ • SQLite local DB  │    │  (interface) │
+     │ • Postgres shared  │    ├──────────────┤
+     │   database         │    │ SendEmail()  │
+     └────────────────────┘    │ ListMessages()│
+                                │ GetMessage() │
+                                └──────┬───────┘
      ┌───────────┐                │
      │ tick.log  │                ▼
      │ (slog     │         ┌──────────────┐
@@ -391,7 +397,7 @@ All commands support `--json` for agent consumption. No interactive prompts, eve
 | # | Decision | Choice | Rationale |
 |---|---------|--------|-----------|
 | 1 | Scheduling model | Eager (scheduled_sends table) | Enables campaign preview, agent review, simple tick |
-| 2 | Concurrent tick protection | flock file lock | OS auto-releases on exit, standard cron pattern |
+| 2 | Concurrent tick protection | dialect-specific lock | SQLite uses flock, Postgres uses advisory lock on a dedicated connection |
 | 3 | Thread management | Backfill thread_id onto scheduled_sends | Self-contained rows, no joins at send time |
 | 4 | Daily limit tracking | COUNT from events table | No mutable counter, always accurate |
 | 5 | Catch-up after sleep | Send all overdue with gaps | Daily limit + send window + send day are safety valves |
@@ -401,7 +407,7 @@ All commands support `--json` for agent consumption. No interactive prompts, eve
 | 9 | Template engine | strings.ReplaceAll | No injection risk, dead simple |
 | 10 | gws error handling | Per-send isolation | Failure marks one send 'failed', continues to next |
 | 11 | Account rotation | Round-robin at schedule time | Deterministic, previewable, thread continuity |
-| 12 | Test strategy | GWSClient interface mock, real SQLite | Only external dep mocked, high-confidence tests |
+| 12 | Test strategy | GWSClient interface mock, real SQLite plus Postgres boundary coverage | Only external dep mocked, high-confidence tests while keeping Postgres seams covered |
 | 13 | Template validation | At campaign creation | Catches missing fields before any sends |
 | 14 | CSV schema | email required, rest driven by template | Flexible, no arbitrary constraints |
 | 15 | Daily count query | Preload at tick start | One GROUP BY query, in-memory map |

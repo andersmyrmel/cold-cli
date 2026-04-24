@@ -1,6 +1,6 @@
 # cold-cli
 
-Open-source CLI cold email sequence engine. Single binary, SQLite storage, no SaaS.
+Open-source CLI cold email sequence engine. Single binary, SQLite by default, Postgres via `COLD_CLI_DATABASE_URL`, no SaaS required.
 
 Built on [gws](https://github.com/googleworkspace/cli) for Gmail API access. Works great with coding agents (Claude Code, Cursor, etc.) or directly from the terminal.
 
@@ -11,6 +11,30 @@ go install github.com/anders/cold-cli/cmd/cold-cli@latest
 ```
 
 Requires [gws](https://github.com/googleworkspace/cli) for Gmail integration.
+
+## Database Modes
+
+`cold-cli` supports two storage modes:
+
+- **SQLite (default)** - local file at `~/.cold-cli/data.db`
+- **Postgres** - activated by setting `COLD_CLI_DATABASE_URL`
+
+Examples:
+
+```bash
+# Local default mode
+cold-cli init
+
+# Shared/server mode
+export COLD_CLI_DATABASE_URL='postgresql://user:pass@host:5432/cold_cli?sslmode=require'
+cold-cli init
+```
+
+Important for Postgres mode:
+
+- use a direct Postgres connection for `tick`
+- do not use a transaction-pooled/pgbouncer pooler URL for the worker path
+- `tick` uses advisory locks in Postgres mode, which require stable session semantics
 
 ## Quickstart
 
@@ -113,7 +137,7 @@ Scheduling behavior:
 ## Commands
 
 ```
-cold-cli init                              # set up ~/.cold-cli/ directory, database, config
+cold-cli init                              # set up ~/.cold-cli/, config, and the active DB backend
 cold-cli doctor [domain...]                # check MX, SPF, DKIM, DMARC, domain age
 
 cold-cli account add <email>               # add sending account with OAuth
@@ -171,7 +195,7 @@ All commands support `--json` for programmatic use.
 
 ### Eager Scheduling
 
-All send times are pre-computed when you create a campaign. Each send becomes a row in SQLite with a specific `send_at` timestamp, assigned account, and variant. This means:
+All send times are pre-computed when you create a campaign. Each send becomes a stored row with a specific `send_at` timestamp, assigned account, and variant. This means:
 
 - `campaign preview` shows the sender-capacity-aware schedule before you activate
 - schedules are rebalanced across `active` and `draft` campaigns that share an account
@@ -287,10 +311,17 @@ unsubscribe_subject: Unsubscribe
 ## Architecture
 
 - **Go** - single binary, no runtime deps
-- **SQLite** - `~/.cold-cli/data.db`, pure Go driver (no CGO)
+- **SQLite or Postgres** - SQLite at `~/.cold-cli/data.db` by default, Postgres via `COLD_CLI_DATABASE_URL`
 - **gws CLI** - subprocess calls for Gmail API (send, list, get)
 - **Cobra** - CLI framework
 - **log/slog** - structured JSON logging to `~/.cold-cli/tick.log`
+
+Backend notes:
+
+- SQLite mode uses a local file lock at `~/.cold-cli/tick.lock`
+- Postgres mode uses an advisory lock for `tick`
+- `cold-cli init` bootstraps whichever backend is active
+- Postgres worker deployments should use a direct connection string, not a pooler URL
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for data model, tick flow diagrams, and design decisions.
 
