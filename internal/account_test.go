@@ -351,6 +351,16 @@ func TestAddSMTPIMAPAccountValidation(t *testing.T) {
 				IMAPHost:        "imap.example.com",
 			},
 		},
+		{
+			name: "raw password ref",
+			opts: AddSMTPIMAPAccountOpts{
+				Email:           "sender@example.com",
+				DailyLimit:      50,
+				SMTPHost:        "smtp.example.com",
+				SMTPPasswordRef: "plain-password",
+				IMAPHost:        "imap.example.com",
+			},
+		},
 	}
 
 	for _, tc := range cases {

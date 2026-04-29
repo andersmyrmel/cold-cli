@@ -241,6 +241,9 @@ func normalizeSMTPIMAPAccountOpts(opts AddSMTPIMAPAccountOpts) (AddSMTPIMAPAccou
 	if opts.SMTPPasswordRef == "" {
 		return opts, fmt.Errorf("smtp password ref is required")
 	}
+	if err := ValidateSecretRef(opts.SMTPPasswordRef); err != nil {
+		return opts, fmt.Errorf("smtp password ref: %w", err)
+	}
 	if err := validateTLSMode("smtp", opts.SMTPTLSMode); err != nil {
 		return opts, err
 	}
@@ -259,6 +262,9 @@ func normalizeSMTPIMAPAccountOpts(opts AddSMTPIMAPAccountOpts) (AddSMTPIMAPAccou
 	}
 	if opts.IMAPPasswordRef == "" {
 		opts.IMAPPasswordRef = opts.SMTPPasswordRef
+	}
+	if err := ValidateSecretRef(opts.IMAPPasswordRef); err != nil {
+		return opts, fmt.Errorf("imap password ref: %w", err)
 	}
 	if err := validateTLSMode("imap", opts.IMAPTLSMode); err != nil {
 		return opts, err
