@@ -16,8 +16,9 @@ func TestAccountAdd(t *testing.T) {
 	var email string
 	var dailyLimit int
 	var status string
-	err = db.QueryRow("SELECT email, daily_limit, status FROM accounts WHERE email = ?", "test@example.com").
-		Scan(&email, &dailyLimit, &status)
+	var provider string
+	err = db.QueryRow("SELECT email, daily_limit, status, provider FROM accounts WHERE email = ?", "test@example.com").
+		Scan(&email, &dailyLimit, &status, &provider)
 	if err != nil {
 		t.Fatalf("querying account: %v", err)
 	}
@@ -30,6 +31,9 @@ func TestAccountAdd(t *testing.T) {
 	}
 	if status != "active" {
 		t.Errorf("expected status active, got %s", status)
+	}
+	if provider != AccountProviderGWS {
+		t.Errorf("expected provider %s, got %s", AccountProviderGWS, provider)
 	}
 }
 
@@ -153,6 +157,9 @@ func TestReAddRemovedAccount(t *testing.T) {
 	if result.Status != "active" {
 		t.Errorf("expected active, got %s", result.Status)
 	}
+	if result.Provider != AccountProviderGWS {
+		t.Errorf("expected provider %s, got %s", AccountProviderGWS, result.Provider)
+	}
 	if result.DailyLimit != 30 {
 		t.Errorf("expected daily_limit 30, got %d", result.DailyLimit)
 	}
@@ -166,6 +173,54 @@ func TestReAddRemovedAccount(t *testing.T) {
 	}
 	if limit != 30 {
 		t.Errorf("expected 30 in DB, got %d", limit)
+	}
+}
+
+func TestListAccountsIncludesProvider(t *testing.T) {
+	db := testDB(t)
+
+	if _, err := db.Exec(
+		`INSERT INTO accounts (
+			email,
+			daily_limit,
+			provider,
+			smtp_host,
+			smtp_port,
+			smtp_username,
+			smtp_password_ref,
+			smtp_tls_mode,
+			imap_host,
+			imap_port,
+			imap_username,
+			imap_password_ref,
+			imap_tls_mode
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"smtp@example.com",
+		25,
+		AccountProviderSMTPIMAP,
+		"smtp.example.com",
+		465,
+		"smtp@example.com",
+		"secret://smtp",
+		"ssl",
+		"imap.example.com",
+		993,
+		"smtp@example.com",
+		"secret://imap",
+		"ssl",
+	); err != nil {
+		t.Fatalf("inserting smtp account: %v", err)
+	}
+
+	accounts, err := ListAccounts(db)
+	if err != nil {
+		t.Fatalf("ListAccounts error: %v", err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("expected 1 account, got %d", len(accounts))
+	}
+	if accounts[0].Provider != AccountProviderSMTPIMAP {
+		t.Errorf("expected provider %s, got %s", AccountProviderSMTPIMAP, accounts[0].Provider)
 	}
 }
 

@@ -18,6 +18,7 @@ type AddAccountResult struct {
 	Email        string `json:"email"`
 	DailyLimit   int    `json:"daily_limit"`
 	Status       string `json:"status"`
+	Provider     string `json:"provider"`
 	GWSConfigDir string `json:"gws_config_dir"`
 }
 
@@ -31,8 +32,25 @@ func AddAccount(db *sql.DB, email string, dailyLimit int, configDir string) (*Ad
 	if err == nil {
 		if existingStatus == "removed" {
 			// Reactivate removed account
-			_, err := execDB(db, "UPDATE accounts SET status = 'active', daily_limit = ?, gws_config_dir = ? WHERE id = ?",
-				dailyLimit, configDir, existingID)
+			_, err := execDB(
+				db,
+				`UPDATE accounts
+				 SET status = 'active',
+				     daily_limit = ?,
+				     provider = ?,
+				     gws_config_dir = ?,
+				     smtp_host = '',
+				     smtp_port = 0,
+				     smtp_username = '',
+				     smtp_password_ref = '',
+				     smtp_tls_mode = '',
+				     imap_host = '',
+				     imap_port = 0,
+				     imap_username = '',
+				     imap_password_ref = '',
+				     imap_tls_mode = ''
+				 WHERE id = ?`,
+				dailyLimit, AccountProviderGWS, configDir, existingID)
 			if err != nil {
 				return nil, fmt.Errorf("reactivating account: %w", err)
 			}
@@ -41,6 +59,7 @@ func AddAccount(db *sql.DB, email string, dailyLimit int, configDir string) (*Ad
 				Email:        email,
 				DailyLimit:   dailyLimit,
 				Status:       "active",
+				Provider:     AccountProviderGWS,
 				GWSConfigDir: configDir,
 			}, nil
 		}
@@ -50,8 +69,8 @@ func AddAccount(db *sql.DB, email string, dailyLimit int, configDir string) (*Ad
 	var id int64
 	err = queryRowDB(
 		db,
-		"INSERT INTO accounts (email, daily_limit, gws_config_dir) VALUES (?, ?, ?) RETURNING id",
-		email, dailyLimit, configDir,
+		"INSERT INTO accounts (email, daily_limit, provider, gws_config_dir) VALUES (?, ?, ?, ?) RETURNING id",
+		email, dailyLimit, AccountProviderGWS, configDir,
 	).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("adding account: %w", err)
@@ -61,6 +80,7 @@ func AddAccount(db *sql.DB, email string, dailyLimit int, configDir string) (*Ad
 		Email:        email,
 		DailyLimit:   dailyLimit,
 		Status:       "active",
+		Provider:     AccountProviderGWS,
 		GWSConfigDir: configDir,
 	}, nil
 }
@@ -404,11 +424,12 @@ type ListAccountsRow struct {
 	Email      string `json:"email"`
 	DailyLimit int    `json:"daily_limit"`
 	Status     string `json:"status"`
+	Provider   string `json:"provider"`
 }
 
 // ListAccounts returns all accounts ordered by ID.
 func ListAccounts(db *sql.DB) ([]ListAccountsRow, error) {
-	rows, err := queryDB(db, "SELECT id, email, daily_limit, status FROM accounts ORDER BY id")
+	rows, err := queryDB(db, "SELECT id, email, daily_limit, status, provider FROM accounts ORDER BY id")
 	if err != nil {
 		return nil, fmt.Errorf("querying accounts: %w", err)
 	}
@@ -417,7 +438,7 @@ func ListAccounts(db *sql.DB) ([]ListAccountsRow, error) {
 	var accounts []ListAccountsRow
 	for rows.Next() {
 		var a ListAccountsRow
-		if err := rows.Scan(&a.ID, &a.Email, &a.DailyLimit, &a.Status); err != nil {
+		if err := rows.Scan(&a.ID, &a.Email, &a.DailyLimit, &a.Status, &a.Provider); err != nil {
 			return nil, fmt.Errorf("scanning account: %w", err)
 		}
 		accounts = append(accounts, a)

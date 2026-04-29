@@ -288,9 +288,9 @@ var accountListCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tEMAIL\tDAILY LIMIT\tSTATUS")
+		fmt.Fprintln(w, "ID\tEMAIL\tPROVIDER\tDAILY LIMIT\tSTATUS")
 		for _, a := range accounts {
-			fmt.Fprintf(w, "%d\t%s\t%d\t%s\n", a.ID, a.Email, a.DailyLimit, a.Status)
+			fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%s\n", a.ID, a.Email, a.Provider, a.DailyLimit, a.Status)
 		}
 		return w.Flush()
 	},
@@ -1235,7 +1235,7 @@ var tickCmd = &cobra.Command{
 		}
 
 		gwsCLI := internal.NewGWSCLI()
-		rows, err := store.Query("SELECT email, gws_config_dir FROM accounts WHERE status = 'active' AND gws_config_dir != ''")
+		rows, err := store.Query("SELECT email, gws_config_dir FROM accounts WHERE status = 'active' AND provider = 'gws' AND gws_config_dir != ''")
 		if err == nil {
 			defer rows.Close()
 			for rows.Next() {

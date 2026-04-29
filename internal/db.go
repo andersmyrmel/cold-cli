@@ -21,7 +21,18 @@ CREATE TABLE IF NOT EXISTS accounts (
 	daily_limit INTEGER NOT NULL DEFAULT 50,
 	last_send_at DATETIME,
 	status TEXT NOT NULL DEFAULT 'active',
-	gws_config_dir TEXT NOT NULL DEFAULT ''
+	provider TEXT NOT NULL DEFAULT 'gws',
+	gws_config_dir TEXT NOT NULL DEFAULT '',
+	smtp_host TEXT NOT NULL DEFAULT '',
+	smtp_port INTEGER NOT NULL DEFAULT 0,
+	smtp_username TEXT NOT NULL DEFAULT '',
+	smtp_password_ref TEXT NOT NULL DEFAULT '',
+	smtp_tls_mode TEXT NOT NULL DEFAULT '',
+	imap_host TEXT NOT NULL DEFAULT '',
+	imap_port INTEGER NOT NULL DEFAULT 0,
+	imap_username TEXT NOT NULL DEFAULT '',
+	imap_password_ref TEXT NOT NULL DEFAULT '',
+	imap_tls_mode TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS campaigns (
@@ -117,7 +128,18 @@ var postgresSchemaStatements = []string{
 		daily_limit INTEGER NOT NULL DEFAULT 50,
 		last_send_at TIMESTAMPTZ,
 		status TEXT NOT NULL DEFAULT 'active',
-		gws_config_dir TEXT NOT NULL DEFAULT ''
+		provider TEXT NOT NULL DEFAULT 'gws',
+		gws_config_dir TEXT NOT NULL DEFAULT '',
+		smtp_host TEXT NOT NULL DEFAULT '',
+		smtp_port INTEGER NOT NULL DEFAULT 0,
+		smtp_username TEXT NOT NULL DEFAULT '',
+		smtp_password_ref TEXT NOT NULL DEFAULT '',
+		smtp_tls_mode TEXT NOT NULL DEFAULT '',
+		imap_host TEXT NOT NULL DEFAULT '',
+		imap_port INTEGER NOT NULL DEFAULT 0,
+		imap_username TEXT NOT NULL DEFAULT '',
+		imap_password_ref TEXT NOT NULL DEFAULT '',
+		imap_tls_mode TEXT NOT NULL DEFAULT ''
 	)`,
 	`CREATE TABLE IF NOT EXISTS campaigns (
 		id BIGSERIAL PRIMARY KEY,
@@ -198,6 +220,21 @@ var postgresSchemaStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(domain)`,
 }
 
+var postgresMigrationStatements = []string{
+	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS gws_config_dir TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'gws'`,
+	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS smtp_host TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS smtp_port INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS smtp_username TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS smtp_password_ref TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS smtp_tls_mode TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS imap_host TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS imap_port INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS imap_username TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS imap_password_ref TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS imap_tls_mode TEXT NOT NULL DEFAULT ''`,
+}
+
 const (
 	sqliteBusyTimeoutMS  = 5000
 	sqliteWriteAttempts  = 5
@@ -257,6 +294,11 @@ func bootstrapPostgresSchema(db *sql.DB) error {
 			return fmt.Errorf("running postgres schema statement %q: %w", stmt, err)
 		}
 	}
+	for _, stmt := range postgresMigrationStatements {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("running postgres migration statement %q: %w", stmt, err)
+		}
+	}
 	return nil
 }
 
@@ -264,6 +306,17 @@ func bootstrapPostgresSchema(db *sql.DB) error {
 func runSQLiteMigrations(db *sql.DB) error {
 	migrations := []string{
 		"ALTER TABLE accounts ADD COLUMN gws_config_dir TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'gws'",
+		"ALTER TABLE accounts ADD COLUMN smtp_host TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE accounts ADD COLUMN smtp_port INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE accounts ADD COLUMN smtp_username TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE accounts ADD COLUMN smtp_password_ref TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE accounts ADD COLUMN smtp_tls_mode TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE accounts ADD COLUMN imap_host TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE accounts ADD COLUMN imap_port INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE accounts ADD COLUMN imap_username TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE accounts ADD COLUMN imap_password_ref TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE accounts ADD COLUMN imap_tls_mode TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE campaigns ADD COLUMN sequence_content TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE campaigns ADD COLUMN start_date TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE scheduled_sends ADD COLUMN error_message TEXT NOT NULL DEFAULT ''",

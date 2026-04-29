@@ -113,6 +113,38 @@ func TestOpenDB_TableColumns(t *testing.T) {
 	}
 }
 
+func TestOpenDB_AccountProviderColumns(t *testing.T) {
+	db := testDB(t)
+
+	cols := map[string]bool{}
+	rows, err := db.Query("PRAGMA table_info(accounts)")
+	if err != nil {
+		t.Fatalf("getting account table info: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt *string
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scanning account column: %v", err)
+		}
+		cols[name] = true
+	}
+
+	expected := []string{
+		"provider", "gws_config_dir",
+		"smtp_host", "smtp_port", "smtp_username", "smtp_password_ref", "smtp_tls_mode",
+		"imap_host", "imap_port", "imap_username", "imap_password_ref", "imap_tls_mode",
+	}
+	for _, col := range expected {
+		if !cols[col] {
+			t.Errorf("accounts missing column %q", col)
+		}
+	}
+}
+
 func TestOpenDB_AccountUniqueEmail(t *testing.T) {
 	db := testDB(t)
 

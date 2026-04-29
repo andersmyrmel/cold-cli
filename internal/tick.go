@@ -308,7 +308,28 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 }
 
 func loadActiveAccounts(db *sql.DB) ([]Account, error) {
-	rows, err := queryDB(db, "SELECT id, email, daily_limit, status FROM accounts WHERE status = 'active'")
+	rows, err := queryDB(
+		db,
+		`SELECT
+			id,
+			email,
+			daily_limit,
+			status,
+			provider,
+			gws_config_dir,
+			smtp_host,
+			smtp_port,
+			smtp_username,
+			smtp_password_ref,
+			smtp_tls_mode,
+			imap_host,
+			imap_port,
+			imap_username,
+			imap_password_ref,
+			imap_tls_mode
+		FROM accounts
+		WHERE status = 'active'`,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +338,24 @@ func loadActiveAccounts(db *sql.DB) ([]Account, error) {
 	var accounts []Account
 	for rows.Next() {
 		var a Account
-		if err := rows.Scan(&a.ID, &a.Email, &a.DailyLimit, &a.Status); err != nil {
+		if err := rows.Scan(
+			&a.ID,
+			&a.Email,
+			&a.DailyLimit,
+			&a.Status,
+			&a.Provider,
+			&a.GWSConfigDir,
+			&a.SMTPHost,
+			&a.SMTPPort,
+			&a.SMTPUsername,
+			&a.SMTPPasswordRef,
+			&a.SMTPTLSMode,
+			&a.IMAPHost,
+			&a.IMAPPort,
+			&a.IMAPUsername,
+			&a.IMAPPasswordRef,
+			&a.IMAPTLSMode,
+		); err != nil {
 			return nil, err
 		}
 		accounts = append(accounts, a)
