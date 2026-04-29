@@ -272,6 +272,40 @@ func TestAddSMTPIMAPAccount(t *testing.T) {
 	}
 }
 
+func TestGetAccountByEmailIncludesSMTPIMAPConfig(t *testing.T) {
+	db := testDB(t)
+	if _, err := AddSMTPIMAPAccount(db, AddSMTPIMAPAccountOpts{
+		Email:           "sender@example.com",
+		DailyLimit:      25,
+		SMTPHost:        "smtp.example.com",
+		SMTPPort:        587,
+		SMTPUsername:    "smtp-user",
+		SMTPPasswordRef: "env:SMTP_PASSWORD",
+		SMTPTLSMode:     "starttls",
+		IMAPHost:        "imap.example.com",
+		IMAPPort:        993,
+		IMAPUsername:    "imap-user",
+		IMAPPasswordRef: "env:IMAP_PASSWORD",
+		IMAPTLSMode:     "ssl",
+	}); err != nil {
+		t.Fatalf("AddSMTPIMAPAccount error: %v", err)
+	}
+
+	account, err := GetAccountByEmail(db, "sender@example.com")
+	if err != nil {
+		t.Fatalf("GetAccountByEmail error: %v", err)
+	}
+	if account.Provider != AccountProviderSMTPIMAP {
+		t.Errorf("expected provider %s, got %s", AccountProviderSMTPIMAP, account.Provider)
+	}
+	if account.SMTPHost != "smtp.example.com" || account.SMTPPort != 587 || account.SMTPPasswordRef != "env:SMTP_PASSWORD" {
+		t.Errorf("unexpected SMTP config: %#v", account)
+	}
+	if account.IMAPHost != "imap.example.com" || account.IMAPPort != 993 || account.IMAPPasswordRef != "env:IMAP_PASSWORD" {
+		t.Errorf("unexpected IMAP config: %#v", account)
+	}
+}
+
 func TestAddSMTPIMAPAccountDefaults(t *testing.T) {
 	db := testDB(t)
 

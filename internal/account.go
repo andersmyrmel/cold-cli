@@ -339,6 +339,65 @@ func validatePort(label string, port int) error {
 	return nil
 }
 
+func accountSelectColumns() string {
+	return `id,
+		email,
+		daily_limit,
+		status,
+		provider,
+		gws_config_dir,
+		smtp_host,
+		smtp_port,
+		smtp_username,
+		smtp_password_ref,
+		smtp_tls_mode,
+		imap_host,
+		imap_port,
+		imap_username,
+		imap_password_ref,
+		imap_tls_mode`
+}
+
+func scanAccount(row interface {
+	Scan(dest ...any) error
+}) (Account, error) {
+	var account Account
+	if err := row.Scan(
+		&account.ID,
+		&account.Email,
+		&account.DailyLimit,
+		&account.Status,
+		&account.Provider,
+		&account.GWSConfigDir,
+		&account.SMTPHost,
+		&account.SMTPPort,
+		&account.SMTPUsername,
+		&account.SMTPPasswordRef,
+		&account.SMTPTLSMode,
+		&account.IMAPHost,
+		&account.IMAPPort,
+		&account.IMAPUsername,
+		&account.IMAPPasswordRef,
+		&account.IMAPTLSMode,
+	); err != nil {
+		return Account{}, err
+	}
+	return account, nil
+}
+
+// GetAccountByEmail loads a full account record by email.
+func GetAccountByEmail(db *sql.DB, email string) (Account, error) {
+	email = strings.TrimSpace(email)
+	account, err := scanAccount(queryRowDB(db, "SELECT "+accountSelectColumns()+" FROM accounts WHERE email = ?", email))
+	if err == sql.ErrNoRows {
+		return Account{}, fmt.Errorf("account %s not found", email)
+	}
+	if err != nil {
+		return Account{}, fmt.Errorf("loading account %s: %w", email, err)
+	}
+	return account, nil
+}
+
 // PauseAccountResult is returned by PauseAccount.
 type PauseAccountResult struct {
 	Email          string `json:"email"`

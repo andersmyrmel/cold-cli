@@ -317,7 +317,7 @@ var accountAddSMTPCmd = &cobra.Command{
 		fmt.Printf("  smtp: %s:%d (%s)\n", result.SMTPHost, result.SMTPPort, result.SMTPTLSMode)
 		fmt.Printf("  imap: %s:%d (%s)\n", result.IMAPHost, result.IMAPPort, result.IMAPTLSMode)
 		fmt.Println()
-		fmt.Println("Note: SMTP/IMAP sending is not enabled until the SMTP sender transport is implemented.")
+		fmt.Printf("Verify credentials with: cold-cli account verify %s\n", result.Email)
 		return nil
 	},
 }
@@ -353,6 +353,56 @@ var accountListCmd = &cobra.Command{
 		}
 		return w.Flush()
 	},
+}
+
+var accountVerifyCmd = &cobra.Command{
+	Use:   "verify <email>",
+	Short: "Verify SMTP/IMAP account connectivity",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		email := strings.TrimSpace(args[0])
+
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		account, err := internal.GetAccountByEmail(db, email)
+		if err != nil {
+			return err
+		}
+
+		result, verifyErr := internal.VerifySMTPIMAPAccount(account, nil, nil)
+		if jsonOutput {
+			if result == nil {
+				return verifyErr
+			}
+			if err := printJSON(result); err != nil {
+				return err
+			}
+			return verifyErr
+		}
+		if result == nil {
+			return verifyErr
+		}
+
+		fmt.Printf("Verifying %s (%s)\n", result.Email, result.Provider)
+		printCheckResult("SMTP", result.SMTPOK, result.SMTPError)
+		printCheckResult("IMAP", result.IMAPOK, result.IMAPError)
+		return verifyErr
+	},
+}
+
+func printCheckResult(label string, ok bool, detail string) {
+	if ok {
+		fmt.Printf("  %s: ok\n", label)
+		return
+	}
+	if detail == "" {
+		detail = "failed"
+	}
+	fmt.Printf("  %s: failed: %s\n", label, detail)
 }
 
 var accountPauseCmd = &cobra.Command{
@@ -1615,7 +1665,7 @@ func init() {
 	accountAddSMTPCmd.Flags().String("imap-password-ref", "", "IMAP password reference (default: SMTP password ref)")
 	accountAddSMTPCmd.Flags().String("imap-tls", "ssl", "IMAP TLS mode: ssl, starttls, none")
 	accountUpdateCmd.Flags().Int("daily-limit", 0, "max emails per day, shared across all campaigns using this account")
-	accountCmd.AddCommand(accountAddCmd, accountAddSMTPCmd, accountListCmd, accountPauseCmd, accountResumeCmd, accountRemoveCmd, accountUpdateCmd)
+	accountCmd.AddCommand(accountAddCmd, accountAddSMTPCmd, accountListCmd, accountVerifyCmd, accountPauseCmd, accountResumeCmd, accountRemoveCmd, accountUpdateCmd)
 	leadListCmd.Flags().String("domain", "", "filter by domain")
 	leadListCmd.Flags().String("status", "", "filter by status (active, blacklisted, bounced)")
 	leadListCmd.Flags().Int("limit", 50, "max leads to show")

@@ -21,6 +21,11 @@ type IMAPMessageLister interface {
 	ListMessages(account Account, since time.Time, includeSpamTrash bool) ([]GWSMessage, error)
 }
 
+// IMAPAccountVerifier verifies IMAP connectivity and authentication.
+type IMAPAccountVerifier interface {
+	VerifyAccount(account Account) error
+}
+
 // IMAPTransport is the production IMAP polling transport.
 type IMAPTransport struct {
 	Resolver SecretResolver
@@ -102,6 +107,46 @@ func (t *IMAPTransport) ListMessages(account Account, since time.Time, includeSp
 		all = append(all, messages...)
 	}
 	return dedupeMailboxMessages(all), nil
+}
+
+func (t *IMAPTransport) VerifyAccount(account Account) error {
+	if account.Provider != AccountProviderSMTPIMAP {
+		return fmt.Errorf("account %s is provider %s, expected %s", account.Email, account.Provider, AccountProviderSMTPIMAP)
+	}
+
+	resolver := t.Resolver
+	if resolver == nil {
+		resolver = EnvSecretResolver{}
+	}
+	imapRef := strings.TrimSpace(account.IMAPPasswordRef)
+	if imapRef == "" {
+		imapRef = account.SMTPPasswordRef
+	}
+	password, err := resolver.ResolveSecret(imapRef)
+	if err != nil {
+		return fmt.Errorf("resolving IMAP password for %s: %w", account.Email, err)
+	}
+
+	open := t.openIMAPClient
+	if open == nil {
+		open = func(account Account, password string) (imapClient, error) {
+			return t.open(account, password)
+		}
+	}
+	client, err := open(account, password)
+	if err != nil {
+		return err
+	}
+	defer client.Logout()
+
+	mailbox := "INBOX"
+	if len(t.Mailboxes) > 0 && strings.TrimSpace(t.Mailboxes[0]) != "" {
+		mailbox = t.Mailboxes[0]
+	}
+	if _, err := client.Select(mailbox, true); err != nil {
+		return fmt.Errorf("selecting IMAP mailbox %s: %w", mailbox, err)
+	}
+	return nil
 }
 
 func (t *IMAPTransport) open(account Account, password string) (*imapclient.Client, error) {
