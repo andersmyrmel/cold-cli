@@ -1,11 +1,14 @@
 package internal
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"mime"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // EmailParams holds everything needed to construct and send an email.
@@ -20,18 +23,30 @@ type EmailParams struct {
 	InReplyTo  string // Message-ID of the previous step
 	References string // same as InReplyTo for simple chains
 	ThreadID   string // Gmail thread ID for threading
+	MessageID  string // RFC Message-ID to set before sending
 
 	// Unsubscribe
 	UnsubscribeEmail   string // mailto address for List-Unsubscribe header
 	UnsubscribeSubject string // subject for the mailto unsubscribe
 
+	// Optional Date header. If zero, no Date header is added.
+	Date time.Time
+
 	// Stripped unresolved template variables (for logging)
 	StrippedVars []string
 }
 
-// BuildRawMessage constructs an RFC 2822 message and returns it as a base64url-encoded string.
-func BuildRawMessage(p EmailParams) string {
+// BuildRFCMessage constructs an RFC 2822 message.
+func BuildRFCMessage(p EmailParams) string {
 	var msg strings.Builder
+
+	if !p.Date.IsZero() {
+		msg.WriteString(fmt.Sprintf("Date: %s\r\n", p.Date.Format(time.RFC1123Z)))
+	}
+
+	if p.MessageID != "" {
+		msg.WriteString(fmt.Sprintf("Message-ID: %s\r\n", p.MessageID))
+	}
 
 	// From header
 	if p.FromName != "" {
@@ -65,7 +80,12 @@ func BuildRawMessage(p EmailParams) string {
 	msg.WriteString("\r\n")
 	msg.WriteString(plainTextToHTML(p.Body))
 
-	return base64.URLEncoding.EncodeToString([]byte(msg.String()))
+	return msg.String()
+}
+
+// BuildRawMessage constructs an RFC 2822 message and returns it as a base64url-encoded string.
+func BuildRawMessage(p EmailParams) string {
+	return base64.URLEncoding.EncodeToString([]byte(BuildRFCMessage(p)))
 }
 
 // BuildEmailForSend constructs the full email for a scheduled send, applying template rendering
@@ -194,4 +214,21 @@ func PrepareFollowUp(p *EmailParams, parentMessageID, threadID, originalSubject 
 	}
 
 	p.Subject = "Re: " + subject
+}
+
+// GenerateRFCMessageID creates a Message-ID scoped to the sender domain.
+func GenerateRFCMessageID(fromEmail string) string {
+	domain := "cold-cli.local"
+	if _, after, ok := strings.Cut(strings.TrimSpace(fromEmail), "@"); ok {
+		after = strings.TrimSpace(after)
+		if after != "" {
+			domain = after
+		}
+	}
+
+	var randomBytes [12]byte
+	if _, err := rand.Read(randomBytes[:]); err != nil {
+		return fmt.Sprintf("<%d@%s>", time.Now().UnixNano(), domain)
+	}
+	return fmt.Sprintf("<%d.%s@%s>", time.Now().UnixNano(), hex.EncodeToString(randomBytes[:]), domain)
 }

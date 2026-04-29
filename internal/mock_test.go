@@ -44,6 +44,18 @@ type MockListCall struct {
 	IncludeSpamTrash bool
 }
 
+type MockSMTPEmailSender struct {
+	SentEmails []MockSMTPSentEmail
+	SendError  error
+	MessageID  string
+	ThreadID   string
+}
+
+type MockSMTPSentEmail struct {
+	Account Account
+	Params  EmailParams
+}
+
 func (m *MockGWS) SendEmail(account, to, rawMsg, threadID string) (string, string, error) {
 	if m.SendError != nil {
 		return "", "", m.SendError
@@ -100,6 +112,26 @@ func (m *MockGWS) GetMessage(account, msgID string) (*GWSMessage, error) {
 			"Message-ID": rfcMessageID,
 		},
 	}, nil
+}
+
+func (m *MockSMTPEmailSender) SendEmail(account Account, params EmailParams) (string, string, error) {
+	if m.SendError != nil {
+		return "", "", m.SendError
+	}
+	m.SentEmails = append(m.SentEmails, MockSMTPSentEmail{
+		Account: account,
+		Params:  params,
+	})
+
+	messageID := m.MessageID
+	if messageID == "" {
+		messageID = fmt.Sprintf("<smtp-%d@example.com>", len(m.SentEmails))
+	}
+	threadID := m.ThreadID
+	if threadID == "" {
+		threadID = messageID
+	}
+	return messageID, threadID, nil
 }
 
 // failFirstMockGWS fails the first SendEmail call, succeeds after.

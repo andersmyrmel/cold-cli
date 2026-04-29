@@ -68,7 +68,7 @@ func decodeRawMessage(t *testing.T, raw string) string {
 	return string(decoded)
 }
 
-func TestLoadActiveAccounts_GWSOnlyUntilSMTPTransport(t *testing.T) {
+func TestLoadActiveAccounts_IncludesSMTPIMAPAccounts(t *testing.T) {
 	db := testDB(t)
 	if _, err := db.Exec("INSERT INTO accounts (email, daily_limit, provider) VALUES ('gws@example.com', 50, ?)", AccountProviderGWS); err != nil {
 		t.Fatalf("inserting gws account: %v", err)
@@ -83,11 +83,28 @@ func TestLoadActiveAccounts_GWSOnlyUntilSMTPTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadActiveAccounts error: %v", err)
 	}
-	if len(accounts) != 1 {
-		t.Fatalf("expected only GWS account, got %d", len(accounts))
+	if len(accounts) != 2 {
+		t.Fatalf("expected 2 accounts, got %d", len(accounts))
 	}
 	if accounts[0].Email != "gws@example.com" {
-		t.Errorf("expected gws account, got %s", accounts[0].Email)
+		t.Errorf("expected first gws account, got %s", accounts[0].Email)
+	}
+	if accounts[1].Email != "smtp@example.com" {
+		t.Errorf("expected second smtp account, got %s", accounts[1].Email)
+	}
+}
+
+func TestAccountsByProvider(t *testing.T) {
+	accounts := []Account{
+		{Email: "gws@example.com", Provider: AccountProviderGWS},
+		{Email: "smtp@example.com", Provider: AccountProviderSMTPIMAP},
+	}
+	gwsAccounts := accountsByProvider(accounts, AccountProviderGWS)
+	if len(gwsAccounts) != 1 {
+		t.Fatalf("expected 1 gws account, got %d", len(gwsAccounts))
+	}
+	if gwsAccounts[0].Email != "gws@example.com" {
+		t.Errorf("expected gws account, got %s", gwsAccounts[0].Email)
 	}
 }
 
@@ -131,6 +148,73 @@ func TestTick_SendsDueEmails(t *testing.T) {
 	db.QueryRow("SELECT COUNT(*) FROM events WHERE type = 'sent'").Scan(&eventCount)
 	if eventCount != 1 {
 		t.Errorf("expected 1 sent event, got %d", eventCount)
+	}
+}
+
+func TestTick_SendsSMTPIMAPAccountViaSMTPTransport(t *testing.T) {
+	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
+	now := time.Now().UTC()
+
+	if _, err := db.Exec(`UPDATE accounts
+		SET provider = ?,
+		    smtp_host = 'smtp.example.com',
+		    smtp_port = 587,
+		    smtp_username = 'sender@x.com',
+		    smtp_password_ref = 'env:SMTP_PASSWORD',
+		    smtp_tls_mode = 'starttls',
+		    imap_host = 'imap.example.com',
+		    imap_port = 993,
+		    imap_username = 'sender@x.com',
+		    imap_password_ref = 'env:SMTP_PASSWORD',
+		    imap_tls_mode = 'ssl'
+		WHERE id = ?`, AccountProviderSMTPIMAP, accountIDs[0]); err != nil {
+		t.Fatalf("updating account provider: %v", err)
+	}
+	insertPendingSend(t, db, campaignID, leadIDs[0], accountIDs[0], 1, now.Add(-1*time.Hour))
+
+	smtpMock := &MockSMTPEmailSender{
+		MessageID: "<smtp-message@example.com>",
+		ThreadID:  "<smtp-thread@example.com>",
+	}
+	gwsMock := &MockGWS{}
+	result, err := Tick(TickConfig{
+		DB:         db,
+		GWS:        gwsMock,
+		SMTPSender: smtpMock,
+		Now:        now,
+		NoSleep:    true,
+	})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+	if result.Sent != 1 {
+		t.Fatalf("expected 1 sent, got %d", result.Sent)
+	}
+	if len(smtpMock.SentEmails) != 1 {
+		t.Fatalf("expected 1 SMTP email, got %d", len(smtpMock.SentEmails))
+	}
+	if len(gwsMock.SentEmails) != 0 {
+		t.Fatalf("expected no GWS sends, got %d", len(gwsMock.SentEmails))
+	}
+	if smtpMock.SentEmails[0].Account.Provider != AccountProviderSMTPIMAP {
+		t.Errorf("expected SMTP provider, got %s", smtpMock.SentEmails[0].Account.Provider)
+	}
+
+	var status, messageID, threadID string
+	if err := db.QueryRow(`SELECT ss.status, ss.message_id, e.thread_id
+		FROM scheduled_sends ss
+		JOIN events e ON e.account_id = ss.account_id AND e.lead_id = ss.lead_id AND e.campaign_id = ss.campaign_id
+		WHERE ss.id = 1`).Scan(&status, &messageID, &threadID); err != nil {
+		t.Fatalf("querying sent send: %v", err)
+	}
+	if status != "sent" {
+		t.Errorf("expected status sent, got %s", status)
+	}
+	if messageID != "<smtp-message@example.com>" {
+		t.Errorf("expected smtp message ID, got %s", messageID)
+	}
+	if threadID != "<smtp-thread@example.com>" {
+		t.Errorf("expected smtp thread ID, got %s", threadID)
 	}
 }
 

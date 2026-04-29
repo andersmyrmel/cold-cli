@@ -31,6 +31,7 @@ type TickConfig struct {
 	Timezone           *time.Location // for daily limit day boundary; defaults to UTC
 	UnsubscribeHeader  bool           // add List-Unsubscribe header (off by default for cold email)
 	UnsubscribeSubject string         // subject for List-Unsubscribe mailto header
+	SMTPSender         SMTPEmailSender
 }
 
 // Tick runs one tick cycle: poll replies, poll bounces, send due emails.
@@ -64,20 +65,26 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		return result, nil
 	}
 
-	// 1. Poll for replies and unsubscribes
-	replies, unsubs, err := ProcessReplies(cfg.DB, cfg.GWS, accounts)
-	if err != nil {
-		slog.Warn("reply detection error", "error", err)
+	gwsAccounts := accountsByProvider(accounts, AccountProviderGWS)
+
+	// 1. Poll for replies and unsubscribes. IMAP polling is handled by a later transport step.
+	if len(gwsAccounts) > 0 && cfg.GWS != nil {
+		replies, unsubs, err := ProcessReplies(cfg.DB, cfg.GWS, gwsAccounts)
+		if err != nil {
+			slog.Warn("reply detection error", "error", err)
+		}
+		result.RepliesDetected = replies
+		result.UnsubscribesDetected = unsubs
 	}
-	result.RepliesDetected = replies
-	result.UnsubscribesDetected = unsubs
 
 	// 2. Poll for bounces
-	bounces, err := ProcessBounces(cfg.DB, cfg.GWS, accounts)
-	if err != nil {
-		slog.Warn("bounce detection error", "error", err)
+	if len(gwsAccounts) > 0 && cfg.GWS != nil {
+		bounces, err := ProcessBounces(cfg.DB, cfg.GWS, gwsAccounts)
+		if err != nil {
+			slog.Warn("bounce detection error", "error", err)
+		}
+		result.BouncesDetected = bounces
 	}
-	result.BouncesDetected = bounces
 
 	// Update last_poll_at so next tick only checks new messages
 	SetLastPollAt(cfg.DB, now)
@@ -231,41 +238,17 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			continue
 		}
 
-		// Build raw message
-		rawMsg := BuildRawMessage(emailParams)
-
-		// Send via gws
-		gmailMsgID, threadID, err := cfg.GWS.SendEmail(account.Email, emailParams.ToEmail, rawMsg, emailParams.ThreadID)
+		storedMessageID, threadID, err := sendRenderedEmail(cfg, account, emailParams)
 		if err != nil {
 			errMsg := err.Error()
 			slog.Error("send failed",
 				"send_id", send.ID, "step", send.StepNumber,
 				"to", emailParams.ToEmail, "account", account.Email,
+				"provider", account.Provider,
 				"error", err)
 			markSendFailed(cfg.DB, send, errMsg)
 			result.Failed++
 			continue
-		}
-
-		// Validate response
-		if gmailMsgID == "" || threadID == "" {
-			errMsg := "gws returned empty message_id or thread_id"
-			slog.Error(errMsg, "send_id", send.ID)
-			markSendFailed(cfg.DB, send, errMsg)
-			result.Failed++
-			continue
-		}
-
-		storedMessageID := gmailMsgID
-		sentMessage, err := cfg.GWS.GetMessage(account.Email, gmailMsgID)
-		if err != nil {
-			slog.Warn("failed to fetch sent message headers; falling back to Gmail API id",
-				"send_id", send.ID, "gmail_message_id", gmailMsgID, "error", err)
-		} else if rfcMessageID := extractRFCMessageID(sentMessage); rfcMessageID != "" {
-			storedMessageID = rfcMessageID
-		} else {
-			slog.Warn("sent message missing Message-ID header; falling back to Gmail API id",
-				"send_id", send.ID, "gmail_message_id", gmailMsgID)
 		}
 
 		// Mark sent
@@ -333,8 +316,7 @@ func loadActiveAccounts(db *sql.DB) ([]Account, error) {
 			imap_password_ref,
 			imap_tls_mode
 		FROM accounts
-		WHERE status = 'active'
-			AND provider = 'gws'`,
+		WHERE status = 'active'`,
 	)
 	if err != nil {
 		return nil, err
@@ -367,6 +349,55 @@ func loadActiveAccounts(db *sql.DB) ([]Account, error) {
 		accounts = append(accounts, a)
 	}
 	return accounts, nil
+}
+
+func accountsByProvider(accounts []Account, provider string) []Account {
+	filtered := make([]Account, 0, len(accounts))
+	for _, account := range accounts {
+		if account.Provider == provider {
+			filtered = append(filtered, account)
+		}
+	}
+	return filtered
+}
+
+func sendRenderedEmail(cfg TickConfig, account Account, emailParams EmailParams) (string, string, error) {
+	switch account.Provider {
+	case AccountProviderGWS:
+		if cfg.GWS == nil {
+			return "", "", fmt.Errorf("gws sender is not configured")
+		}
+		rawMsg := BuildRawMessage(emailParams)
+		gmailMsgID, threadID, err := cfg.GWS.SendEmail(account.Email, emailParams.ToEmail, rawMsg, emailParams.ThreadID)
+		if err != nil {
+			return "", "", err
+		}
+		if gmailMsgID == "" || threadID == "" {
+			return "", "", fmt.Errorf("gws returned empty message_id or thread_id")
+		}
+
+		storedMessageID := gmailMsgID
+		sentMessage, err := cfg.GWS.GetMessage(account.Email, gmailMsgID)
+		if err != nil {
+			slog.Warn("failed to fetch sent message headers; falling back to Gmail API id",
+				"gmail_message_id", gmailMsgID, "error", err)
+		} else if rfcMessageID := extractRFCMessageID(sentMessage); rfcMessageID != "" {
+			storedMessageID = rfcMessageID
+		} else {
+			slog.Warn("sent message missing Message-ID header; falling back to Gmail API id",
+				"gmail_message_id", gmailMsgID)
+		}
+
+		return storedMessageID, threadID, nil
+	case AccountProviderSMTPIMAP:
+		sender := cfg.SMTPSender
+		if sender == nil {
+			sender = NewSMTPTransport(nil)
+		}
+		return sender.SendEmail(account, emailParams)
+	default:
+		return "", "", fmt.Errorf("unsupported account provider %q", account.Provider)
+	}
 }
 
 func preloadDailyCounts(db *sql.DB, now time.Time, tz *time.Location) (map[int64]int, error) {
