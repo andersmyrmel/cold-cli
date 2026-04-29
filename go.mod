@@ -3,6 +3,7 @@ module github.com/anders/cold-cli
 go 1.25.3
 
 require (
+	github.com/emersion/go-imap v1.2.1
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/likexian/whois v1.15.7
 	github.com/likexian/whois-parser v1.24.21
@@ -13,6 +14,7 @@ require (
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/emersion/go-sasl v0.0.0-20200509203442-7bfe0ed36a21 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect

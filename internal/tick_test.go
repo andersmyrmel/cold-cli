@@ -218,6 +218,53 @@ func TestTick_SendsSMTPIMAPAccountViaSMTPTransport(t *testing.T) {
 	}
 }
 
+func TestTick_DetectsSMTPIMAPRepliesViaIMAP(t *testing.T) {
+	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
+	now := time.Now().UTC()
+
+	if _, err := db.Exec("UPDATE accounts SET provider = ? WHERE id = ?", AccountProviderSMTPIMAP, accountIDs[0]); err != nil {
+		t.Fatalf("updating account provider: %v", err)
+	}
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (?, ?, ?, 'sent', 1, '<sent-1@example.com>', '<sent-1@example.com>')`,
+		campaignID, leadIDs[0], accountIDs[0])
+	insertPendingSend(t, db, campaignID, leadIDs[0], accountIDs[0], 2, now.Add(24*time.Hour))
+
+	imapMock := &MockIMAPMessageLister{
+		Messages: []GWSMessage{
+			{ID: "<reply-1@example.com>", InReplyTo: "<sent-1@example.com>", From: "john@acme.com", Subject: "Re: Hello"},
+		},
+	}
+	result, err := Tick(TickConfig{
+		DB:      db,
+		GWS:     &MockGWS{},
+		IMAP:    imapMock,
+		Now:     now,
+		NoSleep: true,
+	})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+	if result.RepliesDetected != 1 {
+		t.Fatalf("expected 1 IMAP reply, got %d", result.RepliesDetected)
+	}
+	if len(imapMock.ListCalls) != 2 {
+		t.Fatalf("expected IMAP reply and bounce list calls, got %d", len(imapMock.ListCalls))
+	}
+	if imapMock.ListCalls[0].IncludeSpamTrash {
+		t.Fatal("first IMAP call should be inbox reply polling")
+	}
+	if !imapMock.ListCalls[1].IncludeSpamTrash {
+		t.Fatal("second IMAP call should include spam/trash for bounces")
+	}
+
+	var status string
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE campaign_id = ? AND lead_id = ?", campaignID, leadIDs[0]).Scan(&status)
+	if status != "skipped" {
+		t.Errorf("expected pending follow-up skipped after reply, got %s", status)
+	}
+}
+
 func TestTick_SkipsFutureSends(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
 	now := time.Now().UTC()

@@ -51,6 +51,42 @@ func TestProcessReplies_Dedup(t *testing.T) {
 	}
 }
 
+func TestProcessIMAPReplies(t *testing.T) {
+	db := setupReplyTestDB(t)
+	db.Exec(`UPDATE accounts SET provider = ? WHERE id = 1`, AccountProviderSMTPIMAP)
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (1, 1, 1, 'sent', 1, '<sent-1@example.com>', '<sent-1@example.com>')`)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 2, '2099-01-01', 'pending')`)
+
+	imapMock := &MockIMAPMessageLister{
+		Messages: []GWSMessage{
+			{ID: "<reply-1@example.com>", InReplyTo: "<sent-1@example.com>", From: "john@acme.com", Subject: "Re: Hello"},
+		},
+	}
+	accounts := []Account{{ID: 1, Email: "sender@x.com", Provider: AccountProviderSMTPIMAP, Status: "active"}}
+
+	replies, unsubs, err := ProcessIMAPReplies(db, imapMock, accounts)
+	if err != nil {
+		t.Fatalf("ProcessIMAPReplies error: %v", err)
+	}
+	if replies != 1 || unsubs != 0 {
+		t.Fatalf("expected 1 reply and 0 unsubscribes, got replies=%d unsubs=%d", replies, unsubs)
+	}
+	if len(imapMock.ListCalls) != 1 {
+		t.Fatalf("expected 1 IMAP list call, got %d", len(imapMock.ListCalls))
+	}
+	if imapMock.ListCalls[0].IncludeSpamTrash {
+		t.Fatal("reply polling should not include spam/trash")
+	}
+
+	var status string
+	db.QueryRow("SELECT status FROM campaign_leads WHERE campaign_id = 1 AND lead_id = 1").Scan(&status)
+	if status != "replied" {
+		t.Errorf("expected lead campaign status replied, got %s", status)
+	}
+}
+
 func TestProcessBounces_Dedup(t *testing.T) {
 	db := setupReplyTestDB(t)
 
@@ -78,6 +114,53 @@ func TestProcessBounces_Dedup(t *testing.T) {
 	}
 	if bounces2 != 0 {
 		t.Errorf("expected 0 bounces second time (dedup), got %d", bounces2)
+	}
+}
+
+func TestProcessIMAPBounces(t *testing.T) {
+	db := setupReplyTestDB(t)
+	db.Exec(`UPDATE accounts SET provider = ? WHERE id = 1`, AccountProviderSMTPIMAP)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 1, '2099-01-01', 'pending')`)
+
+	imapMock := &MockIMAPMessageLister{
+		Messages: []GWSMessage{
+			{
+				ID:      "<bounce-1@example.com>",
+				From:    "MAILER-DAEMON@migadu.com",
+				Subject: "Undelivered Mail Returned to Sender",
+				Snippet: "Delivery to john@acme.com failed",
+				Headers: map[string]string{},
+			},
+			{
+				ID:      "<ordinary-1@example.com>",
+				From:    "someone@example.com",
+				Subject: "Normal message",
+				Snippet: "john@acme.com is mentioned, but this is not a bounce",
+				Headers: map[string]string{},
+			},
+		},
+	}
+	accounts := []Account{{ID: 1, Email: "sender@x.com", Provider: AccountProviderSMTPIMAP, Status: "active"}}
+
+	bounces, err := ProcessIMAPBounces(db, imapMock, accounts)
+	if err != nil {
+		t.Fatalf("ProcessIMAPBounces error: %v", err)
+	}
+	if bounces != 1 {
+		t.Fatalf("expected 1 bounce, got %d", bounces)
+	}
+	if len(imapMock.ListCalls) != 1 {
+		t.Fatalf("expected 1 IMAP list call, got %d", len(imapMock.ListCalls))
+	}
+	if !imapMock.ListCalls[0].IncludeSpamTrash {
+		t.Fatal("bounce polling should include spam/trash")
+	}
+
+	var globalStatus string
+	db.QueryRow("SELECT global_status FROM leads WHERE id = 1").Scan(&globalStatus)
+	if globalStatus != "bounced" {
+		t.Errorf("expected bounced lead, got %s", globalStatus)
 	}
 }
 

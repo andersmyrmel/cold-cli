@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // testDB creates an in-memory SQLite database with the full schema for testing.
@@ -51,9 +52,21 @@ type MockSMTPEmailSender struct {
 	ThreadID   string
 }
 
+type MockIMAPMessageLister struct {
+	Messages  []GWSMessage
+	ListError error
+	ListCalls []MockIMAPListCall
+}
+
 type MockSMTPSentEmail struct {
 	Account Account
 	Params  EmailParams
+}
+
+type MockIMAPListCall struct {
+	Account          Account
+	Since            string
+	IncludeSpamTrash bool
 }
 
 func (m *MockGWS) SendEmail(account, to, rawMsg, threadID string) (string, string, error) {
@@ -132,6 +145,18 @@ func (m *MockSMTPEmailSender) SendEmail(account Account, params EmailParams) (st
 		threadID = messageID
 	}
 	return messageID, threadID, nil
+}
+
+func (m *MockIMAPMessageLister) ListMessages(account Account, since time.Time, includeSpamTrash bool) ([]GWSMessage, error) {
+	m.ListCalls = append(m.ListCalls, MockIMAPListCall{
+		Account:          account,
+		Since:            since.UTC().Format(time.RFC3339),
+		IncludeSpamTrash: includeSpamTrash,
+	})
+	if m.ListError != nil {
+		return nil, m.ListError
+	}
+	return m.Messages, nil
 }
 
 // failFirstMockGWS fails the first SendEmail call, succeeds after.

@@ -32,6 +32,7 @@ type TickConfig struct {
 	UnsubscribeHeader  bool           // add List-Unsubscribe header (off by default for cold email)
 	UnsubscribeSubject string         // subject for List-Unsubscribe mailto header
 	SMTPSender         SMTPEmailSender
+	IMAP               IMAPMessageLister
 }
 
 // Tick runs one tick cycle: poll replies, poll bounces, send due emails.
@@ -66,8 +67,9 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 	}
 
 	gwsAccounts := accountsByProvider(accounts, AccountProviderGWS)
+	smtpIMAPAccounts := accountsByProvider(accounts, AccountProviderSMTPIMAP)
 
-	// 1. Poll for replies and unsubscribes. IMAP polling is handled by a later transport step.
+	// 1. Poll for replies and unsubscribes.
 	if len(gwsAccounts) > 0 && cfg.GWS != nil {
 		replies, unsubs, err := ProcessReplies(cfg.DB, cfg.GWS, gwsAccounts)
 		if err != nil {
@@ -75,6 +77,18 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		}
 		result.RepliesDetected = replies
 		result.UnsubscribesDetected = unsubs
+	}
+	if len(smtpIMAPAccounts) > 0 {
+		imap := cfg.IMAP
+		if imap == nil {
+			imap = NewIMAPTransport(nil)
+		}
+		replies, unsubs, err := ProcessIMAPReplies(cfg.DB, imap, smtpIMAPAccounts)
+		if err != nil {
+			slog.Warn("IMAP reply detection error", "error", err)
+		}
+		result.RepliesDetected += replies
+		result.UnsubscribesDetected += unsubs
 	}
 
 	// 2. Poll for bounces
@@ -84,6 +98,17 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			slog.Warn("bounce detection error", "error", err)
 		}
 		result.BouncesDetected = bounces
+	}
+	if len(smtpIMAPAccounts) > 0 {
+		imap := cfg.IMAP
+		if imap == nil {
+			imap = NewIMAPTransport(nil)
+		}
+		bounces, err := ProcessIMAPBounces(cfg.DB, imap, smtpIMAPAccounts)
+		if err != nil {
+			slog.Warn("IMAP bounce detection error", "error", err)
+		}
+		result.BouncesDetected += bounces
 	}
 
 	// Update last_poll_at so next tick only checks new messages

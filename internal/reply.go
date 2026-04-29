@@ -68,8 +68,23 @@ func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (replies int,
 	// Gmail 'after:' uses epoch seconds
 	afterFilter := fmt.Sprintf("in:inbox after:%d", lastPoll.Unix())
 
+	return processReplyMessages(db, accounts, func(account Account) ([]GWSMessage, error) {
+		return gws.ListMessages(account.Email, afterFilter)
+	})
+}
+
+// ProcessIMAPReplies checks IMAP inbox messages for replies to sent SMTP/IMAP emails.
+func ProcessIMAPReplies(db *sql.DB, imap IMAPMessageLister, accounts []Account) (replies int, unsubscribes int, err error) {
+	lastPoll := GetLastPollAt(db)
+
+	return processReplyMessages(db, accounts, func(account Account) ([]GWSMessage, error) {
+		return imap.ListMessages(account, lastPoll, false)
+	})
+}
+
+func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Account) ([]GWSMessage, error)) (replies int, unsubscribes int, err error) {
 	for _, account := range accounts {
-		messages, err := gws.ListMessages(account.Email, afterFilter)
+		messages, err := listMessages(account)
 		if err != nil {
 			return replies, unsubscribes, fmt.Errorf("listing messages for %s: %w", account.Email, err)
 		}
@@ -222,18 +237,36 @@ func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (replies int,
 //
 // Returns the number of new bounces detected.
 func ProcessBounces(db *sql.DB, gws GWSClient, accounts []Account) (int, error) {
-	bouncesFound := 0
 	lastPoll := GetLastPollAt(db)
 
 	afterFilter := fmt.Sprintf("(from:mailer-daemon OR from:postmaster) after:%d", lastPoll.Unix())
 
+	return processBounceMessages(db, accounts, func(account Account) ([]GWSMessage, error) {
+		return gws.ListMessages(account.Email, afterFilter, true)
+	})
+}
+
+// ProcessIMAPBounces checks IMAP messages for bounce NDRs.
+func ProcessIMAPBounces(db *sql.DB, imap IMAPMessageLister, accounts []Account) (int, error) {
+	lastPoll := GetLastPollAt(db)
+
+	return processBounceMessages(db, accounts, func(account Account) ([]GWSMessage, error) {
+		return imap.ListMessages(account, lastPoll, true)
+	})
+}
+
+func processBounceMessages(db *sql.DB, accounts []Account, listMessages func(Account) ([]GWSMessage, error)) (int, error) {
+	bouncesFound := 0
 	for _, account := range accounts {
-		messages, err := gws.ListMessages(account.Email, afterFilter, true)
+		messages, err := listMessages(account)
 		if err != nil {
 			return bouncesFound, fmt.Errorf("listing bounce messages for %s: %w", account.Email, err)
 		}
 
 		for _, msg := range messages {
+			if !isBounceMessage(msg) {
+				continue
+			}
 			leadID, found := resolveBounceToLead(db, msg)
 			if !found {
 				continue
@@ -269,6 +302,35 @@ func ProcessBounces(db *sql.DB, gws GWSClient, accounts []Account) (int, error) 
 	}
 
 	return bouncesFound, nil
+}
+
+func isBounceMessage(msg GWSMessage) bool {
+	if strings.TrimSpace(msg.Headers["X-Failed-Recipients"]) != "" {
+		return true
+	}
+
+	from := strings.ToLower(msg.From + " " + msg.Headers["From"])
+	if strings.Contains(from, "mailer-daemon") || strings.Contains(from, "postmaster") {
+		return true
+	}
+
+	subject := strings.ToLower(msg.Subject)
+	bounceSubjects := []string{
+		"delivery status notification",
+		"delivery failed",
+		"delivery failure",
+		"undelivered mail",
+		"undeliverable",
+		"address not found",
+		"mail delivery failed",
+		"returned mail",
+	}
+	for _, phrase := range bounceSubjects {
+		if strings.Contains(subject, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveBounceToLead identifies which lead a bounce NDR belongs to.
