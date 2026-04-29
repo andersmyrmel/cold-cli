@@ -22,6 +22,39 @@ type AddAccountResult struct {
 	GWSConfigDir string `json:"gws_config_dir"`
 }
 
+// AddSMTPIMAPAccountOpts holds settings for a generic SMTP/IMAP account.
+type AddSMTPIMAPAccountOpts struct {
+	Email           string
+	DailyLimit      int
+	SMTPHost        string
+	SMTPPort        int
+	SMTPUsername    string
+	SMTPPasswordRef string
+	SMTPTLSMode     string
+	IMAPHost        string
+	IMAPPort        int
+	IMAPUsername    string
+	IMAPPasswordRef string
+	IMAPTLSMode     string
+}
+
+// AddSMTPIMAPAccountResult is returned by AddSMTPIMAPAccount.
+type AddSMTPIMAPAccountResult struct {
+	ID           int64  `json:"id"`
+	Email        string `json:"email"`
+	DailyLimit   int    `json:"daily_limit"`
+	Status       string `json:"status"`
+	Provider     string `json:"provider"`
+	SMTPHost     string `json:"smtp_host"`
+	SMTPPort     int    `json:"smtp_port"`
+	SMTPUsername string `json:"smtp_username"`
+	SMTPTLSMode  string `json:"smtp_tls_mode"`
+	IMAPHost     string `json:"imap_host"`
+	IMAPPort     int    `json:"imap_port"`
+	IMAPUsername string `json:"imap_username"`
+	IMAPTLSMode  string `json:"imap_tls_mode"`
+}
+
 // AddAccount inserts a new sending account into the database.
 // If the account was previously removed, it is reactivated with the new settings.
 func AddAccount(db *sql.DB, email string, dailyLimit int, configDir string) (*AddAccountResult, error) {
@@ -83,6 +116,221 @@ func AddAccount(db *sql.DB, email string, dailyLimit int, configDir string) (*Ad
 		Provider:     AccountProviderGWS,
 		GWSConfigDir: configDir,
 	}, nil
+}
+
+// AddSMTPIMAPAccount inserts a generic SMTP/IMAP sending account.
+// Password fields are stored as references, not raw secret values.
+func AddSMTPIMAPAccount(db *sql.DB, opts AddSMTPIMAPAccountOpts) (*AddSMTPIMAPAccountResult, error) {
+	normalized, err := normalizeSMTPIMAPAccountOpts(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	var existingID int64
+	var existingStatus string
+	err = queryRowDB(db, "SELECT id, status FROM accounts WHERE email = ?", normalized.Email).Scan(&existingID, &existingStatus)
+	if err == nil {
+		if existingStatus == "removed" {
+			_, err := execDB(
+				db,
+				`UPDATE accounts
+				 SET status = 'active',
+				     daily_limit = ?,
+				     provider = ?,
+				     gws_config_dir = '',
+				     smtp_host = ?,
+				     smtp_port = ?,
+				     smtp_username = ?,
+				     smtp_password_ref = ?,
+				     smtp_tls_mode = ?,
+				     imap_host = ?,
+				     imap_port = ?,
+				     imap_username = ?,
+				     imap_password_ref = ?,
+				     imap_tls_mode = ?
+				 WHERE id = ?`,
+				normalized.DailyLimit,
+				AccountProviderSMTPIMAP,
+				normalized.SMTPHost,
+				normalized.SMTPPort,
+				normalized.SMTPUsername,
+				normalized.SMTPPasswordRef,
+				normalized.SMTPTLSMode,
+				normalized.IMAPHost,
+				normalized.IMAPPort,
+				normalized.IMAPUsername,
+				normalized.IMAPPasswordRef,
+				normalized.IMAPTLSMode,
+				existingID,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("reactivating SMTP/IMAP account: %w", err)
+			}
+			return smtpIMAPAccountResult(existingID, normalized), nil
+		}
+		return nil, fmt.Errorf("account %s already exists (status: %s)", normalized.Email, existingStatus)
+	}
+	if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("looking up account: %w", err)
+	}
+
+	var id int64
+	err = queryRowDB(
+		db,
+		`INSERT INTO accounts (
+			email,
+			daily_limit,
+			provider,
+			gws_config_dir,
+			smtp_host,
+			smtp_port,
+			smtp_username,
+			smtp_password_ref,
+			smtp_tls_mode,
+			imap_host,
+			imap_port,
+			imap_username,
+			imap_password_ref,
+			imap_tls_mode
+		) VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		RETURNING id`,
+		normalized.Email,
+		normalized.DailyLimit,
+		AccountProviderSMTPIMAP,
+		normalized.SMTPHost,
+		normalized.SMTPPort,
+		normalized.SMTPUsername,
+		normalized.SMTPPasswordRef,
+		normalized.SMTPTLSMode,
+		normalized.IMAPHost,
+		normalized.IMAPPort,
+		normalized.IMAPUsername,
+		normalized.IMAPPasswordRef,
+		normalized.IMAPTLSMode,
+	).Scan(&id)
+	if err != nil {
+		return nil, fmt.Errorf("adding SMTP/IMAP account: %w", err)
+	}
+
+	return smtpIMAPAccountResult(id, normalized), nil
+}
+
+func normalizeSMTPIMAPAccountOpts(opts AddSMTPIMAPAccountOpts) (AddSMTPIMAPAccountOpts, error) {
+	opts.Email = strings.TrimSpace(opts.Email)
+	opts.SMTPHost = strings.TrimSpace(opts.SMTPHost)
+	opts.SMTPUsername = strings.TrimSpace(opts.SMTPUsername)
+	opts.SMTPPasswordRef = strings.TrimSpace(opts.SMTPPasswordRef)
+	opts.SMTPTLSMode = normalizeTLSMode(opts.SMTPTLSMode)
+	opts.IMAPHost = strings.TrimSpace(opts.IMAPHost)
+	opts.IMAPUsername = strings.TrimSpace(opts.IMAPUsername)
+	opts.IMAPPasswordRef = strings.TrimSpace(opts.IMAPPasswordRef)
+	opts.IMAPTLSMode = normalizeTLSMode(opts.IMAPTLSMode)
+
+	if opts.Email == "" {
+		return opts, fmt.Errorf("email is required")
+	}
+	if opts.DailyLimit < 1 {
+		return opts, fmt.Errorf("daily limit must be at least 1")
+	}
+	if opts.SMTPHost == "" {
+		return opts, fmt.Errorf("smtp host is required")
+	}
+	if opts.SMTPUsername == "" {
+		opts.SMTPUsername = opts.Email
+	}
+	if opts.SMTPPasswordRef == "" {
+		return opts, fmt.Errorf("smtp password ref is required")
+	}
+	if err := validateTLSMode("smtp", opts.SMTPTLSMode); err != nil {
+		return opts, err
+	}
+	if opts.SMTPPort == 0 {
+		opts.SMTPPort = defaultSMTPPort(opts.SMTPTLSMode)
+	}
+	if err := validatePort("smtp", opts.SMTPPort); err != nil {
+		return opts, err
+	}
+
+	if opts.IMAPHost == "" {
+		return opts, fmt.Errorf("imap host is required")
+	}
+	if opts.IMAPUsername == "" {
+		opts.IMAPUsername = opts.SMTPUsername
+	}
+	if opts.IMAPPasswordRef == "" {
+		opts.IMAPPasswordRef = opts.SMTPPasswordRef
+	}
+	if err := validateTLSMode("imap", opts.IMAPTLSMode); err != nil {
+		return opts, err
+	}
+	if opts.IMAPPort == 0 {
+		opts.IMAPPort = defaultIMAPPort(opts.IMAPTLSMode)
+	}
+	if err := validatePort("imap", opts.IMAPPort); err != nil {
+		return opts, err
+	}
+
+	return opts, nil
+}
+
+func smtpIMAPAccountResult(id int64, opts AddSMTPIMAPAccountOpts) *AddSMTPIMAPAccountResult {
+	return &AddSMTPIMAPAccountResult{
+		ID:           id,
+		Email:        opts.Email,
+		DailyLimit:   opts.DailyLimit,
+		Status:       "active",
+		Provider:     AccountProviderSMTPIMAP,
+		SMTPHost:     opts.SMTPHost,
+		SMTPPort:     opts.SMTPPort,
+		SMTPUsername: opts.SMTPUsername,
+		SMTPTLSMode:  opts.SMTPTLSMode,
+		IMAPHost:     opts.IMAPHost,
+		IMAPPort:     opts.IMAPPort,
+		IMAPUsername: opts.IMAPUsername,
+		IMAPTLSMode:  opts.IMAPTLSMode,
+	}
+}
+
+func normalizeTLSMode(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "ssl"
+	}
+	return value
+}
+
+func validateTLSMode(label, value string) error {
+	switch value {
+	case "ssl", "starttls", "none":
+		return nil
+	default:
+		return fmt.Errorf("%s tls mode must be one of: ssl, starttls, none", label)
+	}
+}
+
+func defaultSMTPPort(tlsMode string) int {
+	switch tlsMode {
+	case "starttls":
+		return 587
+	case "none":
+		return 25
+	default:
+		return 465
+	}
+}
+
+func defaultIMAPPort(tlsMode string) int {
+	if tlsMode == "ssl" {
+		return 993
+	}
+	return 143
+}
+
+func validatePort(label string, port int) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("%s port must be between 1 and 65535", label)
+	}
+	return nil
 }
 
 // PauseAccountResult is returned by PauseAccount.

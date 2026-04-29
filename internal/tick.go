@@ -134,6 +134,14 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		}
 		send = currentSend
 
+		account, ok := accountMap[send.AccountID]
+		if !ok {
+			slog.Warn("skipping send for account without an enabled sender transport",
+				"send_id", send.ID, "account_id", send.AccountID)
+			result.Skipped++
+			continue
+		}
+
 		// Check daily limit
 		if dailyCounts[send.AccountID] >= dailyLimits[send.AccountID] {
 			if err := RebalancePendingSchedules(cfg.DB, []int64{send.AccountID}); err != nil {
@@ -169,9 +177,6 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			result.Failed++
 			continue
 		}
-
-		// Get account email
-		account := accountMap[send.AccountID]
 
 		// Build email
 		emailParams := BuildEmailForSend(seq, send.StepNumber, send.VariantIndex, leadFields, account.Email)
@@ -328,7 +333,8 @@ func loadActiveAccounts(db *sql.DB) ([]Account, error) {
 			imap_password_ref,
 			imap_tls_mode
 		FROM accounts
-		WHERE status = 'active'`,
+		WHERE status = 'active'
+			AND provider = 'gws'`,
 	)
 	if err != nil {
 		return nil, err

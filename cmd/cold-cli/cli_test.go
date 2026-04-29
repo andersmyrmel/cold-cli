@@ -50,7 +50,7 @@ func setupTestEnv(t *testing.T) (bin string, env []string, dataDir string) {
 	t.Helper()
 	bin = buildCLI(t)
 	dataDir = t.TempDir()
-	env = append(os.Environ(), "COLD_CLI_DATA_DIR="+dataDir)
+	env = append(os.Environ(), "COLD_CLI_DATA_DIR="+dataDir, "COLD_CLI_DATABASE_URL=")
 	return bin, env, dataDir
 }
 
@@ -196,6 +196,49 @@ func TestCLI_AccountAdd_DailyLimit(t *testing.T) {
 	json.Unmarshal([]byte(out), &result)
 	if result["daily_limit"] != float64(25) {
 		t.Errorf("expected daily_limit 25, got %v", result["daily_limit"])
+	}
+}
+
+func TestCLI_AccountAddSMTP_JSON(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env,
+		"account", "add-smtp", "sender@example.com",
+		"--smtp-host", "smtp.example.com",
+		"--smtp-password-ref", "env:MAIL_PASSWORD",
+		"--imap-host", "imap.example.com",
+		"--json",
+	)
+	if code != 0 {
+		t.Fatalf("account add-smtp --json failed (exit %d): %s", code, out)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if result["provider"] != internal.AccountProviderSMTPIMAP {
+		t.Errorf("expected provider %s, got %v", internal.AccountProviderSMTPIMAP, result["provider"])
+	}
+	if result["smtp_port"] != float64(465) {
+		t.Errorf("expected default smtp_port 465, got %v", result["smtp_port"])
+	}
+	if result["imap_port"] != float64(993) {
+		t.Errorf("expected default imap_port 993, got %v", result["imap_port"])
+	}
+}
+
+func TestCLI_AccountAddSMTP_RequiresConfig(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "account", "add-smtp", "sender@example.com")
+	if code == 0 {
+		t.Fatal("expected non-zero exit for missing SMTP/IMAP config")
+	}
+	if !strings.Contains(out, "smtp host is required") {
+		t.Errorf("expected smtp host validation error, got: %s", out)
 	}
 }
 

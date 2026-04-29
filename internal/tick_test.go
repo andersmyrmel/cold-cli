@@ -68,6 +68,29 @@ func decodeRawMessage(t *testing.T, raw string) string {
 	return string(decoded)
 }
 
+func TestLoadActiveAccounts_GWSOnlyUntilSMTPTransport(t *testing.T) {
+	db := testDB(t)
+	if _, err := db.Exec("INSERT INTO accounts (email, daily_limit, provider) VALUES ('gws@example.com', 50, ?)", AccountProviderGWS); err != nil {
+		t.Fatalf("inserting gws account: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO accounts (
+		email, daily_limit, provider, smtp_host, smtp_password_ref, imap_host
+	) VALUES ('smtp@example.com', 50, ?, 'smtp.example.com', 'env:MAIL_PASSWORD', 'imap.example.com')`, AccountProviderSMTPIMAP); err != nil {
+		t.Fatalf("inserting smtp account: %v", err)
+	}
+
+	accounts, err := loadActiveAccounts(db)
+	if err != nil {
+		t.Fatalf("loadActiveAccounts error: %v", err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("expected only GWS account, got %d", len(accounts))
+	}
+	if accounts[0].Email != "gws@example.com" {
+		t.Errorf("expected gws account, got %s", accounts[0].Email)
+	}
+}
+
 func TestTick_SendsDueEmails(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
 	now := time.Now().UTC()

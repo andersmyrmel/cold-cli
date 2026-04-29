@@ -224,6 +224,144 @@ func TestListAccountsIncludesProvider(t *testing.T) {
 	}
 }
 
+func TestAddSMTPIMAPAccount(t *testing.T) {
+	db := testDB(t)
+
+	result, err := AddSMTPIMAPAccount(db, AddSMTPIMAPAccountOpts{
+		Email:           "sender@example.com",
+		DailyLimit:      25,
+		SMTPHost:        "smtp.example.com",
+		SMTPPort:        587,
+		SMTPUsername:    "smtp-user",
+		SMTPPasswordRef: "env:SMTP_PASSWORD",
+		SMTPTLSMode:     "starttls",
+		IMAPHost:        "imap.example.com",
+		IMAPPort:        993,
+		IMAPUsername:    "imap-user",
+		IMAPPasswordRef: "env:IMAP_PASSWORD",
+		IMAPTLSMode:     "ssl",
+	})
+	if err != nil {
+		t.Fatalf("AddSMTPIMAPAccount error: %v", err)
+	}
+	if result.Provider != AccountProviderSMTPIMAP {
+		t.Errorf("expected provider %s, got %s", AccountProviderSMTPIMAP, result.Provider)
+	}
+	if result.SMTPHost != "smtp.example.com" || result.SMTPPort != 587 {
+		t.Errorf("unexpected smtp result: %#v", result)
+	}
+
+	var provider, gwsConfigDir, smtpHost, smtpUsername, smtpPasswordRef, smtpTLS string
+	var smtpPort int
+	err = db.QueryRow(
+		`SELECT provider, gws_config_dir, smtp_host, smtp_port, smtp_username, smtp_password_ref, smtp_tls_mode
+		 FROM accounts WHERE email = ?`,
+		"sender@example.com",
+	).Scan(&provider, &gwsConfigDir, &smtpHost, &smtpPort, &smtpUsername, &smtpPasswordRef, &smtpTLS)
+	if err != nil {
+		t.Fatalf("querying smtp account: %v", err)
+	}
+	if provider != AccountProviderSMTPIMAP {
+		t.Errorf("expected provider %s, got %s", AccountProviderSMTPIMAP, provider)
+	}
+	if gwsConfigDir != "" {
+		t.Errorf("expected empty gws_config_dir, got %s", gwsConfigDir)
+	}
+	if smtpHost != "smtp.example.com" || smtpPort != 587 || smtpUsername != "smtp-user" || smtpPasswordRef != "env:SMTP_PASSWORD" || smtpTLS != "starttls" {
+		t.Errorf("unexpected stored smtp config: host=%s port=%d user=%s ref=%s tls=%s", smtpHost, smtpPort, smtpUsername, smtpPasswordRef, smtpTLS)
+	}
+}
+
+func TestAddSMTPIMAPAccountDefaults(t *testing.T) {
+	db := testDB(t)
+
+	result, err := AddSMTPIMAPAccount(db, AddSMTPIMAPAccountOpts{
+		Email:           "sender@example.com",
+		DailyLimit:      50,
+		SMTPHost:        "smtp.example.com",
+		SMTPPasswordRef: "env:MAIL_PASSWORD",
+		IMAPHost:        "imap.example.com",
+	})
+	if err != nil {
+		t.Fatalf("AddSMTPIMAPAccount error: %v", err)
+	}
+	if result.SMTPPort != 465 {
+		t.Errorf("expected default SMTP SSL port 465, got %d", result.SMTPPort)
+	}
+	if result.IMAPPort != 993 {
+		t.Errorf("expected default IMAP SSL port 993, got %d", result.IMAPPort)
+	}
+	if result.SMTPUsername != "sender@example.com" || result.IMAPUsername != "sender@example.com" {
+		t.Errorf("expected usernames to default to email, got smtp=%s imap=%s", result.SMTPUsername, result.IMAPUsername)
+	}
+
+	var imapPasswordRef string
+	if err := db.QueryRow("SELECT imap_password_ref FROM accounts WHERE email = ?", "sender@example.com").Scan(&imapPasswordRef); err != nil {
+		t.Fatalf("querying imap password ref: %v", err)
+	}
+	if imapPasswordRef != "env:MAIL_PASSWORD" {
+		t.Errorf("expected IMAP password ref to default to SMTP ref, got %s", imapPasswordRef)
+	}
+}
+
+func TestAddSMTPIMAPAccountValidation(t *testing.T) {
+	db := testDB(t)
+
+	cases := []struct {
+		name string
+		opts AddSMTPIMAPAccountOpts
+	}{
+		{
+			name: "missing smtp host",
+			opts: AddSMTPIMAPAccountOpts{
+				Email:           "sender@example.com",
+				DailyLimit:      50,
+				SMTPPasswordRef: "env:MAIL_PASSWORD",
+				IMAPHost:        "imap.example.com",
+			},
+		},
+		{
+			name: "missing smtp password ref",
+			opts: AddSMTPIMAPAccountOpts{
+				Email:      "sender@example.com",
+				DailyLimit: 50,
+				SMTPHost:   "smtp.example.com",
+				IMAPHost:   "imap.example.com",
+			},
+		},
+		{
+			name: "bad tls",
+			opts: AddSMTPIMAPAccountOpts{
+				Email:           "sender@example.com",
+				DailyLimit:      50,
+				SMTPHost:        "smtp.example.com",
+				SMTPPasswordRef: "env:MAIL_PASSWORD",
+				SMTPTLSMode:     "required",
+				IMAPHost:        "imap.example.com",
+			},
+		},
+		{
+			name: "bad port",
+			opts: AddSMTPIMAPAccountOpts{
+				Email:           "sender@example.com",
+				DailyLimit:      50,
+				SMTPHost:        "smtp.example.com",
+				SMTPPort:        70000,
+				SMTPPasswordRef: "env:MAIL_PASSWORD",
+				IMAPHost:        "imap.example.com",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := AddSMTPIMAPAccount(db, tc.opts); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
+
 func TestUpdateAccount(t *testing.T) {
 	db := testDB(t)
 	AddAccount(db, "sender@x.com", 50, "/tmp/gws")

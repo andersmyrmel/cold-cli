@@ -263,6 +263,65 @@ var accountAddCmd = &cobra.Command{
 	},
 }
 
+var accountAddSMTPCmd = &cobra.Command{
+	Use:   "add-smtp <email>",
+	Short: "Add a generic SMTP/IMAP sending account",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		email := strings.TrimSpace(args[0])
+		if _, err := mail.ParseAddress(email); err != nil {
+			return fmt.Errorf("invalid email address %q", email)
+		}
+
+		dailyLimit, _ := cmd.Flags().GetInt("daily-limit")
+		smtpHost, _ := cmd.Flags().GetString("smtp-host")
+		smtpPort, _ := cmd.Flags().GetInt("smtp-port")
+		smtpUser, _ := cmd.Flags().GetString("smtp-user")
+		smtpPasswordRef, _ := cmd.Flags().GetString("smtp-password-ref")
+		smtpTLS, _ := cmd.Flags().GetString("smtp-tls")
+		imapHost, _ := cmd.Flags().GetString("imap-host")
+		imapPort, _ := cmd.Flags().GetInt("imap-port")
+		imapUser, _ := cmd.Flags().GetString("imap-user")
+		imapPasswordRef, _ := cmd.Flags().GetString("imap-password-ref")
+		imapTLS, _ := cmd.Flags().GetString("imap-tls")
+
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		result, err := internal.AddSMTPIMAPAccount(db, internal.AddSMTPIMAPAccountOpts{
+			Email:           email,
+			DailyLimit:      dailyLimit,
+			SMTPHost:        smtpHost,
+			SMTPPort:        smtpPort,
+			SMTPUsername:    smtpUser,
+			SMTPPasswordRef: smtpPasswordRef,
+			SMTPTLSMode:     smtpTLS,
+			IMAPHost:        imapHost,
+			IMAPPort:        imapPort,
+			IMAPUsername:    imapUser,
+			IMAPPasswordRef: imapPasswordRef,
+			IMAPTLSMode:     imapTLS,
+		})
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		fmt.Printf("Added SMTP/IMAP account %s (id=%d, daily_limit=%d)\n", result.Email, result.ID, result.DailyLimit)
+		fmt.Printf("  smtp: %s:%d (%s)\n", result.SMTPHost, result.SMTPPort, result.SMTPTLSMode)
+		fmt.Printf("  imap: %s:%d (%s)\n", result.IMAPHost, result.IMAPPort, result.IMAPTLSMode)
+		fmt.Println()
+		fmt.Println("Note: SMTP/IMAP sending is not enabled until the SMTP sender transport is implemented.")
+		return nil
+	},
+}
+
 var accountListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List sending accounts",
@@ -1544,8 +1603,19 @@ func init() {
 	accountAddCmd.Flags().Bool("no-login", false, "skip OAuth login (use when gws is already authenticated)")
 	accountAddCmd.Flags().Bool("skip-auth", false, "skip OAuth login (alias for --no-login)")
 	accountAddCmd.Flags().MarkHidden("skip-auth")
+	accountAddSMTPCmd.Flags().Int("daily-limit", 50, "max emails per day, shared across all campaigns using this account")
+	accountAddSMTPCmd.Flags().String("smtp-host", "", "SMTP server hostname")
+	accountAddSMTPCmd.Flags().Int("smtp-port", 0, "SMTP server port (default depends on --smtp-tls)")
+	accountAddSMTPCmd.Flags().String("smtp-user", "", "SMTP username (default: account email)")
+	accountAddSMTPCmd.Flags().String("smtp-password-ref", "", "SMTP password reference, such as env:MIGADU_SMTP_PASSWORD")
+	accountAddSMTPCmd.Flags().String("smtp-tls", "ssl", "SMTP TLS mode: ssl, starttls, none")
+	accountAddSMTPCmd.Flags().String("imap-host", "", "IMAP server hostname")
+	accountAddSMTPCmd.Flags().Int("imap-port", 0, "IMAP server port (default depends on --imap-tls)")
+	accountAddSMTPCmd.Flags().String("imap-user", "", "IMAP username (default: SMTP username)")
+	accountAddSMTPCmd.Flags().String("imap-password-ref", "", "IMAP password reference (default: SMTP password ref)")
+	accountAddSMTPCmd.Flags().String("imap-tls", "ssl", "IMAP TLS mode: ssl, starttls, none")
 	accountUpdateCmd.Flags().Int("daily-limit", 0, "max emails per day, shared across all campaigns using this account")
-	accountCmd.AddCommand(accountAddCmd, accountListCmd, accountPauseCmd, accountResumeCmd, accountRemoveCmd, accountUpdateCmd)
+	accountCmd.AddCommand(accountAddCmd, accountAddSMTPCmd, accountListCmd, accountPauseCmd, accountResumeCmd, accountRemoveCmd, accountUpdateCmd)
 	leadListCmd.Flags().String("domain", "", "filter by domain")
 	leadListCmd.Flags().String("status", "", "filter by status (active, blacklisted, bounced)")
 	leadListCmd.Flags().Int("limit", 50, "max leads to show")
