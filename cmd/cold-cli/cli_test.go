@@ -242,6 +242,66 @@ func TestCLI_AccountAddSMTP_RequiresConfig(t *testing.T) {
 	}
 }
 
+func TestCLI_AccountUpdateSMTP_JSON(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env,
+		"account", "add-smtp", "sender@example.com",
+		"--smtp-host", "smtp.example.com",
+		"--smtp-password-ref", "env:MAIL_PASSWORD",
+		"--imap-host", "imap.example.com",
+	)
+
+	out, code := runCLI(t, bin, env,
+		"account", "update-smtp", "sender@example.com",
+		"--smtp-host", "mail.example.com",
+		"--smtp-tls", "starttls",
+		"--smtp-port", "0",
+		"--imap-password-ref", "env:IMAP_PASSWORD",
+		"--daily-limit", "25",
+		"--json",
+	)
+	if code != 0 {
+		t.Fatalf("account update-smtp --json failed (exit %d): %s", code, out)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if result["smtp_host"] != "mail.example.com" {
+		t.Errorf("expected updated smtp_host, got %v", result["smtp_host"])
+	}
+	if result["smtp_tls_mode"] != "starttls" {
+		t.Errorf("expected smtp_tls_mode starttls, got %v", result["smtp_tls_mode"])
+	}
+	if result["smtp_port"] != float64(587) {
+		t.Errorf("expected smtp_port 587, got %v", result["smtp_port"])
+	}
+	if result["daily_limit"] != float64(25) {
+		t.Errorf("expected daily_limit 25, got %v", result["daily_limit"])
+	}
+}
+
+func TestCLI_AccountUpdateSMTPRequiresChange(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env,
+		"account", "add-smtp", "sender@example.com",
+		"--smtp-host", "smtp.example.com",
+		"--smtp-password-ref", "env:MAIL_PASSWORD",
+		"--imap-host", "imap.example.com",
+	)
+
+	out, code := runCLI(t, bin, env, "account", "update-smtp", "sender@example.com")
+	if code == 0 {
+		t.Fatal("expected non-zero exit without changed flags")
+	}
+	if !strings.Contains(out, "no settings to update") {
+		t.Errorf("expected no settings error, got: %s", out)
+	}
+}
+
 func TestCLI_AccountAdd_MissingArg(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	runCLI(t, bin, env, "init")
@@ -1130,7 +1190,7 @@ func TestCLI_AccountHelpIncludesProviders(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("account help failed (exit %d): %s", code, out)
 	}
-	for _, want := range []string{"Google Workspace/Gmail", "SMTP/IMAP", "add-smtp", "verify"} {
+	for _, want := range []string{"Google Workspace/Gmail", "SMTP/IMAP", "add-smtp", "update-smtp", "verify"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("account help missing %q: %s", want, out)
 		}

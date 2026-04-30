@@ -55,6 +55,21 @@ type AddSMTPIMAPAccountResult struct {
 	IMAPTLSMode  string `json:"imap_tls_mode"`
 }
 
+// UpdateSMTPIMAPAccountOpts holds fields to update on a generic SMTP/IMAP account.
+type UpdateSMTPIMAPAccountOpts struct {
+	DailyLimit      *int
+	SMTPHost        *string
+	SMTPPort        *int
+	SMTPUsername    *string
+	SMTPPasswordRef *string
+	SMTPTLSMode     *string
+	IMAPHost        *string
+	IMAPPort        *int
+	IMAPUsername    *string
+	IMAPPasswordRef *string
+	IMAPTLSMode     *string
+}
+
 // AddAccount inserts a new sending account into the database.
 // If the account was previously removed, it is reactivated with the new settings.
 func AddAccount(db *sql.DB, email string, dailyLimit int, configDir string) (*AddAccountResult, error) {
@@ -297,6 +312,24 @@ func smtpIMAPAccountResult(id int64, opts AddSMTPIMAPAccountOpts) *AddSMTPIMAPAc
 	}
 }
 
+func smtpIMAPAccountResultFromAccount(account Account) *AddSMTPIMAPAccountResult {
+	return &AddSMTPIMAPAccountResult{
+		ID:           account.ID,
+		Email:        account.Email,
+		DailyLimit:   account.DailyLimit,
+		Status:       account.Status,
+		Provider:     account.Provider,
+		SMTPHost:     account.SMTPHost,
+		SMTPPort:     account.SMTPPort,
+		SMTPUsername: account.SMTPUsername,
+		SMTPTLSMode:  account.SMTPTLSMode,
+		IMAPHost:     account.IMAPHost,
+		IMAPPort:     account.IMAPPort,
+		IMAPUsername: account.IMAPUsername,
+		IMAPTLSMode:  account.IMAPTLSMode,
+	}
+}
+
 func normalizeTLSMode(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if value == "" {
@@ -396,6 +429,124 @@ func GetAccountByEmail(db *sql.DB, email string) (Account, error) {
 		return Account{}, fmt.Errorf("loading account %s: %w", email, err)
 	}
 	return account, nil
+}
+
+// UpdateSMTPIMAPAccount modifies provider settings on a generic SMTP/IMAP account.
+func UpdateSMTPIMAPAccount(db *sql.DB, email string, opts UpdateSMTPIMAPAccountOpts) (*AddSMTPIMAPAccountResult, error) {
+	account, err := GetAccountByEmail(db, email)
+	if err != nil {
+		return nil, err
+	}
+	if account.Status == "removed" {
+		return nil, fmt.Errorf("account %s has been removed — re-add it first", email)
+	}
+	if account.Provider != AccountProviderSMTPIMAP {
+		return nil, fmt.Errorf("account %s is provider %s, expected %s", email, account.Provider, AccountProviderSMTPIMAP)
+	}
+
+	merged := AddSMTPIMAPAccountOpts{
+		Email:           account.Email,
+		DailyLimit:      account.DailyLimit,
+		SMTPHost:        account.SMTPHost,
+		SMTPPort:        account.SMTPPort,
+		SMTPUsername:    account.SMTPUsername,
+		SMTPPasswordRef: account.SMTPPasswordRef,
+		SMTPTLSMode:     account.SMTPTLSMode,
+		IMAPHost:        account.IMAPHost,
+		IMAPPort:        account.IMAPPort,
+		IMAPUsername:    account.IMAPUsername,
+		IMAPPasswordRef: account.IMAPPasswordRef,
+		IMAPTLSMode:     account.IMAPTLSMode,
+	}
+
+	if opts.DailyLimit != nil {
+		merged.DailyLimit = *opts.DailyLimit
+	}
+	if opts.SMTPHost != nil {
+		merged.SMTPHost = *opts.SMTPHost
+	}
+	if opts.SMTPPort != nil {
+		merged.SMTPPort = *opts.SMTPPort
+	}
+	if opts.SMTPUsername != nil {
+		merged.SMTPUsername = *opts.SMTPUsername
+	}
+	if opts.SMTPPasswordRef != nil {
+		merged.SMTPPasswordRef = *opts.SMTPPasswordRef
+	}
+	if opts.SMTPTLSMode != nil {
+		merged.SMTPTLSMode = *opts.SMTPTLSMode
+	}
+	if opts.IMAPHost != nil {
+		merged.IMAPHost = *opts.IMAPHost
+	}
+	if opts.IMAPPort != nil {
+		merged.IMAPPort = *opts.IMAPPort
+	}
+	if opts.IMAPUsername != nil {
+		merged.IMAPUsername = *opts.IMAPUsername
+	}
+	if opts.IMAPPasswordRef != nil {
+		merged.IMAPPasswordRef = *opts.IMAPPasswordRef
+	}
+	if opts.IMAPTLSMode != nil {
+		merged.IMAPTLSMode = *opts.IMAPTLSMode
+	}
+
+	normalized, err := normalizeSMTPIMAPAccountOpts(merged)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := beginTx(db)
+	if err != nil {
+		return nil, fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(
+		`UPDATE accounts
+		 SET daily_limit = ?,
+		     smtp_host = ?,
+		     smtp_port = ?,
+		     smtp_username = ?,
+		     smtp_password_ref = ?,
+		     smtp_tls_mode = ?,
+		     imap_host = ?,
+		     imap_port = ?,
+		     imap_username = ?,
+		     imap_password_ref = ?,
+		     imap_tls_mode = ?
+		 WHERE id = ?`,
+		normalized.DailyLimit,
+		normalized.SMTPHost,
+		normalized.SMTPPort,
+		normalized.SMTPUsername,
+		normalized.SMTPPasswordRef,
+		normalized.SMTPTLSMode,
+		normalized.IMAPHost,
+		normalized.IMAPPort,
+		normalized.IMAPUsername,
+		normalized.IMAPPasswordRef,
+		normalized.IMAPTLSMode,
+		account.ID,
+	); err != nil {
+		return nil, fmt.Errorf("updating SMTP/IMAP account: %w", err)
+	}
+	if opts.DailyLimit != nil {
+		if err := rebalancePendingSchedulesTx(tx, []int64{account.ID}); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing: %w", err)
+	}
+
+	updated, err := GetAccountByEmail(db, account.Email)
+	if err != nil {
+		return nil, err
+	}
+	return smtpIMAPAccountResultFromAccount(updated), nil
 }
 
 // PauseAccountResult is returned by PauseAccount.

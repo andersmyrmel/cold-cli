@@ -280,6 +280,8 @@ SMTP/IMAP accounts store only secret references, not raw passwords. The supporte
 
 `cold-cli account verify <email>` is the operational check for SMTP/IMAP accounts. It resolves the configured secret references, authenticates to SMTP, authenticates to IMAP, and selects the inbox mailbox.
 
+`cold-cli account update-smtp <email>` updates SMTP/IMAP provider settings without remove/re-add churn. Only provided flags change, and daily-limit updates still rebalance pending schedules.
+
 ## Provider Interfaces
 
 ```go
@@ -337,6 +339,7 @@ cold-cli doctor [domain...]
 
 cold-cli account add <email>
 cold-cli account add-smtp <email> --smtp-host ... --smtp-password-ref env:NAME --imap-host ...
+cold-cli account update-smtp <email> [--smtp-host ...] [--imap-host ...] [--daily-limit N]
 cold-cli account verify <email>
 cold-cli account list/pause/resume/remove/update
 

@@ -152,6 +152,7 @@ cold-cli account add <email>               # add Google Workspace/Gmail account 
 cold-cli account add <email> --no-login    # add Google account without OAuth (already authed)
 cold-cli account add-smtp <email>          # add generic SMTP/IMAP account
 cold-cli account add-smtp <email> --smtp-host smtp.example.com --smtp-password-ref env:MAIL_PASSWORD --imap-host imap.example.com
+cold-cli account update-smtp <email>       # update SMTP/IMAP host, port, user, secret refs, TLS, or daily limit
 cold-cli account verify <email>            # verify SMTP/IMAP connectivity and auth
 cold-cli account list                      # list accounts
 cold-cli account update <email>            # update settings (--daily-limit)
@@ -267,6 +268,16 @@ cold-cli account add-smtp sender@company.com \
   --smtp-host smtp.example.com \
   --smtp-password-ref env:MAIL_PASSWORD \
   --imap-host imap.example.com
+
+cold-cli account verify sender@company.com
+```
+
+If provider settings change, update only the fields that changed and verify again:
+
+```bash
+cold-cli account update-smtp sender@company.com \
+  --smtp-host mail.example.com \
+  --smtp-password-ref env:MAIL_PASSWORD
 
 cold-cli account verify sender@company.com
 ```

@@ -546,6 +546,120 @@ var accountUpdateCmd = &cobra.Command{
 	},
 }
 
+var accountUpdateSMTPCmd = &cobra.Command{
+	Use:   "update-smtp <email>",
+	Short: "Update a generic SMTP/IMAP account",
+	Long: strings.TrimSpace(`
+Update a generic SMTP/IMAP account.
+
+Only flags you provide are changed. Use port 0 to reset a port to the default
+for the selected TLS mode. Run account verify after changing server or
+credential settings.
+`),
+	Example: strings.TrimSpace(`
+cold-cli account update-smtp sender@company.com \
+  --smtp-host smtp.example.com \
+  --smtp-password-ref env:MAIL_PASSWORD
+
+cold-cli account update-smtp sender@company.com --smtp-tls starttls --smtp-port 0
+cold-cli account verify sender@company.com
+`),
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		email := strings.TrimSpace(args[0])
+		opts := internal.UpdateSMTPIMAPAccountOpts{}
+		changed := false
+
+		if cmd.Flags().Changed("daily-limit") {
+			v, _ := cmd.Flags().GetInt("daily-limit")
+			opts.DailyLimit = &v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "smtp-host"); ok {
+			opts.SMTPHost = v
+			changed = true
+		}
+		if v, ok := changedIntFlag(cmd, "smtp-port"); ok {
+			opts.SMTPPort = v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "smtp-user"); ok {
+			opts.SMTPUsername = v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "smtp-password-ref"); ok {
+			opts.SMTPPasswordRef = v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "smtp-tls"); ok {
+			opts.SMTPTLSMode = v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "imap-host"); ok {
+			opts.IMAPHost = v
+			changed = true
+		}
+		if v, ok := changedIntFlag(cmd, "imap-port"); ok {
+			opts.IMAPPort = v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "imap-user"); ok {
+			opts.IMAPUsername = v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "imap-password-ref"); ok {
+			opts.IMAPPasswordRef = v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "imap-tls"); ok {
+			opts.IMAPTLSMode = v
+			changed = true
+		}
+
+		if !changed {
+			return fmt.Errorf("no settings to update")
+		}
+
+		result, err := internal.UpdateSMTPIMAPAccount(db, email, opts)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		fmt.Printf("Updated SMTP/IMAP account %s\n", result.Email)
+		fmt.Printf("  smtp: %s:%d (%s)\n", result.SMTPHost, result.SMTPPort, result.SMTPTLSMode)
+		fmt.Printf("  imap: %s:%d (%s)\n", result.IMAPHost, result.IMAPPort, result.IMAPTLSMode)
+		fmt.Println()
+		fmt.Printf("Verify credentials with: cold-cli account verify %s\n", result.Email)
+		return nil
+	},
+}
+
+func changedStringFlag(cmd *cobra.Command, name string) (*string, bool) {
+	if !cmd.Flags().Changed(name) {
+		return nil, false
+	}
+	value, _ := cmd.Flags().GetString(name)
+	return &value, true
+}
+
+func changedIntFlag(cmd *cobra.Command, name string) (*int, bool) {
+	if !cmd.Flags().Changed(name) {
+		return nil, false
+	}
+	value, _ := cmd.Flags().GetInt(name)
+	return &value, true
+}
+
 var accountRemoveCmd = &cobra.Command{
 	Use:   "remove <email>",
 	Short: "Remove an account and cancel its pending sends",
@@ -1717,7 +1831,18 @@ func init() {
 	accountAddSMTPCmd.Flags().String("imap-password-ref", "", "IMAP password reference (default: SMTP password ref)")
 	accountAddSMTPCmd.Flags().String("imap-tls", "ssl", "IMAP TLS mode: ssl, starttls, none (default ports: ssl=993, starttls=143, none=143)")
 	accountUpdateCmd.Flags().Int("daily-limit", 0, "max emails per day, shared across all campaigns using this account")
-	accountCmd.AddCommand(accountAddCmd, accountAddSMTPCmd, accountListCmd, accountVerifyCmd, accountPauseCmd, accountResumeCmd, accountRemoveCmd, accountUpdateCmd)
+	accountUpdateSMTPCmd.Flags().Int("daily-limit", 0, "max emails per day, shared across all campaigns using this account")
+	accountUpdateSMTPCmd.Flags().String("smtp-host", "", "SMTP server hostname")
+	accountUpdateSMTPCmd.Flags().Int("smtp-port", 0, "SMTP server port; use 0 to reset to default for --smtp-tls")
+	accountUpdateSMTPCmd.Flags().String("smtp-user", "", "SMTP username")
+	accountUpdateSMTPCmd.Flags().String("smtp-password-ref", "", "SMTP password reference, such as env:MAIL_PASSWORD; raw passwords are rejected")
+	accountUpdateSMTPCmd.Flags().String("smtp-tls", "", "SMTP TLS mode: ssl, starttls, none")
+	accountUpdateSMTPCmd.Flags().String("imap-host", "", "IMAP server hostname")
+	accountUpdateSMTPCmd.Flags().Int("imap-port", 0, "IMAP server port; use 0 to reset to default for --imap-tls")
+	accountUpdateSMTPCmd.Flags().String("imap-user", "", "IMAP username")
+	accountUpdateSMTPCmd.Flags().String("imap-password-ref", "", "IMAP password reference (empty uses SMTP password ref)")
+	accountUpdateSMTPCmd.Flags().String("imap-tls", "", "IMAP TLS mode: ssl, starttls, none")
+	accountCmd.AddCommand(accountAddCmd, accountAddSMTPCmd, accountListCmd, accountVerifyCmd, accountPauseCmd, accountResumeCmd, accountRemoveCmd, accountUpdateCmd, accountUpdateSMTPCmd)
 	leadListCmd.Flags().String("domain", "", "filter by domain")
 	leadListCmd.Flags().String("status", "", "filter by status (active, blacklisted, bounced)")
 	leadListCmd.Flags().Int("limit", 50, "max leads to show")

@@ -306,6 +306,66 @@ func TestGetAccountByEmailIncludesSMTPIMAPConfig(t *testing.T) {
 	}
 }
 
+func TestUpdateSMTPIMAPAccount(t *testing.T) {
+	db := testDB(t)
+	if _, err := AddSMTPIMAPAccount(db, AddSMTPIMAPAccountOpts{
+		Email:           "sender@example.com",
+		DailyLimit:      50,
+		SMTPHost:        "smtp.example.com",
+		SMTPPasswordRef: "env:MAIL_PASSWORD",
+		IMAPHost:        "imap.example.com",
+	}); err != nil {
+		t.Fatalf("AddSMTPIMAPAccount error: %v", err)
+	}
+
+	limit := 25
+	smtpHost := "mail.example.com"
+	smtpTLS := "starttls"
+	resetPort := 0
+	imapPasswordRef := "env:IMAP_PASSWORD"
+	result, err := UpdateSMTPIMAPAccount(db, "sender@example.com", UpdateSMTPIMAPAccountOpts{
+		DailyLimit:      &limit,
+		SMTPHost:        &smtpHost,
+		SMTPPort:        &resetPort,
+		SMTPTLSMode:     &smtpTLS,
+		IMAPPasswordRef: &imapPasswordRef,
+	})
+	if err != nil {
+		t.Fatalf("UpdateSMTPIMAPAccount error: %v", err)
+	}
+	if result.DailyLimit != 25 {
+		t.Errorf("expected daily limit 25, got %d", result.DailyLimit)
+	}
+	if result.SMTPHost != "mail.example.com" || result.SMTPTLSMode != "starttls" || result.SMTPPort != 587 {
+		t.Errorf("unexpected SMTP result: %#v", result)
+	}
+	if result.IMAPHost != "imap.example.com" || result.IMAPPort != 993 {
+		t.Errorf("expected IMAP settings to be preserved, got %#v", result)
+	}
+
+	account, err := GetAccountByEmail(db, "sender@example.com")
+	if err != nil {
+		t.Fatalf("GetAccountByEmail error: %v", err)
+	}
+	if account.IMAPPasswordRef != "env:IMAP_PASSWORD" {
+		t.Errorf("expected IMAP password ref update, got %s", account.IMAPPasswordRef)
+	}
+}
+
+func TestUpdateSMTPIMAPAccountRejectsOtherProviders(t *testing.T) {
+	db := testDB(t)
+	if _, err := AddAccount(db, "sender@example.com", 50, "/tmp/gws"); err != nil {
+		t.Fatalf("AddAccount error: %v", err)
+	}
+
+	smtpHost := "smtp.example.com"
+	if _, err := UpdateSMTPIMAPAccount(db, "sender@example.com", UpdateSMTPIMAPAccountOpts{
+		SMTPHost: &smtpHost,
+	}); err == nil {
+		t.Fatal("expected provider mismatch error")
+	}
+}
+
 func TestAddSMTPIMAPAccountDefaults(t *testing.T) {
 	db := testDB(t)
 
