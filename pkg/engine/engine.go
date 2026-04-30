@@ -15,6 +15,8 @@ type AddSMTPIMAPAccountResult = internal.AddSMTPIMAPAccountResult
 type RemoveAccountResult = internal.PauseAccountResult
 type SecretResolver = internal.SecretResolver
 type SecretResolverFunc = internal.SecretResolverFunc
+type SendSMTPTestEmailOpts = internal.SendSMTPTestEmailOpts
+type SendSMTPTestEmailResult = internal.SendSMTPTestEmailResult
 type Store = internal.Store
 type TickConfig = internal.TickConfig
 type TickResult = internal.TickResult
@@ -56,6 +58,10 @@ func VerifySMTPIMAPAccount(account Account, resolver SecretResolver) (*AccountVe
 		internal.NewSMTPTransport(resolver),
 		internal.NewIMAPTransport(resolver),
 	)
+}
+
+func SendSMTPTestEmail(account Account, opts SendSMTPTestEmailOpts, resolver SecretResolver) (*SendSMTPTestEmailResult, error) {
+	return internal.SendSMTPTestEmail(account, opts, resolver)
 }
 
 func Tick(cfg TickConfig) (*TickResult, error) {
