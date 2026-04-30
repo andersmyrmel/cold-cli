@@ -9,6 +9,9 @@ func TestValidateSecretRef(t *testing.T) {
 	if err := ValidateSecretRef("env:MAIL_PASSWORD"); err != nil {
 		t.Fatalf("expected env ref to validate: %v", err)
 	}
+	if err := ValidateSecretRef("secret:01JZ0N0G3S6C5A9R6K1YHF0M5R"); err != nil {
+		t.Fatalf("expected hosted secret ref to validate: %v", err)
+	}
 }
 
 func TestValidateSecretRefRejectsRawSecret(t *testing.T) {
@@ -62,6 +65,33 @@ func TestResolveSecretRefMissingEnv(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not set") {
 		t.Fatalf("expected not set error, got: %v", err)
+	}
+}
+
+func TestResolveSecretRefRejectsHostedSecretWithEnvResolver(t *testing.T) {
+	_, err := ResolveSecretRef("secret:01JZ0N0G3S6C5A9R6K1YHF0M5R")
+	if err == nil {
+		t.Fatal("expected env resolver to reject hosted secret ref")
+	}
+	if !strings.Contains(err.Error(), "custom SecretResolver") {
+		t.Fatalf("expected custom resolver guidance, got: %v", err)
+	}
+}
+
+func TestSecretResolverFunc(t *testing.T) {
+	resolver := SecretResolverFunc(func(ref string) (string, error) {
+		if ref != "secret:abc" {
+			t.Fatalf("unexpected ref %q", ref)
+		}
+		return "resolved-secret", nil
+	})
+
+	value, err := resolver.ResolveSecret("secret:abc")
+	if err != nil {
+		t.Fatalf("ResolveSecret error: %v", err)
+	}
+	if value != "resolved-secret" {
+		t.Fatalf("expected resolved-secret, got %q", value)
 	}
 }
 

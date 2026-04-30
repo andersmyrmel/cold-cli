@@ -6,11 +6,21 @@ import (
 	"strings"
 )
 
-const secretRefEnvScheme = "env"
+const (
+	secretRefEnvScheme    = "env"
+	secretRefHostedScheme = "secret"
+)
 
 // SecretResolver resolves stored secret references into runtime secret values.
 type SecretResolver interface {
 	ResolveSecret(ref string) (string, error)
+}
+
+// SecretResolverFunc adapts a function to SecretResolver.
+type SecretResolverFunc func(ref string) (string, error)
+
+func (fn SecretResolverFunc) ResolveSecret(ref string) (string, error) {
+	return fn(ref)
 }
 
 // EnvSecretResolver resolves env:NAME references from the process environment.
@@ -21,6 +31,10 @@ func (EnvSecretResolver) ResolveSecret(ref string) (string, error) {
 }
 
 // ValidateSecretRef verifies that a secret reference uses a supported scheme.
+//
+// The env: scheme is resolved by the local CLI. The secret: scheme is an
+// opaque hosted-product reference resolved by callers that provide their own
+// SecretResolver.
 func ValidateSecretRef(ref string) error {
 	scheme, target, err := parseSecretRef(ref)
 	if err != nil {
@@ -32,8 +46,13 @@ func ValidateSecretRef(ref string) error {
 			return fmt.Errorf("env secret reference must include a variable name")
 		}
 		return nil
+	case secretRefHostedScheme:
+		if target == "" {
+			return fmt.Errorf("hosted secret reference must include an id")
+		}
+		return nil
 	default:
-		return fmt.Errorf("unsupported secret reference scheme %q; use env:NAME", scheme)
+		return fmt.Errorf("unsupported secret reference scheme %q; use env:NAME or secret:ID", scheme)
 	}
 }
 
@@ -57,7 +76,7 @@ func ResolveSecretRef(ref string) (string, error) {
 		}
 		return value, nil
 	default:
-		return "", fmt.Errorf("unsupported secret reference scheme %q; use env:NAME", scheme)
+		return "", fmt.Errorf("unsupported secret reference scheme %q for env resolver; use env:NAME or provide a custom SecretResolver", scheme)
 	}
 }
 
@@ -105,7 +124,7 @@ func parseSecretRef(ref string) (scheme string, target string, err error) {
 	}
 	scheme, target, ok := strings.Cut(ref, ":")
 	if !ok {
-		return "", "", fmt.Errorf("secret reference must use scheme:value format; use env:NAME")
+		return "", "", fmt.Errorf("secret reference must use scheme:value format; use env:NAME or secret:ID")
 	}
 	scheme = strings.ToLower(strings.TrimSpace(scheme))
 	target = strings.TrimSpace(target)

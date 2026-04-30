@@ -31,6 +31,7 @@ type TickConfig struct {
 	Timezone           *time.Location // for daily limit day boundary; defaults to UTC
 	UnsubscribeHeader  bool           // add List-Unsubscribe header (off by default for cold email)
 	UnsubscribeSubject string         // subject for List-Unsubscribe mailto header
+	SecretResolver     SecretResolver // optional resolver for SMTP/IMAP password refs
 	SMTPSender         SMTPEmailSender
 	IMAP               IMAPMessageLister
 }
@@ -81,7 +82,7 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 	if len(smtpIMAPAccounts) > 0 {
 		imap := cfg.IMAP
 		if imap == nil {
-			imap = NewIMAPTransport(nil)
+			imap = NewIMAPTransport(cfg.SecretResolver)
 		}
 		replies, unsubs, err := ProcessIMAPReplies(cfg.DB, imap, smtpIMAPAccounts)
 		if err != nil {
@@ -102,7 +103,7 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 	if len(smtpIMAPAccounts) > 0 {
 		imap := cfg.IMAP
 		if imap == nil {
-			imap = NewIMAPTransport(nil)
+			imap = NewIMAPTransport(cfg.SecretResolver)
 		}
 		bounces, err := ProcessIMAPBounces(cfg.DB, imap, smtpIMAPAccounts)
 		if err != nil {
@@ -417,7 +418,7 @@ func sendRenderedEmail(cfg TickConfig, account Account, emailParams EmailParams)
 	case AccountProviderSMTPIMAP:
 		sender := cfg.SMTPSender
 		if sender == nil {
-			sender = NewSMTPTransport(nil)
+			sender = NewSMTPTransport(cfg.SecretResolver)
 		}
 		return sender.SendEmail(account, emailParams)
 	default:

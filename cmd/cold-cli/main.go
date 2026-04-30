@@ -295,7 +295,8 @@ Add a generic SMTP/IMAP sending account.
 
 SMTP is used for sending. IMAP is used by tick to poll the mailbox for replies,
 unsubscribe requests, and bounces. Passwords are stored as secret references,
-not raw values; currently env:NAME references are supported.
+not raw values. The local CLI resolves env:NAME references; hosted callers can
+store secret:ID references and provide a custom SecretResolver.
 `),
 	Example: strings.TrimSpace(`
 export MAIL_PASSWORD='app-password-or-mailbox-password'
@@ -402,7 +403,8 @@ var accountVerifyCmd = &cobra.Command{
 	Long: strings.TrimSpace(`
 Verify a generic SMTP/IMAP account.
 
-The check resolves the account's env: secret references, authenticates with the
+The check resolves the account's env: secret references with the default local
+resolver, authenticates with the
 SMTP server, authenticates with the IMAP server, and selects the inbox mailbox.
 It exits non-zero if either side fails.
 `),
@@ -1823,7 +1825,7 @@ func init() {
 	accountAddSMTPCmd.Flags().String("smtp-host", "", "SMTP server hostname")
 	accountAddSMTPCmd.Flags().Int("smtp-port", 0, "SMTP server port (default depends on --smtp-tls)")
 	accountAddSMTPCmd.Flags().String("smtp-user", "", "SMTP username (default: account email)")
-	accountAddSMTPCmd.Flags().String("smtp-password-ref", "", "SMTP password reference, such as env:MAIL_PASSWORD; raw passwords are rejected")
+	accountAddSMTPCmd.Flags().String("smtp-password-ref", "", "SMTP password reference, such as env:MAIL_PASSWORD or hosted secret:ID; raw passwords are rejected")
 	accountAddSMTPCmd.Flags().String("smtp-tls", "ssl", "SMTP TLS mode: ssl, starttls, none (default ports: ssl=465, starttls=587, none=25)")
 	accountAddSMTPCmd.Flags().String("imap-host", "", "IMAP server hostname")
 	accountAddSMTPCmd.Flags().Int("imap-port", 0, "IMAP server port (default depends on --imap-tls)")
@@ -1835,7 +1837,7 @@ func init() {
 	accountUpdateSMTPCmd.Flags().String("smtp-host", "", "SMTP server hostname")
 	accountUpdateSMTPCmd.Flags().Int("smtp-port", 0, "SMTP server port; use 0 to reset to default for --smtp-tls")
 	accountUpdateSMTPCmd.Flags().String("smtp-user", "", "SMTP username")
-	accountUpdateSMTPCmd.Flags().String("smtp-password-ref", "", "SMTP password reference, such as env:MAIL_PASSWORD; raw passwords are rejected")
+	accountUpdateSMTPCmd.Flags().String("smtp-password-ref", "", "SMTP password reference, such as env:MAIL_PASSWORD or hosted secret:ID; raw passwords are rejected")
 	accountUpdateSMTPCmd.Flags().String("smtp-tls", "", "SMTP TLS mode: ssl, starttls, none")
 	accountUpdateSMTPCmd.Flags().String("imap-host", "", "IMAP server hostname")
 	accountUpdateSMTPCmd.Flags().Int("imap-port", 0, "IMAP server port; use 0 to reset to default for --imap-tls")

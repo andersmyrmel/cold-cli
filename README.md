@@ -272,6 +272,10 @@ cold-cli account add-smtp sender@company.com \
 cold-cli account verify sender@company.com
 ```
 
+Hosted callers can also store opaque `secret:ID` references and provide a
+custom `SecretResolver` when running the engine. The default CLI resolver only
+resolves `env:NAME`.
+
 If provider settings change, update only the fields that changed and verify again:
 
 ```bash
