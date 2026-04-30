@@ -1,10 +1,10 @@
 # cold-cli Architecture
 
-Open-source, agent-first CLI cold email sequence engine in Go. Built on top of [gws CLI](https://github.com/googleworkspace/cli) for Gmail API operations.
+Open-source, agent-first CLI cold email sequence engine in Go. Supports Google Workspace/Gmail through [gws CLI](https://github.com/googleworkspace/cli) and generic email hosts through native SMTP/IMAP transports.
 
 ## Problem
 
-No CLI-native cold email sequence engine exists. SaaS tools (Instantly, Smartlead, Lemlist) are all GUIs. We want the sequence engine layer only, gws handles Gmail send/receive.
+No CLI-native cold email sequence engine exists. SaaS tools (Instantly, Smartlead, Lemlist) are all GUIs. We want the sequence engine layer only, with provider transports handling mail send/receive.
 
 ## Tech Stack
 
@@ -12,7 +12,8 @@ No CLI-native cold email sequence engine exists. SaaS tools (Instantly, Smartlea
 - **SQLite or Postgres** storage
   - SQLite local mode: `~/.cold-cli/data.db`, pure Go driver (`modernc.org/sqlite`, no CGO)
   - Postgres shared/server mode: activated by `COLD_CLI_DATABASE_URL`
-- **gws CLI** subprocess calls for Gmail send + inbox polling
+- **gws CLI** subprocess calls for Google Workspace/Gmail send + inbox polling
+- **SMTP/IMAP** native transports for generic email hosts
 - **Cobra** CLI framework (same as gh, docker, kubectl)
 - **YAML** sequence definitions and config (`~/.cold-cli/config.yml`)
 - **log/slog** structured JSON logging to `~/.cold-cli/tick.log`
@@ -32,13 +33,16 @@ cold-cli/
 │   ├─ tick.go              (tick engine: lock, poll, send loop)
 │   ├─ scheduler.go         (eager schedule computation, variant assignment)
 │   ├─ gws.go               (GWSClient interface + real subprocess impl)
+│   ├─ smtp.go              (generic SMTP sender + verifier)
+│   ├─ imap.go              (generic IMAP polling + verifier)
 │   ├─ send.go              (email construction: RFC 2822, threading, List-Unsubscribe)
 │   ├─ reply.go             (reply/bounce/unsubscribe detection, header matching)
 │   ├─ template.go          ({{placeholder}} string replacement)
 │   ├─ csv.go               (lead CSV import, BOM stripping, validation)
 │   ├─ config.go            (YAML config loading)
 │   ├─ stats.go             (campaign/step/variant/lead stats, event log)
-│   ├─ account.go           (account CRUD, domain diagnostics)
+│   ├─ account.go           (account CRUD, provider config, domain diagnostics)
+│   ├─ account_verify.go    (SMTP/IMAP account verification)
 │   ├─ lead.go              (lead pause/resume/blacklist/list, campaign remove-lead)
 │   └─ campaign.go          (campaign CRUD, clone, add-leads, inline creation)
 ├─ go.mod
@@ -54,7 +58,10 @@ accounts
 ├─ daily_limit
 ├─ last_send_at
 ├─ status (active/paused/removed)
-└─ gws_config_dir
+├─ provider (gws/smtp_imap)
+├─ gws_config_dir
+├─ smtp_host, smtp_port, smtp_username, smtp_password_ref, smtp_tls_mode
+└─ imap_host, imap_port, imap_username, imap_password_ref, imap_tls_mode
 
 campaigns
 ├─ id, name, status, sequence_file, sequence_content
@@ -139,7 +146,9 @@ tick starts
 │   └─ Postgres: advisory lock on a dedicated DB connection
 │      locked? → print "tick already running", exit 0
 │
-├─ 1. Poll inbox (via gws, messages after last_poll_at)
+├─ 1. Poll inboxes through provider transports
+│      ├─ gws accounts: Gmail queries after last_poll_at
+│      └─ smtp_imap accounts: IMAP messages after last_poll_at
 │      → match replies via In-Reply-To header, then thread-ID fallback
 │      → detect unsubscribe requests (keyword matching)
 │      │   → unsubscribe: blacklist lead globally, cancel all sends
@@ -148,7 +157,7 @@ tick starts
 │      → if stop_on_domain_reply: skip same-domain leads in campaign
 │      → structured JSON logging via log/slog for all operations
 │
-├─ 2. Poll inbox for bounce NDRs (MAILER-DAEMON)
+├─ 2. Poll inboxes for bounce NDRs
 │      → extract bounced email, match to leads
 │      → UPDATE leads.global_status = 'bounced'
 │      → UPDATE scheduled_sends.status = 'skipped'
@@ -179,7 +188,7 @@ tick starts
 │      │   step 1: new thread (Subject, From, To)
 │      │   step 2+: In-Reply-To, References, Re: Subject, thread_id
 │      │   optional: List-Unsubscribe header (if configured)
-│      ├─ call gws send (30s timeout)
+│      ├─ call provider sender (gws or SMTP, 30s timeout)
 │      │   success → mark 'sent', INSERT event (error-checked + logged)
 │      │   failure → mark 'failed', slog.Error, continue
 │      ├─ validate message_id/thread_id returned (else mark failed)
@@ -234,11 +243,11 @@ tick processes all overdue sends (`send_at <= now`) with normal 90-140 sec gaps.
 
 ## Account Rotation
 
-Round-robin assignment at initial schedule time (not dynamic per send). All steps for a given lead use the same account (required for Gmail thread continuity). Account-aware rebalance can move timestamps across days, but never reassigns a lead to a different account.
+Round-robin assignment at initial schedule time (not dynamic per send). All steps for a given lead use the same account so follow-ups keep provider-specific thread/message continuity. Account-aware rebalance can move timestamps across days, but never reassigns a lead to a different account.
 
 ## Reply/Bounce/Unsubscribe Handling
 
-- **Reply detected** → `campaign_leads.status = 'replied'`, remaining `scheduled_sends` marked `'skipped'`. Two matching strategies: (1) `In-Reply-To` header → sent `message_id` (primary, precise), (2) Gmail `thread_id` fallback (catches replies from shared inboxes, forwarded addresses, or mail clients that don't set `In-Reply-To`)
+- **Reply detected** → `campaign_leads.status = 'replied'`, remaining `scheduled_sends` marked `'skipped'`. Two matching strategies: (1) `In-Reply-To` header → sent `message_id` (primary, precise), (2) provider thread/message fallback (catches replies from shared inboxes, forwarded addresses, or mail clients that don't set `In-Reply-To`)
 - **Domain reply** (if `stop_on_domain_reply=true`) → all leads with same domain in that campaign get their pending sends skipped
 - **Unsubscribe detected** (keyword matching: "unsubscribe", "remove me", "opt out", etc.) → lead blacklisted globally, all pending sends across all campaigns cancelled, `'unsubscribe'` event recorded
 - **Bounce detected** → `leads.global_status = 'bounced'` (global), `campaign_leads.status = 'bounced'`, pending sends skipped
@@ -260,7 +269,18 @@ Simple `strings.ReplaceAll` for `{{placeholder}}` substitution. No template engi
 - Custom CSV columns stored as JSON in `leads.custom_fields`, parsed at send time
 - Reimporting a lead updates its fields from the new CSV (source of truth), not silently skipped via INSERT OR IGNORE
 
-## gws Integration
+## Account Providers
+
+Accounts are provider-aware:
+
+- `gws`: Google Workspace/Gmail account authenticated through gws OAuth. Uses Gmail API send/list/get operations.
+- `smtp_imap`: generic email account. Uses SMTP for sending and IMAP for reply, unsubscribe, and bounce polling.
+
+SMTP/IMAP accounts store only secret references, not raw passwords. The supported secret reference scheme today is `env:NAME`, resolved at runtime by `tick` and `account verify`.
+
+`cold-cli account verify <email>` is the operational check for SMTP/IMAP accounts. It resolves the configured secret references, authenticates to SMTP, authenticates to IMAP, and selects the inbox mailbox.
+
+## Provider Interfaces
 
 ```go
 type GWSClient interface {
@@ -268,18 +288,30 @@ type GWSClient interface {
     ListMessages(account, query string) ([]GWSMessage, error)
     GetMessage(account, msgID string) (*GWSMessage, error)
 }
+
+type SMTPEmailSender interface {
+    SendEmail(account Account, params EmailParams) (messageID string, threadID string, err error)
+}
+
+type IMAPMessageLister interface {
+    ListMessages(account Account, since time.Time, includeSpamTrash bool) ([]GWSMessage, error)
+}
 ```
 
 - Real implementation calls gws as subprocess with 30s timeout
 - Per-account config dirs for multi-account OAuth
-- Per-send error isolation: gws failure marks that `scheduled_sends` row as `'failed'`, logs error, continues to next send
-- Health check on `cold-cli init`: verify gws binary exists
-- `last_poll_at` stored for efficient reply polling (`after:` query filter)
+- SMTP sends use implicit TLS (`ssl`), STARTTLS, or plaintext based on account config
+- IMAP polling checks inbox plus spam/trash folders for bounce detection
+- Per-send error isolation: provider failure marks that `scheduled_sends` row as `'failed'`, logs error, continues to next send
+- Health check on `cold-cli init`: verify gws binary exists for Google Workspace accounts
+- `last_poll_at` stored for efficient reply polling
 
 ## Error Handling
 
-- **gws not found**: caught at `init` and first `tick` run
+- **gws not found**: reported at `init`; only required for `gws` accounts
 - **gws send failure**: per-send isolation, mark `'failed'`, slog.Error, continue
+- **SMTP send failure**: per-send isolation, mark `'failed'`, slog.Error, continue
+- **SMTP/IMAP credential failure**: `account verify` exits non-zero and reports which side failed
 - **Missing message_id after step 1**: treated as send failure (prevents broken threading)
 - **DB write failure after send**: slog.Error with full context (send_id, message_id), continue
 - **Concurrent tick**: SQLite uses flock, Postgres uses advisory locks; second tick exits cleanly
@@ -303,7 +335,10 @@ Auto-detects domains from registered accounts if no domain specified.
 cold-cli init
 cold-cli doctor [domain...]
 
-cold-cli account add/list/pause/resume/remove/update
+cold-cli account add <email>
+cold-cli account add-smtp <email> --smtp-host ... --smtp-password-ref env:NAME --imap-host ...
+cold-cli account verify <email>
+cold-cli account list/pause/resume/remove/update
 
 cold-cli campaign init [directory]
 cold-cli campaign create --name --sequence --leads --accounts [--start-date YYYY-MM-DD] [--send-days "1,2,3,4,5"]
@@ -336,8 +371,9 @@ All commands support `--json` for agent consumption. No interactive prompts, eve
                     │      (Cobra)             │
                     ├─────────────────────────┤
                     │ init / doctor            │
-                    │ account add/list/pause/  │
-                    │   resume/remove/update   │
+                    │ account add/add-smtp/     │
+                    │   verify/list/pause/      │
+                    │   resume/remove/update    │
                     │ campaign init/create/    │
                     │   clone/                 │
                     │   add-leads/preview/     │
@@ -370,19 +406,19 @@ All commands support `--json` for agent consumption. No interactive prompts, eve
            ▼            │   │
      ┌────────────────────┐ │   ▼
      │  Storage backend   │◄┘  ┌──────────────┐
-     │                    │    │  GWSClient   │
-     │ • SQLite local DB  │    │  (interface) │
+     │                    │    │ Provider     │
+     │ • SQLite local DB  │    │ clients      │
      │ • Postgres shared  │    ├──────────────┤
      │   database         │    │ SendEmail()  │
      └────────────────────┘    │ ListMessages()│
-                                │ GetMessage() │
+                                │ Verify()     │
                                 └──────┬───────┘
      ┌───────────┐                │
      │ tick.log  │                ▼
      │ (slog     │         ┌──────────────┐
-     │  JSON)    │         │   gws CLI    │
-     └───────────┘         │  (subprocess)│
-                           │  Gmail API   │
+     │  JSON)    │         │ gws CLI or   │
+     └───────────┘         │ SMTP/IMAP    │
+                           │ transports   │
      ┌───────────┐         └──────────────┘
      │  doctor   │
      │ • DNS MX  │
@@ -423,3 +459,5 @@ All commands support `--json` for agent consumption. No interactive prompts, eve
 | 24 | Campaign resolution | Accept name or numeric ID | Users instinctively use IDs from `campaign list` |
 | 25 | Preview warnings | Run the same rebalance as preview/tick before warning | Warning output matches real sender-capacity schedule |
 | 26 | Account re-add | Reactivate removed accounts on `add` | Remove shouldn't be a permanent one-way door |
+| 28 | Account providers | Store provider-specific account config behind one account model | Keeps scheduling/account rotation shared while allowing gws and SMTP/IMAP transports |
+| 29 | SMTP/IMAP secrets | Store secret references, not raw passwords | Keeps the database free of mailbox passwords and lets deployments provide secrets through env |

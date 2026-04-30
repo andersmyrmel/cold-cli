@@ -53,6 +53,10 @@ Storage backend:
   - SQLite by default at ~/.cold-cli/data.db
   - Postgres when COLD_CLI_DATABASE_URL is set
 
+Sending providers:
+  - Google Workspace/Gmail via gws
+  - Generic SMTP/IMAP via account add-smtp
+
 For Postgres worker deployments, use a direct connection string rather than a
 transaction-pooled/pooler URL because tick uses advisory locks.
 `),
@@ -67,6 +71,9 @@ Initialize cold-cli data directory, config, and the active database backend.
 Backend selection:
   - SQLite by default at ~/.cold-cli/data.db
   - Postgres when COLD_CLI_DATABASE_URL is set
+
+gws is only required for Google Workspace/Gmail accounts. Generic SMTP/IMAP
+accounts do not require gws.
 `),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dataDir := internal.DataDir()
@@ -107,9 +114,9 @@ Backend selection:
 		fmt.Printf("  database: %s\n", store.DisplayTarget())
 		fmt.Printf("  config:   %s\n", configPath)
 		if gwsErr != nil {
-			fmt.Printf("  warning:  %s\n", gwsErr)
+			fmt.Printf("  gws:      not found (%s; only needed for Google Workspace accounts)\n", gwsErr)
 		} else {
-			fmt.Println("  gws:      ok")
+			fmt.Println("  gws:      ok (Google Workspace accounts)")
 		}
 		return nil
 	},
@@ -191,12 +198,29 @@ var doctorCmd = &cobra.Command{
 var accountCmd = &cobra.Command{
 	Use:   "account",
 	Short: "Manage sending accounts",
+	Long: strings.TrimSpace(`
+Manage sending accounts.
+
+Use account add for Google Workspace/Gmail accounts authenticated through gws.
+Use account add-smtp for generic SMTP/IMAP accounts. SMTP sends mail, while
+IMAP is used by tick to detect replies, unsubscribes, and bounces.
+`),
 }
 
 var accountAddCmd = &cobra.Command{
 	Use:   "add <email>",
-	Short: "Add a sending account",
-	Args:  cobra.ExactArgs(1),
+	Short: "Add a Google Workspace/Gmail sending account",
+	Long: strings.TrimSpace(`
+Add a Google Workspace/Gmail sending account.
+
+This command uses gws OAuth and stores a per-account gws config directory.
+For generic email hosts, use account add-smtp instead.
+`),
+	Example: strings.TrimSpace(`
+cold-cli account add sender@company.com
+cold-cli account add sender@company.com --no-login
+`),
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		email := strings.TrimSpace(args[0])
 		if _, err := mail.ParseAddress(email); err != nil {
@@ -266,7 +290,24 @@ var accountAddCmd = &cobra.Command{
 var accountAddSMTPCmd = &cobra.Command{
 	Use:   "add-smtp <email>",
 	Short: "Add a generic SMTP/IMAP sending account",
-	Args:  cobra.ExactArgs(1),
+	Long: strings.TrimSpace(`
+Add a generic SMTP/IMAP sending account.
+
+SMTP is used for sending. IMAP is used by tick to poll the mailbox for replies,
+unsubscribe requests, and bounces. Passwords are stored as secret references,
+not raw values; currently env:NAME references are supported.
+`),
+	Example: strings.TrimSpace(`
+export MAIL_PASSWORD='app-password-or-mailbox-password'
+
+cold-cli account add-smtp sender@company.com \
+  --smtp-host smtp.example.com \
+  --smtp-password-ref env:MAIL_PASSWORD \
+  --imap-host imap.example.com
+
+cold-cli account verify sender@company.com
+`),
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		email := strings.TrimSpace(args[0])
 		if _, err := mail.ParseAddress(email); err != nil {
@@ -342,7 +383,7 @@ var accountListCmd = &cobra.Command{
 		}
 
 		if len(accounts) == 0 {
-			fmt.Println("No accounts. Add one with: cold-cli account add <email>")
+			fmt.Println("No accounts. Add one with: cold-cli account add <email> or cold-cli account add-smtp <email>")
 			return nil
 		}
 
@@ -358,7 +399,18 @@ var accountListCmd = &cobra.Command{
 var accountVerifyCmd = &cobra.Command{
 	Use:   "verify <email>",
 	Short: "Verify SMTP/IMAP account connectivity",
-	Args:  cobra.ExactArgs(1),
+	Long: strings.TrimSpace(`
+Verify a generic SMTP/IMAP account.
+
+The check resolves the account's env: secret references, authenticates with the
+SMTP server, authenticates with the IMAP server, and selects the inbox mailbox.
+It exits non-zero if either side fails.
+`),
+	Example: strings.TrimSpace(`
+cold-cli account verify sender@company.com
+cold-cli account verify sender@company.com --json
+`),
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		email := strings.TrimSpace(args[0])
 
@@ -1657,13 +1709,13 @@ func init() {
 	accountAddSMTPCmd.Flags().String("smtp-host", "", "SMTP server hostname")
 	accountAddSMTPCmd.Flags().Int("smtp-port", 0, "SMTP server port (default depends on --smtp-tls)")
 	accountAddSMTPCmd.Flags().String("smtp-user", "", "SMTP username (default: account email)")
-	accountAddSMTPCmd.Flags().String("smtp-password-ref", "", "SMTP password reference, such as env:MIGADU_SMTP_PASSWORD")
-	accountAddSMTPCmd.Flags().String("smtp-tls", "ssl", "SMTP TLS mode: ssl, starttls, none")
+	accountAddSMTPCmd.Flags().String("smtp-password-ref", "", "SMTP password reference, such as env:MAIL_PASSWORD; raw passwords are rejected")
+	accountAddSMTPCmd.Flags().String("smtp-tls", "ssl", "SMTP TLS mode: ssl, starttls, none (default ports: ssl=465, starttls=587, none=25)")
 	accountAddSMTPCmd.Flags().String("imap-host", "", "IMAP server hostname")
 	accountAddSMTPCmd.Flags().Int("imap-port", 0, "IMAP server port (default depends on --imap-tls)")
 	accountAddSMTPCmd.Flags().String("imap-user", "", "IMAP username (default: SMTP username)")
 	accountAddSMTPCmd.Flags().String("imap-password-ref", "", "IMAP password reference (default: SMTP password ref)")
-	accountAddSMTPCmd.Flags().String("imap-tls", "ssl", "IMAP TLS mode: ssl, starttls, none")
+	accountAddSMTPCmd.Flags().String("imap-tls", "ssl", "IMAP TLS mode: ssl, starttls, none (default ports: ssl=993, starttls=143, none=143)")
 	accountUpdateCmd.Flags().Int("daily-limit", 0, "max emails per day, shared across all campaigns using this account")
 	accountCmd.AddCommand(accountAddCmd, accountAddSMTPCmd, accountListCmd, accountVerifyCmd, accountPauseCmd, accountResumeCmd, accountRemoveCmd, accountUpdateCmd)
 	leadListCmd.Flags().String("domain", "", "filter by domain")

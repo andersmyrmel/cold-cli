@@ -2,7 +2,7 @@
 
 Open-source CLI cold email sequence engine. Single binary, SQLite by default, Postgres via `COLD_CLI_DATABASE_URL`, no SaaS required.
 
-Built on [gws](https://github.com/googleworkspace/cli) for Gmail API access. Works great with coding agents (Claude Code, Cursor, etc.) or directly from the terminal.
+Supports Google Workspace/Gmail through [gws](https://github.com/googleworkspace/cli), plus generic SMTP/IMAP accounts for other email hosts. Works great with coding agents (Claude Code, Cursor, etc.) or directly from the terminal.
 
 ## Install
 
@@ -10,7 +10,7 @@ Built on [gws](https://github.com/googleworkspace/cli) for Gmail API access. Wor
 go install github.com/anders/cold-cli/cmd/cold-cli@latest
 ```
 
-Requires [gws](https://github.com/googleworkspace/cli) for Gmail integration.
+[gws](https://github.com/googleworkspace/cli) is required only when using Google Workspace/Gmail accounts. Generic SMTP/IMAP accounts do not require gws.
 
 ## Database Modes
 
@@ -45,8 +45,16 @@ cold-cli init
 # Check domain deliverability
 cold-cli doctor
 
-# Add a sending account (opens browser for Google OAuth)
+# Add a Google Workspace/Gmail sending account (opens browser for OAuth)
 cold-cli account add you@company.com
+
+# Or add a generic SMTP/IMAP account
+export MAIL_PASSWORD='app-password-or-mailbox-password'
+cold-cli account add-smtp you@company.com \
+  --smtp-host smtp.example.com \
+  --smtp-password-ref env:MAIL_PASSWORD \
+  --imap-host imap.example.com
+cold-cli account verify you@company.com
 
 # Scaffold example sequence + leads files (optional)
 cold-cli campaign init
@@ -140,8 +148,11 @@ Scheduling behavior:
 cold-cli init                              # set up ~/.cold-cli/, config, and the active DB backend
 cold-cli doctor [domain...]                # check MX, SPF, DKIM, DMARC, domain age
 
-cold-cli account add <email>               # add sending account with OAuth
-cold-cli account add <email> --no-login    # add without OAuth (already authed)
+cold-cli account add <email>               # add Google Workspace/Gmail account with gws OAuth
+cold-cli account add <email> --no-login    # add Google account without OAuth (already authed)
+cold-cli account add-smtp <email>          # add generic SMTP/IMAP account
+cold-cli account add-smtp <email> --smtp-host smtp.example.com --smtp-password-ref env:MAIL_PASSWORD --imap-host imap.example.com
+cold-cli account verify <email>            # verify SMTP/IMAP connectivity and auth
 cold-cli account list                      # list accounts
 cold-cli account update <email>            # update settings (--daily-limit)
 cold-cli account pause <email>             # deactivate, cancel pending sends
@@ -214,13 +225,13 @@ Current limitation:
 
 `tick` is a single idempotent command that does everything per invocation:
 
-1. Poll inbox for replies → match via In-Reply-To headers → mark lead replied
-2. Poll inbox for bounces → detect via thread matching → mark bounced
+1. Poll inboxes for replies via the account provider → match via In-Reply-To headers → mark lead replied
+2. Poll inboxes for bounces via the account provider → detect via thread/message matching → mark bounced
 3. Detect unsubscribe requests → auto-blacklist lead globally
 4. Rebalance pending sends for the affected sender accounts using real daily-limit capacity
 5. Find sends where `send_at <= now` and campaign is active
 6. Re-check each pending row just before send so stale preloaded rows cannot fire
-7. Send each email via gws with 90-140 second random gaps
+7. Send each email through its account provider (`gws` or SMTP) with 90-140 second random gaps
 8. After each successful send, rebalance that sender again so future follow-ups chain from actual send time
 9. Respect daily limits, send windows, and send days
 
@@ -228,24 +239,52 @@ Run it manually, via cron (`*/10 * * * *`), or have an agent call it. All tick a
 
 ### Reply & Unsubscribe Detection
 
-Matches inbox messages to sent emails using `In-Reply-To` headers. When a reply is detected, the lead is marked `replied` and remaining sends for that lead are cancelled. With `stop_on_domain_reply`, all other leads on the same domain are paused.
+Matches inbox messages to sent emails using `In-Reply-To` headers, with provider thread/message IDs as a fallback where available. When a reply is detected, the lead is marked `replied` and remaining sends for that lead are cancelled. With `stop_on_domain_reply`, all other leads on the same domain are paused.
 
 Unsubscribe requests ("unsubscribe", "remove me", "opt out", etc.) are auto-detected and blacklist the lead globally across all campaigns.
 
 ### Bounce Detection
 
 Three-strategy fallback:
-1. **Thread matching** - NDR shares a Gmail thread with our sent email (catches all formats)
+1. **Thread/message matching** - NDR can be tied back to a sent email
 2. **X-Failed-Recipients header** - standard MTA header
 3. **Snippet parsing** - extract bounced email from NDR text
 
+### Account Providers
+
+Google Workspace/Gmail accounts use `gws` OAuth and Gmail API send/inbox operations:
+
+```bash
+cold-cli account add sender@company.com
+```
+
+Generic SMTP/IMAP accounts store server settings and secret references. SMTP sends mail; IMAP polls for replies, unsubscribes, and bounces. Raw passwords are not stored. Use `env:NAME` references and provide the environment variable wherever `cold-cli tick` runs:
+
+```bash
+export MAIL_PASSWORD='app-password-or-mailbox-password'
+
+cold-cli account add-smtp sender@company.com \
+  --smtp-host smtp.example.com \
+  --smtp-password-ref env:MAIL_PASSWORD \
+  --imap-host imap.example.com
+
+cold-cli account verify sender@company.com
+```
+
+Defaults:
+- `--smtp-user` defaults to the account email
+- `--imap-user` defaults to the SMTP username
+- `--imap-password-ref` defaults to the SMTP password reference
+- `--smtp-tls ssl` defaults to port `465`; `starttls` defaults to `587`; `none` defaults to `25`
+- `--imap-tls ssl` defaults to port `993`; `starttls` and `none` default to `143`
+
 ### Multi-Account
 
-Each account gets its own OAuth credentials. Campaigns can use one account or rotate across multiple:
+Campaigns can use one account or rotate across multiple accounts, regardless of provider:
 
 ```bash
 cold-cli account add sender1@company.com
-cold-cli account add sender2@company.com
+cold-cli account add-smtp sender2@company.com --smtp-host smtp.example.com --smtp-password-ref env:MAIL_PASSWORD --imap-host imap.example.com
 
 # Single account
 cold-cli campaign create --accounts sender1@company.com ...
@@ -254,7 +293,7 @@ cold-cli campaign create --accounts sender1@company.com ...
 cold-cli campaign create --accounts sender1@company.com,sender2@company.com ...
 ```
 
-When round-robin is used, all steps for a given lead use the same account (required for Gmail thread continuity).
+When round-robin is used, all steps for a given lead use the same account so follow-ups keep provider-specific thread/message continuity.
 
 ### Campaign Cloning
 
@@ -312,7 +351,8 @@ unsubscribe_subject: Unsubscribe
 
 - **Go** - single binary, no runtime deps
 - **SQLite or Postgres** - SQLite at `~/.cold-cli/data.db` by default, Postgres via `COLD_CLI_DATABASE_URL`
-- **gws CLI** - subprocess calls for Gmail API (send, list, get)
+- **gws CLI** - subprocess calls for Gmail API accounts (send, list, get)
+- **SMTP/IMAP** - native transports for generic email hosts
 - **Cobra** - CLI framework
 - **log/slog** - structured JSON logging to `~/.cold-cli/tick.log`
 

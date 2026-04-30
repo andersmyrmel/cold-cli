@@ -1123,6 +1123,30 @@ func TestCLI_CampaignHelp(t *testing.T) {
 	}
 }
 
+func TestCLI_AccountHelpIncludesProviders(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+
+	out, code := runCLI(t, bin, env, "account", "--help")
+	if code != 0 {
+		t.Fatalf("account help failed (exit %d): %s", code, out)
+	}
+	for _, want := range []string{"Google Workspace/Gmail", "SMTP/IMAP", "add-smtp", "verify"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("account help missing %q: %s", want, out)
+		}
+	}
+
+	out, code = runCLI(t, bin, env, "account", "add-smtp", "--help")
+	if code != 0 {
+		t.Fatalf("account add-smtp help failed (exit %d): %s", code, out)
+	}
+	for _, want := range []string{"--smtp-host", "--smtp-password-ref", "--imap-host", "env:NAME"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("account add-smtp help missing %q: %s", want, out)
+		}
+	}
+}
+
 // --- campaign init tests ---
 
 func TestCLI_CampaignInit(t *testing.T) {
