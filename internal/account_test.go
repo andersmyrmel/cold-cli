@@ -3,6 +3,7 @@ package internal
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAccountAdd(t *testing.T) {
@@ -87,9 +88,12 @@ func TestResumeAccount(t *testing.T) {
 	db := testDB(t)
 	db.Exec("INSERT INTO accounts (email, status) VALUES ('sender@x.com', 'paused')")
 
-	err := ResumeAccount(db, "sender@x.com")
+	result, err := ResumeAccount(db, "sender@x.com")
 	if err != nil {
 		t.Fatalf("ResumeAccount error: %v", err)
+	}
+	if result.RestoredSends != 0 {
+		t.Errorf("expected 0 restored sends, got %d", result.RestoredSends)
 	}
 
 	var status string
@@ -99,9 +103,49 @@ func TestResumeAccount(t *testing.T) {
 	}
 
 	// Resume active should error
-	err = ResumeAccount(db, "sender@x.com")
+	_, err = ResumeAccount(db, "sender@x.com")
 	if err == nil {
 		t.Error("expected error resuming active account")
+	}
+}
+
+func TestResumeAccountRestoresEligibleSends(t *testing.T) {
+	db := testDB(t)
+	seqYAML := `
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi"
+    body: "Hello"
+  - step: 2
+    delay: 3
+    subject: ""
+    body: "Follow up"
+`
+	sendAt := time.Now().UTC().Format(time.RFC3339)
+
+	db.Exec("INSERT INTO accounts (email, status, daily_limit) VALUES ('sender@x.com', 'paused', 50)")
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content)
+		VALUES ('active-campaign', 'active', 'seq.yml', ?)`, seqYAML)
+	db.Exec("INSERT INTO leads (email, domain) VALUES ('lead@x.com', 'x.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at, status)
+		VALUES (1, 1, 1, 1, 0, ?, 'cancelled')`, sendAt)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, variant_index, send_at, status)
+		VALUES (1, 1, 1, 2, 0, ?, 'cancelled')`, sendAt)
+
+	result, err := ResumeAccount(db, "sender@x.com")
+	if err != nil {
+		t.Fatalf("ResumeAccount error: %v", err)
+	}
+	if result.RestoredSends != 2 {
+		t.Errorf("expected 2 restored sends, got %d", result.RestoredSends)
+	}
+
+	var pending int
+	db.QueryRow("SELECT COUNT(*) FROM scheduled_sends WHERE account_id = 1 AND status = 'pending'").Scan(&pending)
+	if pending != 2 {
+		t.Errorf("expected 2 pending sends, got %d", pending)
 	}
 }
 

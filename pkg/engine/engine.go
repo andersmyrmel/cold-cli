@@ -12,7 +12,9 @@ type Account = internal.Account
 type AccountVerifyResult = internal.AccountVerifyResult
 type AddSMTPIMAPAccountOpts = internal.AddSMTPIMAPAccountOpts
 type AddSMTPIMAPAccountResult = internal.AddSMTPIMAPAccountResult
+type PauseAccountResult = internal.PauseAccountResult
 type RemoveAccountResult = internal.PauseAccountResult
+type ResumeAccountResult = internal.ResumeAccountResult
 type SecretResolver = internal.SecretResolver
 type SecretResolverFunc = internal.SecretResolverFunc
 type SendSMTPTestEmailOpts = internal.SendSMTPTestEmailOpts
@@ -42,6 +44,14 @@ func UpdateSMTPIMAPAccount(db *sql.DB, email string, opts UpdateSMTPIMAPAccountO
 
 func GetAccountByEmail(db *sql.DB, email string) (Account, error) {
 	return internal.GetAccountByEmail(db, email)
+}
+
+func PauseAccount(db *sql.DB, email string) (*PauseAccountResult, error) {
+	return internal.PauseAccount(db, email)
+}
+
+func ResumeAccount(db *sql.DB, email string) (*ResumeAccountResult, error) {
+	return internal.ResumeAccount(db, email)
 }
 
 func RemoveAccount(db *sql.DB, email string) (*RemoveAccountResult, error) {

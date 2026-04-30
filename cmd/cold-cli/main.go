@@ -495,14 +495,15 @@ var accountResumeCmd = &cobra.Command{
 		defer db.Close()
 
 		email := strings.TrimSpace(args[0])
-		if err := internal.ResumeAccount(db, email); err != nil {
+		result, err := internal.ResumeAccount(db, email)
+		if err != nil {
 			return err
 		}
 
 		if jsonOutput {
-			return printJSON(map[string]any{"email": email, "status": "active"})
+			return printJSON(result)
 		}
-		fmt.Printf("Resumed account %s\n", email)
+		fmt.Printf("Resumed account %s: %d sends restored\n", result.Email, result.RestoredSends)
 		return nil
 	},
 }

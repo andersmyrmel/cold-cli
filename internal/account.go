@@ -588,22 +588,66 @@ func PauseAccount(db *sql.DB, email string) (*PauseAccountResult, error) {
 	return &PauseAccountResult{Email: email, CancelledSends: cancelled}, nil
 }
 
-// ResumeAccount reactivates a paused account.
-func ResumeAccount(db *sql.DB, email string) error {
+// ResumeAccountResult is returned by ResumeAccount.
+type ResumeAccountResult struct {
+	Email         string `json:"email"`
+	RestoredSends int64  `json:"restored_sends"`
+}
+
+// ResumeAccount reactivates a paused account and restores its eligible sends.
+func ResumeAccount(db *sql.DB, email string) (*ResumeAccountResult, error) {
+	var id int64
 	var status string
-	err := queryRowDB(db, "SELECT status FROM accounts WHERE email = ?", email).Scan(&status)
+	err := queryRowDB(db, "SELECT id, status FROM accounts WHERE email = ?", email).Scan(&id, &status)
 	if err == sql.ErrNoRows {
-		return fmt.Errorf("account %s not found", email)
+		return nil, fmt.Errorf("account %s not found", email)
 	}
 	if err != nil {
-		return fmt.Errorf("looking up account: %w", err)
+		return nil, fmt.Errorf("looking up account: %w", err)
 	}
 	if status != "paused" {
-		return fmt.Errorf("account %s is %s (expected paused)", email, status)
+		return nil, fmt.Errorf("account %s is %s (expected paused)", email, status)
 	}
 
-	_, err = execDB(db, "UPDATE accounts SET status = 'active' WHERE email = ?", email)
-	return err
+	tx, err := beginTx(db)
+	if err != nil {
+		return nil, fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("UPDATE accounts SET status = 'active' WHERE id = ?", id); err != nil {
+		return nil, fmt.Errorf("resuming account: %w", err)
+	}
+
+	res, err := tx.Exec(`
+		UPDATE scheduled_sends SET status = 'pending'
+		WHERE account_id = ? AND status = 'cancelled'
+		AND campaign_id IN (SELECT id FROM campaigns WHERE status IN ('active', 'draft'))
+		AND EXISTS (
+			SELECT 1
+			FROM campaign_leads cl
+			JOIN leads l ON l.id = cl.lead_id
+			WHERE cl.campaign_id = scheduled_sends.campaign_id
+			  AND cl.lead_id = scheduled_sends.lead_id
+			  AND cl.status = 'active'
+			  AND l.global_status = 'active'
+		)`,
+		id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("restoring sends: %w", err)
+	}
+	restored, _ := res.RowsAffected()
+
+	if err := rebalancePendingSchedulesTx(tx, []int64{id}); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing: %w", err)
+	}
+
+	return &ResumeAccountResult{Email: email, RestoredSends: restored}, nil
 }
 
 // RemoveAccount deactivates an account permanently and cancels its pending sends.
