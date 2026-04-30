@@ -12,11 +12,13 @@ type Account = internal.Account
 type AccountVerifyResult = internal.AccountVerifyResult
 type AddSMTPIMAPAccountOpts = internal.AddSMTPIMAPAccountOpts
 type AddSMTPIMAPAccountResult = internal.AddSMTPIMAPAccountResult
+type RemoveAccountResult = internal.PauseAccountResult
 type SecretResolver = internal.SecretResolver
 type SecretResolverFunc = internal.SecretResolverFunc
 type Store = internal.Store
 type TickConfig = internal.TickConfig
 type TickResult = internal.TickResult
+type UpdateAccountOpts = internal.UpdateAccountOpts
 type UpdateSMTPIMAPAccountOpts = internal.UpdateSMTPIMAPAccountOpts
 
 const (
@@ -38,6 +40,14 @@ func UpdateSMTPIMAPAccount(db *sql.DB, email string, opts UpdateSMTPIMAPAccountO
 
 func GetAccountByEmail(db *sql.DB, email string) (Account, error) {
 	return internal.GetAccountByEmail(db, email)
+}
+
+func RemoveAccount(db *sql.DB, email string) (*RemoveAccountResult, error) {
+	return internal.RemoveAccount(db, email)
+}
+
+func UpdateAccount(db *sql.DB, email string, opts UpdateAccountOpts) error {
+	return internal.UpdateAccount(db, email, opts)
 }
 
 func VerifySMTPIMAPAccount(account Account, resolver SecretResolver) (*AccountVerifyResult, error) {
