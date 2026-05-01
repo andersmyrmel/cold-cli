@@ -1300,7 +1300,7 @@ func TestCLI_CampaignStartDate(t *testing.T) {
 		"--sequence", seqFile,
 		"--leads", leadsFile,
 		"--accounts", "sender@x.com",
-		"--start-date", "2026-04-01")
+		"--start-date", "2099-04-01")
 	if code != 0 {
 		t.Fatalf("campaign create with start-date failed (exit %d): %s", code, out)
 	}
@@ -1310,12 +1310,12 @@ func TestCLI_CampaignStartDate(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("preview failed (exit %d): %s", code, out)
 	}
-	// Send dates should be in April 2026, not March
-	if !strings.Contains(out, "2026-04") {
-		t.Errorf("expected send dates in April 2026, got: %s", out)
+	// Send dates should be in the requested future month, not the prior month.
+	if !strings.Contains(out, "2099-04") {
+		t.Errorf("expected send dates in April 2099, got: %s", out)
 	}
-	if strings.Contains(out, "2026-03") {
-		t.Errorf("expected no send dates in March 2026, but found them: %s", out)
+	if strings.Contains(out, "2099-03") {
+		t.Errorf("expected no send dates in March 2099, but found them: %s", out)
 	}
 }
 

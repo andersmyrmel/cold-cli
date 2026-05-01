@@ -50,6 +50,10 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		tz = time.UTC
 	}
 
+	if err := completeFinishedCampaigns(cfg.DB); err != nil {
+		return nil, err
+	}
+
 	// Load active accounts
 	accounts, err := loadActiveAccounts(cfg.DB)
 	if err != nil {
@@ -114,6 +118,10 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 
 	// Update last_poll_at so next tick only checks new messages
 	SetLastPollAt(cfg.DB, now)
+
+	if err := completeFinishedCampaigns(cfg.DB); err != nil {
+		return nil, err
+	}
 
 	// 3. Preload daily send counts per account (timezone-aware day boundary)
 	dailyCounts, err := preloadDailyCounts(cfg.DB, now, tz)
@@ -316,6 +324,10 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			gap := 90 + rand.Intn(51) // 90-140 seconds
 			time.Sleep(time.Duration(gap) * time.Second)
 		}
+	}
+
+	if err := completeFinishedCampaigns(cfg.DB); err != nil {
+		return nil, err
 	}
 
 	return result, nil
@@ -548,6 +560,26 @@ func refreshPendingSend(db *sql.DB, send dueSend) (dueSend, time.Time, bool, err
 	send.ThreadID = threadID
 	send.ParentMessageID = parentMessageID
 	return send, sendAt, true, nil
+}
+
+func completeFinishedCampaigns(db *sql.DB) error {
+	_, err := execDB(db, `
+		UPDATE campaigns
+		SET status = 'completed'
+		WHERE status = 'active'
+			AND id IN (
+				SELECT c.id
+				FROM campaigns c
+				JOIN scheduled_sends ss ON ss.campaign_id = c.id
+				WHERE c.status = 'active'
+				GROUP BY c.id
+				HAVING COUNT(ss.id) > 0
+					AND SUM(CASE WHEN ss.status NOT IN ('sent', 'skipped', 'cancelled') THEN 1 ELSE 0 END) = 0
+			)`)
+	if err != nil {
+		return fmt.Errorf("completing finished campaigns: %w", err)
+	}
+	return nil
 }
 
 func isInSendWindow(db *sql.DB, campaignID, leadID int64, now time.Time) bool {

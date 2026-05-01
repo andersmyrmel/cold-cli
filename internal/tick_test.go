@@ -151,6 +151,91 @@ func TestTick_SendsDueEmails(t *testing.T) {
 	}
 }
 
+func TestTick_CompletesCampaignAfterFinalSend(t *testing.T) {
+	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
+	now := time.Now().UTC()
+
+	insertPendingSend(t, db, campaignID, leadIDs[0], accountIDs[0], 1, now.Add(-1*time.Hour))
+
+	result, err := Tick(TickConfig{
+		DB:      db,
+		GWS:     &MockGWS{},
+		Now:     now,
+		NoSleep: true,
+	})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+	if result.Sent != 1 {
+		t.Fatalf("expected 1 sent, got %d", result.Sent)
+	}
+
+	var status string
+	if err := db.QueryRow("SELECT status FROM campaigns WHERE id = ?", campaignID).Scan(&status); err != nil {
+		t.Fatalf("loading campaign status: %v", err)
+	}
+	if status != "completed" {
+		t.Errorf("expected campaign status completed, got %q", status)
+	}
+}
+
+func TestCompleteFinishedCampaigns_OnlyCompletesTerminalActiveCampaigns(t *testing.T) {
+	db := testDB(t)
+
+	if _, err := db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)"); err != nil {
+		t.Fatalf("inserting account: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO leads (email, domain) VALUES ('lead@x.com', 'x.com')"); err != nil {
+		t.Fatalf("inserting lead: %v", err)
+	}
+
+	campaigns := []struct {
+		name     string
+		status   string
+		sendStat []string
+		want     string
+	}{
+		{name: "all-terminal", status: "active", sendStat: []string{"sent", "skipped", "cancelled"}, want: "completed"},
+		{name: "has-pending", status: "active", sendStat: []string{"sent", "pending"}, want: "active"},
+		{name: "has-failed", status: "active", sendStat: []string{"sent", "failed"}, want: "active"},
+		{name: "empty-active", status: "active", want: "active"},
+		{name: "draft-terminal", status: "draft", sendStat: []string{"sent"}, want: "draft"},
+	}
+
+	for _, campaign := range campaigns {
+		res, err := db.Exec("INSERT INTO campaigns (name, status, sequence_file) VALUES (?, ?, 'testdata/seq.yml')", campaign.name, campaign.status)
+		if err != nil {
+			t.Fatalf("inserting campaign %s: %v", campaign.name, err)
+		}
+		campaignID, err := res.LastInsertId()
+		if err != nil {
+			t.Fatalf("loading campaign id for %s: %v", campaign.name, err)
+		}
+		for i, sendStatus := range campaign.sendStat {
+			_, err := db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+				VALUES (?, 1, 1, ?, ?, ?)`,
+				campaignID, i+1, time.Now().UTC().Format(time.RFC3339), sendStatus)
+			if err != nil {
+				t.Fatalf("inserting send for %s: %v", campaign.name, err)
+			}
+		}
+	}
+
+	if err := completeFinishedCampaigns(db); err != nil {
+		t.Fatalf("completeFinishedCampaigns error: %v", err)
+	}
+
+	for _, campaign := range campaigns {
+		var got string
+		if err := db.QueryRow("SELECT status FROM campaigns WHERE name = ?", campaign.name).Scan(&got); err != nil {
+			t.Fatalf("loading campaign %s: %v", campaign.name, err)
+		}
+		if got != campaign.want {
+			t.Errorf("campaign %s status = %q, want %q", campaign.name, got, campaign.want)
+		}
+	}
+}
+
 func TestTick_SendsSMTPIMAPAccountViaSMTPTransport(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
 	now := time.Now().UTC()
