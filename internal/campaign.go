@@ -40,14 +40,17 @@ func ResolveCampaignName(db *sql.DB, nameOrID string) (string, error) {
 
 // CreateCampaignOpts holds options for CreateCampaign.
 type CreateCampaignOpts struct {
-	Name           string
-	SequenceFile   string
-	SequenceInline string // inline YAML content (alternative to SequenceFile)
-	LeadsFile      string
-	LeadsInline    string // inline CSV content (alternative to LeadsFile)
-	AccountEmails  []string
-	StartDate      string // optional "YYYY-MM-DD"; empty = now
-	SendDays       string // optional send days override for this campaign
+	Name            string
+	SequenceFile    string
+	SequenceInline  string // inline YAML content (alternative to SequenceFile)
+	LeadsFile       string
+	LeadsInline     string // inline CSV content (alternative to LeadsFile)
+	AccountEmails   []string
+	StartDate       string // optional "YYYY-MM-DD"; empty = now
+	SendWindowStart string // optional HH:MM override; empty = config default
+	SendWindowEnd   string // optional HH:MM override; empty = config default
+	SendDays        string // optional send days override for this campaign
+	Timezone        string // optional IANA timezone override; empty = config default
 }
 
 // CreateCampaignResult is returned by CreateCampaign.
@@ -59,6 +62,124 @@ type CreateCampaignResult struct {
 	ScheduledSends int      `json:"scheduled_sends"`
 	Accounts       int      `json:"accounts"`
 	Warnings       []string `json:"warnings,omitempty"`
+}
+
+// CreateDraftCampaignOpts holds options for CreateDraftCampaign.
+type CreateDraftCampaignOpts struct {
+	Name            string
+	AccountEmails   []string
+	SendWindowStart string
+	SendWindowEnd   string
+	SendDays        string
+	Timezone        string
+}
+
+// CreateDraftCampaign inserts a draft campaign shell without sequence steps or leads.
+func CreateDraftCampaign(db *sql.DB, opts CreateDraftCampaignOpts) (*CreateCampaignResult, error) {
+	name := strings.TrimSpace(opts.Name)
+	if name == "" {
+		return nil, fmt.Errorf("campaign name is required")
+	}
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	sendWindowStart := strings.TrimSpace(opts.SendWindowStart)
+	if sendWindowStart == "" {
+		sendWindowStart = cfg.SendWindowStart
+	}
+	if _, err := parseTimeOfDay(sendWindowStart); err != nil {
+		return nil, fmt.Errorf("invalid send_window_start: %w", err)
+	}
+
+	sendWindowEnd := strings.TrimSpace(opts.SendWindowEnd)
+	if sendWindowEnd == "" {
+		sendWindowEnd = cfg.SendWindowEnd
+	}
+	if _, err := parseTimeOfDay(sendWindowEnd); err != nil {
+		return nil, fmt.Errorf("invalid send_window_end: %w", err)
+	}
+
+	sendDays := strings.TrimSpace(opts.SendDays)
+	if sendDays == "" {
+		sendDays = cfg.SendDays
+	}
+	if _, err := ParseSendDays(sendDays); err != nil {
+		return nil, fmt.Errorf("invalid send_days: %w", err)
+	}
+
+	timezone := strings.TrimSpace(opts.Timezone)
+	if timezone == "" {
+		timezone = cfg.DefaultTimezone
+	}
+	if _, err := time.LoadLocation(timezone); err != nil {
+		return nil, fmt.Errorf("invalid timezone %q: %w", timezone, err)
+	}
+
+	var accountIDs []int64
+	for _, email := range opts.AccountEmails {
+		email = strings.TrimSpace(email)
+		if email == "" {
+			continue
+		}
+		var id int64
+		err := queryRowDB(db, "SELECT id FROM accounts WHERE email = ? AND status = 'active'", email).Scan(&id)
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("account %s not found or not active", email)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("looking up account %s: %w", email, err)
+		}
+		accountIDs = append(accountIDs, id)
+	}
+	if len(accountIDs) == 0 {
+		return nil, fmt.Errorf("at least one active account is required")
+	}
+
+	type draftResult struct {
+		campaignID int64
+	}
+	res, err := withRetryTx(db, func(tx *Tx) (draftResult, error) {
+		var out draftResult
+
+		err := tx.QueryRow(`
+			INSERT INTO campaigns (name, status, sequence_file, sequence_content, send_window_start, send_window_end,
+				send_days, timezone, min_gap_seconds, max_gap_seconds)
+			VALUES (?, 'draft', ?, '', ?, ?, ?, ?, ?, ?) RETURNING id`,
+			name, "(draft)",
+			sendWindowStart, sendWindowEnd,
+			sendDays, timezone,
+			cfg.MinGapSeconds, cfg.MaxGapSeconds,
+		).Scan(&out.campaignID)
+		if err != nil {
+			if isUniqueConstraintError(err) {
+				return out, fmt.Errorf("campaign %q already exists", name)
+			}
+			return out, fmt.Errorf("inserting campaign: %w", err)
+		}
+
+		for _, accID := range accountIDs {
+			if _, err := tx.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (?, ?)", out.campaignID, accID); err != nil {
+				return out, fmt.Errorf("linking account: %w", err)
+			}
+		}
+
+		return out, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &CreateCampaignResult{
+		ID:             res.campaignID,
+		Name:           name,
+		Status:         "draft",
+		Leads:          0,
+		ScheduledSends: 0,
+		Accounts:       len(accountIDs),
+	}, nil
 }
 
 // CreateCampaign parses sequence+CSV, validates, computes schedule, and inserts everything.
@@ -118,9 +239,26 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 		return nil, err
 	}
 
-	sendDaysStr := cfg.SendDays
-	if strings.TrimSpace(opts.SendDays) != "" {
-		sendDaysStr = strings.TrimSpace(opts.SendDays)
+	sendWindowStart := strings.TrimSpace(opts.SendWindowStart)
+	if sendWindowStart == "" {
+		sendWindowStart = cfg.SendWindowStart
+	}
+	windowStartTOD, err := parseTimeOfDay(sendWindowStart)
+	if err != nil {
+		return nil, fmt.Errorf("invalid send_window_start: %w", err)
+	}
+
+	sendWindowEnd := strings.TrimSpace(opts.SendWindowEnd)
+	if sendWindowEnd == "" {
+		sendWindowEnd = cfg.SendWindowEnd
+	}
+	if _, err := parseTimeOfDay(sendWindowEnd); err != nil {
+		return nil, fmt.Errorf("invalid send_window_end: %w", err)
+	}
+
+	sendDaysStr := strings.TrimSpace(opts.SendDays)
+	if sendDaysStr == "" {
+		sendDaysStr = cfg.SendDays
 	}
 
 	sendDays, err := ParseSendDays(sendDaysStr)
@@ -128,9 +266,13 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 		return nil, fmt.Errorf("parsing send_days: %w", err)
 	}
 
-	tz, err := time.LoadLocation(cfg.DefaultTimezone)
+	timezone := strings.TrimSpace(opts.Timezone)
+	if timezone == "" {
+		timezone = cfg.DefaultTimezone
+	}
+	tz, err := time.LoadLocation(timezone)
 	if err != nil {
-		return nil, fmt.Errorf("loading timezone %s: %w", cfg.DefaultTimezone, err)
+		return nil, fmt.Errorf("loading timezone %s: %w", timezone, err)
 	}
 
 	seqFile := opts.SequenceFile
@@ -143,10 +285,6 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 		parsed, err := time.ParseInLocation("2006-01-02", opts.StartDate, tz)
 		if err != nil {
 			return nil, fmt.Errorf("invalid start date %q (expected YYYY-MM-DD): %w", opts.StartDate, err)
-		}
-		windowStartTOD, err := parseTimeOfDay(cfg.SendWindowStart)
-		if err != nil {
-			return nil, fmt.Errorf("invalid send_window_start: %w", err)
 		}
 		startTime = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), windowStartTOD.hour, windowStartTOD.min, 0, 0, tz)
 	}
@@ -166,8 +304,8 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 			VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 			opts.Name, seqFile, string(seqContent),
 			opts.StartDate,
-			cfg.SendWindowStart, cfg.SendWindowEnd,
-			sendDaysStr, cfg.DefaultTimezone,
+			sendWindowStart, sendWindowEnd,
+			sendDaysStr, timezone,
 			cfg.MinGapSeconds, cfg.MaxGapSeconds,
 		).Scan(&out.campaignID)
 		if err != nil {
@@ -241,8 +379,8 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 			Leads:           leadsForSchedule,
 			Sequence:        seq,
 			StartDate:       opts.StartDate,
-			SendWindowStart: cfg.SendWindowStart,
-			SendWindowEnd:   cfg.SendWindowEnd,
+			SendWindowStart: sendWindowStart,
+			SendWindowEnd:   sendWindowEnd,
 			SendDays:        sendDays,
 			Timezone:        tz,
 			MinGapSeconds:   cfg.MinGapSeconds,

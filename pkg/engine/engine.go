@@ -10,8 +10,11 @@ import (
 
 type Account = internal.Account
 type AccountVerifyResult = internal.AccountVerifyResult
+type CreateCampaignOpts = internal.CreateCampaignOpts
+type CreateDraftCampaignOpts = internal.CreateDraftCampaignOpts
 type AddSMTPIMAPAccountOpts = internal.AddSMTPIMAPAccountOpts
 type AddSMTPIMAPAccountResult = internal.AddSMTPIMAPAccountResult
+type CreateCampaignResult = internal.CreateCampaignResult
 type PauseAccountResult = internal.PauseAccountResult
 type RemoveAccountResult = internal.PauseAccountResult
 type ResumeAccountResult = internal.ResumeAccountResult
@@ -44,6 +47,14 @@ func UpdateSMTPIMAPAccount(db *sql.DB, email string, opts UpdateSMTPIMAPAccountO
 
 func GetAccountByEmail(db *sql.DB, email string) (Account, error) {
 	return internal.GetAccountByEmail(db, email)
+}
+
+func CreateDraftCampaign(db *sql.DB, opts CreateDraftCampaignOpts) (*CreateCampaignResult, error) {
+	return internal.CreateDraftCampaign(db, opts)
+}
+
+func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult, error) {
+	return internal.CreateCampaign(db, opts)
 }
 
 func PauseAccount(db *sql.DB, email string) (*PauseAccountResult, error) {

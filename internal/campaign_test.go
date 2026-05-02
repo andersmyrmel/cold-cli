@@ -260,6 +260,67 @@ steps:
 	}
 }
 
+func TestCreateDraftCampaign(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, status) VALUES ('sender@x.com', 'active')")
+
+	result, err := CreateDraftCampaign(db, CreateDraftCampaignOpts{
+		Name:            "draft-campaign",
+		AccountEmails:   []string{"sender@x.com"},
+		SendWindowStart: "08:30",
+		SendWindowEnd:   "15:45",
+		SendDays:        "1,2,3",
+		Timezone:        "Europe/Oslo",
+	})
+	if err != nil {
+		t.Fatalf("CreateDraftCampaign error: %v", err)
+	}
+	if result.Name != "draft-campaign" {
+		t.Errorf("expected draft-campaign, got %q", result.Name)
+	}
+	if result.Status != "draft" {
+		t.Errorf("expected draft status, got %q", result.Status)
+	}
+	if result.Leads != 0 || result.ScheduledSends != 0 || result.Accounts != 1 {
+		t.Errorf("unexpected counts: leads=%d sends=%d accounts=%d", result.Leads, result.ScheduledSends, result.Accounts)
+	}
+
+	var status, seqFile, seqContent, windowStart, windowEnd, sendDays, timezone string
+	if err := db.QueryRow(`SELECT status, sequence_file, sequence_content, send_window_start, send_window_end, send_days, timezone
+		FROM campaigns WHERE id = ?`, result.ID).
+		Scan(&status, &seqFile, &seqContent, &windowStart, &windowEnd, &sendDays, &timezone); err != nil {
+		t.Fatalf("querying draft campaign: %v", err)
+	}
+	if status != "draft" || seqFile != "(draft)" || seqContent != "" {
+		t.Errorf("unexpected draft storage: status=%q seqFile=%q seqContent=%q", status, seqFile, seqContent)
+	}
+	if windowStart != "08:30" || windowEnd != "15:45" || sendDays != "1,2,3" || timezone != "Europe/Oslo" {
+		t.Errorf("unexpected schedule settings: %s %s %s %s", windowStart, windowEnd, sendDays, timezone)
+	}
+
+	var links int
+	db.QueryRow("SELECT COUNT(*) FROM campaign_accounts WHERE campaign_id = ?", result.ID).Scan(&links)
+	if links != 1 {
+		t.Errorf("expected 1 linked account, got %d", links)
+	}
+}
+
+func TestCreateDraftCampaignRejectsInactiveAccount(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, status) VALUES ('sender@x.com', 'paused')")
+
+	_, err := CreateDraftCampaign(db, CreateDraftCampaignOpts{
+		Name:          "draft-campaign",
+		AccountEmails: []string{"sender@x.com"},
+	})
+	if err == nil {
+		t.Fatal("expected inactive account error")
+	}
+	if !strings.Contains(err.Error(), "not found or not active") {
+		t.Fatalf("expected inactive account error, got %v", err)
+	}
+}
+
 func TestGetCampaignRenderedPreview_FailsOnMissingTemplateFields(t *testing.T) {
 	db := testDB(t)
 
@@ -1245,8 +1306,13 @@ steps:
     subject: "Hi {{first_name}}"
     body: "Hello {{first_name}}"
 `,
-		LeadsInline:   "email,first_name\nalice@acme.com,Alice\nbob@bigco.com,Bob\n",
-		AccountEmails: []string{"sender@x.com"},
+		LeadsInline:     "email,first_name\nalice@acme.com,Alice\nbob@bigco.com,Bob\n",
+		AccountEmails:   []string{"sender@x.com"},
+		StartDate:       "2026-04-30",
+		SendWindowStart: "10:15",
+		SendWindowEnd:   "15:45",
+		SendDays:        "1,2,3,4",
+		Timezone:        "Europe/Oslo",
 	})
 	if err != nil {
 		t.Fatalf("CreateCampaign inline error: %v", err)
@@ -1271,6 +1337,13 @@ steps:
 	db.QueryRow("SELECT sequence_file FROM campaigns WHERE name = 'inline-test'").Scan(&seqFile)
 	if seqFile != "(inline)" {
 		t.Errorf("expected sequence_file '(inline)', got %q", seqFile)
+	}
+
+	var windowStart, windowEnd, sendDays, timezone string
+	db.QueryRow("SELECT send_window_start, send_window_end, send_days, timezone FROM campaigns WHERE name = 'inline-test'").
+		Scan(&windowStart, &windowEnd, &sendDays, &timezone)
+	if windowStart != "10:15" || windowEnd != "15:45" || sendDays != "1,2,3,4" || timezone != "Europe/Oslo" {
+		t.Errorf("unexpected schedule settings: %s %s %s %s", windowStart, windowEnd, sendDays, timezone)
 	}
 }
 
