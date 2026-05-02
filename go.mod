@@ -1,4 +1,4 @@
-module github.com/anders/cold-cli
+module github.com/andersmyrmel/cold-cli
 
 go 1.25.3
 

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anders/cold-cli/internal"
+	"github.com/andersmyrmel/cold-cli/internal"
 )
 
 var testCLIPath string

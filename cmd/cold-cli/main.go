@@ -13,7 +13,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/anders/cold-cli/internal"
+	"github.com/andersmyrmel/cold-cli/internal"
 	"github.com/spf13/cobra"
 )
 

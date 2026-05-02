@@ -7,7 +7,7 @@ Supports Google Workspace/Gmail through [gws](https://github.com/googleworkspace
 ## Install
 
 ```bash
-go install github.com/anders/cold-cli/cmd/cold-cli@latest
+go install github.com/andersmyrmel/cold-cli/cmd/cold-cli@latest
 ```
 
 [gws](https://github.com/googleworkspace/cli) is required only when using Google Workspace/Gmail accounts. Generic SMTP/IMAP accounts do not require gws.

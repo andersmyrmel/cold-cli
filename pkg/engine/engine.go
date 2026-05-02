@@ -5,7 +5,7 @@ package engine
 import (
 	"database/sql"
 
-	"github.com/anders/cold-cli/internal"
+	"github.com/andersmyrmel/cold-cli/internal"
 )
 
 type Account = internal.Account
