@@ -272,6 +272,22 @@ cold-cli account add-smtp sender@company.com \
 cold-cli account verify sender@company.com
 ```
 
+For cron, systemd, or VPS workers, prefer an explicit env file instead of
+shell-wide exports:
+
+```bash
+cat > ~/.cold-cli/secrets.env <<'EOF'
+MAIL_PASSWORD=app-password-or-mailbox-password
+EOF
+chmod 600 ~/.cold-cli/secrets.env
+
+cold-cli --env-file ~/.cold-cli/secrets.env account verify sender@company.com
+cold-cli --env-file ~/.cold-cli/secrets.env tick
+```
+
+`cold-cli` never auto-loads repo `.env` files. `--env-file` is explicit and
+applies before the command resolves `env:NAME` secret references.
+
 Hosted callers can also store opaque `secret:ID` references and provide a
 custom `SecretResolver` when running the engine. The default CLI resolver only
 resolves `env:NAME`.

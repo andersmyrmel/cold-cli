@@ -123,6 +123,45 @@ func TestCLI_Init_Idempotent(t *testing.T) {
 	}
 }
 
+func TestCLI_EnvFileLoadsBeforeCommand(t *testing.T) {
+	bin := buildCLI(t)
+	baseDir := t.TempDir()
+	dataDir := filepath.Join(baseDir, "cold-cli-data")
+	envFile := filepath.Join(baseDir, "secrets.env")
+	if err := os.WriteFile(envFile, []byte("COLD_CLI_DATA_DIR="+dataDir+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(), "COLD_CLI_DATA_DIR=", "COLD_CLI_DATABASE_URL=")
+
+	out, code := runCLI(t, bin, env, "--env-file", envFile, "init", "--json")
+	if code != 0 {
+		t.Fatalf("init with --env-file failed (exit %d): %s", code, out)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v\n%s", err, out)
+	}
+	if result["data_dir"] != dataDir {
+		t.Fatalf("expected data_dir %q, got %v", dataDir, result["data_dir"])
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "data.db")); err != nil {
+		t.Fatalf("data.db not created in env-file data dir: %v", err)
+	}
+}
+
+func TestCLI_EnvFileMissingFails(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+
+	out, code := runCLI(t, bin, env, "--env-file", filepath.Join(t.TempDir(), "missing.env"), "init")
+	if code == 0 {
+		t.Fatalf("expected missing --env-file to fail, got output: %s", out)
+	}
+	if !strings.Contains(out, "loading --env-file") {
+		t.Fatalf("expected --env-file error, got: %s", out)
+	}
+}
+
 // --- account tests ---
 
 func TestCLI_AccountAdd(t *testing.T) {

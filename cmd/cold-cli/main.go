@@ -18,6 +18,7 @@ import (
 )
 
 var jsonOutput bool
+var envFilePath string
 
 func openStore() (*internal.Store, error) {
 	if internal.CurrentDialect() == internal.DialectSQLite {
@@ -60,6 +61,15 @@ Sending providers:
 For Postgres worker deployments, use a direct connection string rather than a
 transaction-pooled/pooler URL because tick uses advisory locks.
 `),
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if strings.TrimSpace(envFilePath) == "" {
+			return nil
+		}
+		if err := internal.LoadEnvFile(envFilePath); err != nil {
+			return fmt.Errorf("loading --env-file: %w", err)
+		}
+		return nil
+	},
 }
 
 var initCmd = &cobra.Command{
@@ -1817,6 +1827,7 @@ bob@example.com,Bob,Jones,Widget Inc,Europe/Oslo
 
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output as JSON")
+	rootCmd.PersistentFlags().StringVar(&envFilePath, "env-file", "", "load KEY=VALUE secrets from an explicit env file before running the command")
 
 	accountAddCmd.Flags().Int("daily-limit", 50, "max emails per day, shared across all campaigns using this account")
 	accountAddCmd.Flags().Bool("no-login", false, "skip OAuth login (use when gws is already authenticated)")

@@ -276,7 +276,7 @@ Accounts are provider-aware:
 - `gws`: Google Workspace/Gmail account authenticated through gws OAuth. Uses Gmail API send/list/get operations.
 - `smtp_imap`: generic email account. Uses SMTP for sending and IMAP for reply, unsubscribe, and bounce polling.
 
-SMTP/IMAP accounts store only secret references, not raw passwords. The supported secret reference scheme today is `env:NAME`, resolved at runtime by `tick` and `account verify`.
+SMTP/IMAP accounts store only secret references, not raw passwords. The supported secret reference scheme today is `env:NAME`, resolved at runtime by `tick` and `account verify`. The CLI does not auto-discover `.env` files; operators can pass an explicit `--env-file <path>` to load `KEY=VALUE` pairs before any command resolves `env:NAME` references.
 
 `cold-cli account verify <email>` is the operational check for SMTP/IMAP accounts. It resolves the configured secret references, authenticates to SMTP, authenticates to IMAP, and selects the inbox mailbox.
 
