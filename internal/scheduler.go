@@ -216,6 +216,7 @@ func ComputeSchedule(cfg ScheduleConfig) ([]ScheduledSendRow, error) {
 
 type campaignScheduleRules struct {
 	CampaignID      int64
+	StartDate       string
 	SendWindowStart string
 	SendWindowEnd   string
 	SendDays        []time.Weekday
@@ -421,7 +422,7 @@ func loadAccountDailyLimitsTx(tx *Tx, accountIDs []int64) (map[int64]int, error)
 func loadAccountScheduleRowsTx(tx *Tx, accountIDs []int64) ([]accountScheduleRow, map[int64]*campaignScheduleRules, error) {
 	query, args := accountIDInClauseQuery(`
 		SELECT ss.id, ss.campaign_id, ss.lead_id, l.email, ss.account_id, ss.step_number, ss.status,
-			CAST(ss.send_at AS TEXT), CASE WHEN ss.sent_at IS NULL THEN NULL ELSE CAST(ss.sent_at AS TEXT) END, c.sequence_file, c.sequence_content,
+			CAST(ss.send_at AS TEXT), CASE WHEN ss.sent_at IS NULL THEN NULL ELSE CAST(ss.sent_at AS TEXT) END, c.sequence_file, c.sequence_content, c.start_date,
 			c.send_window_start, c.send_window_end, c.send_days, c.timezone, l.custom_fields
 		FROM scheduled_sends ss
 		JOIN campaigns c ON c.id = ss.campaign_id
@@ -443,11 +444,11 @@ func loadAccountScheduleRowsTx(tx *Tx, accountIDs []int64) ([]accountScheduleRow
 		var row accountScheduleRow
 		var sendAtStr string
 		var sentAtStr sql.NullString
-		var seqFile, seqContent, sendWindowStart, sendWindowEnd, sendDaysStr, timezoneName string
+		var seqFile, seqContent, startDate, sendWindowStart, sendWindowEnd, sendDaysStr, timezoneName string
 		var customFields string
 		if err := rows.Scan(
 			&row.ID, &row.CampaignID, &row.LeadID, &row.LeadEmail, &row.AccountID, &row.StepNumber, &row.Status,
-			&sendAtStr, &sentAtStr, &seqFile, &seqContent, &sendWindowStart, &sendWindowEnd, &sendDaysStr, &timezoneName, &customFields,
+			&sendAtStr, &sentAtStr, &seqFile, &seqContent, &startDate, &sendWindowStart, &sendWindowEnd, &sendDaysStr, &timezoneName, &customFields,
 		); err != nil {
 			return nil, nil, err
 		}
@@ -503,6 +504,7 @@ func loadAccountScheduleRowsTx(tx *Tx, accountIDs []int64) ([]accountScheduleRow
 
 		rulesByCampaign[row.CampaignID] = &campaignScheduleRules{
 			CampaignID:      row.CampaignID,
+			StartDate:       startDate,
 			SendWindowStart: sendWindowStart,
 			SendWindowEnd:   sendWindowEnd,
 			SendDays:        sendDays,
@@ -565,7 +567,7 @@ func newLeadScheduleQueue(rows []accountScheduleRow, rules *campaignScheduleRule
 	var havePrev bool
 	for idx, row := range rows {
 		if row.HasSentAt {
-			prevAnchor = row.SentAt.In(rules.Timezone)
+			prevAnchor = row.SentAt.In(queueRules.Timezone)
 			havePrev = true
 			continue
 		}
@@ -573,7 +575,7 @@ func newLeadScheduleQueue(rows []accountScheduleRow, rules *campaignScheduleRule
 			continue
 		}
 
-		nextAt, err := firstPendingAnchorForRow(row, prevAnchor, havePrev, rules)
+		nextAt, err := firstPendingAnchorForRow(row, prevAnchor, havePrev, queueRules)
 		if err != nil {
 			return nil, err
 		}
@@ -604,6 +606,9 @@ func effectiveScheduleRulesForLead(base *campaignScheduleRules, row accountSched
 
 func firstPendingAnchorForRow(row accountScheduleRow, prevAnchor time.Time, havePrev bool, rules *campaignScheduleRules) (time.Time, error) {
 	if !havePrev {
+		if row.StepNumber == 1 && strings.TrimSpace(rules.StartDate) != "" {
+			return campaignStartAnchor(timeNow().In(rules.Timezone), rules.StartDate, rules.WindowStartTOD, rules.Timezone)
+		}
 		return clampToWindow(row.SendAt.In(rules.Timezone), rules.WindowStartTOD, rules.WindowEndTOD, rules.SendDays, rules.Timezone), nil
 	}
 
