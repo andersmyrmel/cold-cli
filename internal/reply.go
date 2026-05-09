@@ -151,6 +151,11 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 						"campaign_id", campaignID, "lead_id", leadID,
 						"message_id", msg.ID, "error", err)
 				}
+				if err := insertInboundEmailMessage(db, account, campaignID, leadID, msg, EmailMessageTypeUnsubscribe); err != nil {
+					slog.Warn("failed to insert unsubscribe email message snapshot",
+						"campaign_id", campaignID, "lead_id", leadID,
+						"message_id", msg.ID, "error", err)
+				}
 
 				// Blacklist the lead globally (cancels all pending sends across all campaigns)
 				var leadEmail string
@@ -174,6 +179,11 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 				VALUES (?, ?, ?, 'reply', 0, ?, ?)`,
 				campaignID, leadID, account.ID, msg.ID, msg.ThreadID); err != nil {
 				slog.Warn("failed to insert reply event",
+					"campaign_id", campaignID, "lead_id", leadID,
+					"message_id", msg.ID, "error", err)
+			}
+			if err := insertInboundEmailMessage(db, account, campaignID, leadID, msg, EmailMessageTypeReply); err != nil {
+				slog.Warn("failed to insert reply email message snapshot",
 					"campaign_id", campaignID, "lead_id", leadID,
 					"message_id", msg.ID, "error", err)
 			}
@@ -228,6 +238,28 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 	}
 
 	return replies, unsubscribes, nil
+}
+
+func insertInboundEmailMessage(db *sql.DB, account Account, campaignID, leadID int64, msg GWSMessage, messageType string) error {
+	return insertEmailMessage(db, EmailMessage{
+		CampaignID: campaignID,
+		LeadID:     leadID,
+		AccountID:  account.ID,
+		Direction:  EmailMessageDirectionInbound,
+		Type:       messageType,
+		StepNumber: 0,
+		MessageID:  msg.ID,
+		ThreadID:   msg.ThreadID,
+		InReplyTo:  msg.InReplyTo,
+		FromEmail:  msg.From,
+		ToEmails:   msg.To,
+		Subject:    msg.Subject,
+		TextBody:   textBodyForInboundSnapshot(msg),
+		HTMLBody:   msg.HTMLBody,
+		Snippet:    msg.Snippet,
+		RawHeaders: emailHeadersJSON(msg.Headers),
+		OccurredAt: time.Now().UTC(),
+	})
 }
 
 // ProcessBounces checks inbox messages for bounce NDRs.

@@ -300,6 +300,30 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 				"send_id", send.ID, "message_id", storedMessageID, "error", err)
 		}
 
+		scheduledSendID := send.ID
+		if err := insertEmailMessage(cfg.DB, EmailMessage{
+			CampaignID:      send.CampaignID,
+			LeadID:          send.LeadID,
+			AccountID:       send.AccountID,
+			Direction:       EmailMessageDirectionOutbound,
+			Type:            EmailMessageTypeSent,
+			StepNumber:      send.StepNumber,
+			ScheduledSendID: &scheduledSendID,
+			MessageID:       storedMessageID,
+			ThreadID:        threadID,
+			InReplyTo:       emailParams.InReplyTo,
+			FromEmail:       account.Email,
+			ToEmails:        emailParams.ToEmail,
+			Subject:         emailParams.Subject,
+			TextBody:        emailParams.Body,
+			HTMLBody:        plainTextToHTML(emailParams.Body),
+			Snippet:         emailSnippetFromBody(emailParams.Body),
+			OccurredAt:      now,
+		}); err != nil {
+			slog.Error("failed to insert sent email message snapshot",
+				"send_id", send.ID, "message_id", storedMessageID, "error", err)
+		}
+
 		// If step 1: backfill thread_id and parent_message_id on future sends
 		if send.StepNumber == 1 {
 			if _, err := execDB(cfg.DB, `UPDATE scheduled_sends

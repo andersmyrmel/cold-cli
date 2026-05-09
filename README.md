@@ -185,6 +185,8 @@ cold-cli campaign retry <name|id> --step N # retry only failed sends for step N
 cold-cli tick                              # process replies, bounces, send due emails
 cold-cli tick --dry-run                    # show what would happen
 cold-cli tick --now                        # ignore schedule, send all pending immediately
+cold-cli inbox backfill --dry-run          # preview historical inbox thread snapshot backfill
+cold-cli inbox backfill                    # store missing reply + related sent snapshots
 
 cold-cli stats [campaign]                  # sent/replied/bounced per campaign
 cold-cli stats <name> --leads             # per-lead breakdown

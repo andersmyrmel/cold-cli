@@ -44,6 +44,44 @@ func printJSON(v any) error {
 	return enc.Encode(v)
 }
 
+func configuredGWSClient(store *internal.Store) *internal.GWSCLI {
+	gwsCLI := internal.NewGWSCLI()
+	rows, err := store.Query("SELECT email, gws_config_dir FROM accounts WHERE status = 'active' AND provider = 'gws' AND gws_config_dir != ''")
+	if err != nil {
+		return gwsCLI
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var email, configDir string
+		if err := rows.Scan(&email, &configDir); err == nil {
+			gwsCLI.SetConfigDir(email, configDir)
+		}
+	}
+	return gwsCLI
+}
+
+func parseBackfillSince(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil
+	}
+	if strings.HasSuffix(value, "d") {
+		daysRaw := strings.TrimSuffix(value, "d")
+		var days int
+		if _, err := fmt.Sscanf(daysRaw, "%d", &days); err != nil || days < 1 {
+			return time.Time{}, fmt.Errorf("--since duration must look like 30d")
+		}
+		return time.Now().UTC().AddDate(0, 0, -days), nil
+	}
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("2006-01-02", value); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("--since must be YYYY-MM-DD, RFC3339, or a day duration like 30d")
+}
+
 var rootCmd = &cobra.Command{
 	Use:   "cold-cli",
 	Short: "Agent-first CLI cold email sequence engine",
@@ -1522,16 +1560,7 @@ var tickCmd = &cobra.Command{
 			tz, _ = time.LoadLocation(cfg.DefaultTimezone)
 		}
 
-		gwsCLI := internal.NewGWSCLI()
-		rows, err := store.Query("SELECT email, gws_config_dir FROM accounts WHERE status = 'active' AND provider = 'gws' AND gws_config_dir != ''")
-		if err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var email, configDir string
-				rows.Scan(&email, &configDir)
-				gwsCLI.SetConfigDir(email, configDir)
-			}
-		}
+		gwsCLI := configuredGWSClient(store)
 
 		var unsubHeader bool
 		unsubSubject := "Unsubscribe"
@@ -1566,6 +1595,60 @@ var tickCmd = &cobra.Command{
 		}
 
 		fmt.Println(internal.FormatTickResult(result))
+		return nil
+	},
+}
+
+// --- inbox command ---
+
+var inboxCmd = &cobra.Command{
+	Use:   "inbox",
+	Short: "Manage stored inbox/thread snapshots",
+}
+
+var inboxBackfillCmd = &cobra.Command{
+	Use:   "backfill",
+	Short: "Backfill stored email thread snapshots for historical replies",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		limit, _ := cmd.Flags().GetInt("limit")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		noSent, _ := cmd.Flags().GetBool("no-sent")
+		sinceRaw, _ := cmd.Flags().GetString("since")
+
+		since, err := parseBackfillSince(sinceRaw)
+		if err != nil {
+			return err
+		}
+
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+
+		result, err := internal.BackfillEmailMessages(internal.BackfillEmailMessagesConfig{
+			DB:          store.DB,
+			GWS:         configuredGWSClient(store),
+			Since:       since,
+			Limit:       limit,
+			DryRun:      dryRun,
+			IncludeSent: !noSent,
+		})
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		if dryRun {
+			fmt.Printf("[dry-run] would backfill %d messages from %d inbound events", result.Backfilled, result.Scanned)
+		} else {
+			fmt.Printf("Backfilled %d messages from %d inbound events", result.Backfilled, result.Scanned)
+		}
+		fmt.Printf(" (%d inbound, %d sent, %d failed, %d unsupported)\n",
+			result.Inbound, result.Sent, result.Failed, result.Unsupported)
 		return nil
 	},
 }
@@ -1892,12 +1975,18 @@ func init() {
 	tickCmd.Flags().Bool("dry-run", false, "show what would be sent without actually sending")
 	tickCmd.Flags().Bool("now", false, "ignore send_at timestamps and send all pending emails immediately")
 
+	inboxBackfillCmd.Flags().Int("limit", 100, "maximum missing inbound reply/unsubscribe events to scan")
+	inboxBackfillCmd.Flags().String("since", "", "only backfill inbound events since YYYY-MM-DD, RFC3339, or duration like 30d")
+	inboxBackfillCmd.Flags().Bool("dry-run", false, "show how many snapshots would be backfilled without inserting")
+	inboxBackfillCmd.Flags().Bool("no-sent", false, "only backfill inbound messages, not related sent messages")
+	inboxCmd.AddCommand(inboxBackfillCmd)
+
 	statsCmd.Flags().Bool("leads", false, "show per-lead breakdown")
 	statsCmd.Flags().Bool("variants", false, "show per-variant A/B test results")
 
 	logCmd.Flags().Int("limit", 20, "number of events to show")
 
-	rootCmd.AddCommand(initCmd, doctorCmd, accountCmd, leadCmd, campaignCmd, tickCmd, statsCmd, logCmd)
+	rootCmd.AddCommand(initCmd, doctorCmd, accountCmd, leadCmd, campaignCmd, tickCmd, inboxCmd, statsCmd, logCmd)
 }
 
 func main() {

@@ -2,6 +2,7 @@ package internal
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 )
@@ -48,6 +49,109 @@ func TestProcessReplies_Dedup(t *testing.T) {
 	db.QueryRow("SELECT COUNT(*) FROM events WHERE type = 'reply'").Scan(&count)
 	if count != 1 {
 		t.Errorf("expected 1 reply event total, got %d", count)
+	}
+}
+
+func TestProcessReplies_PersistsInboundEmailMessageSnapshot(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (1, 1, 1, 'sent', 1, '<sent-1@gmail.com>', 'thread-1')`)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 2, '2099-01-01', 'pending')`)
+
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{
+				ID:        "reply-1",
+				ThreadID:  "thread-1",
+				InReplyTo: "<sent-1@gmail.com>",
+				From:      "John Acme <john@acme.com>",
+				To:        "sender@x.com",
+				Subject:   "Re: Hi John",
+				Snippet:   "Thanks for reaching out.",
+				TextBody:  "Thanks for reaching out.\nCan you send pricing?",
+				Headers: map[string]string{
+					"Message-ID":   "<reply-1@gmail.com>",
+					"In-Reply-To":  "<sent-1@gmail.com>",
+					"Content-Type": "text/plain",
+				},
+			},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	replies, unsubs, err := ProcessReplies(db, mock, accounts)
+	if err != nil {
+		t.Fatalf("ProcessReplies error: %v", err)
+	}
+	if replies != 1 || unsubs != 0 {
+		t.Fatalf("expected 1 reply and 0 unsubscribes, got replies=%d unsubs=%d", replies, unsubs)
+	}
+
+	var msg EmailMessage
+	if err := db.QueryRow(`
+		SELECT campaign_id, lead_id, account_id, direction, type, step_number,
+			message_id, thread_id, in_reply_to, from_email, to_emails, subject,
+			text_body, snippet, raw_headers
+		FROM email_messages
+		WHERE message_id = ?`,
+		"reply-1",
+	).Scan(
+		&msg.CampaignID,
+		&msg.LeadID,
+		&msg.AccountID,
+		&msg.Direction,
+		&msg.Type,
+		&msg.StepNumber,
+		&msg.MessageID,
+		&msg.ThreadID,
+		&msg.InReplyTo,
+		&msg.FromEmail,
+		&msg.ToEmails,
+		&msg.Subject,
+		&msg.TextBody,
+		&msg.Snippet,
+		&msg.RawHeaders,
+	); err != nil {
+		t.Fatalf("loading inbound email message snapshot: %v", err)
+	}
+
+	if msg.CampaignID != 1 || msg.LeadID != 1 || msg.AccountID != 1 {
+		t.Fatalf("snapshot belongs to campaign=%d lead=%d account=%d", msg.CampaignID, msg.LeadID, msg.AccountID)
+	}
+	if msg.Direction != EmailMessageDirectionInbound {
+		t.Errorf("expected inbound direction, got %q", msg.Direction)
+	}
+	if msg.Type != EmailMessageTypeReply {
+		t.Errorf("expected reply type, got %q", msg.Type)
+	}
+	if msg.StepNumber != 0 {
+		t.Errorf("expected step 0, got %d", msg.StepNumber)
+	}
+	if msg.ThreadID != "thread-1" {
+		t.Errorf("expected thread-1, got %q", msg.ThreadID)
+	}
+	if msg.InReplyTo != "<sent-1@gmail.com>" {
+		t.Errorf("expected In-Reply-To snapshot, got %q", msg.InReplyTo)
+	}
+	if msg.FromEmail != "John Acme <john@acme.com>" {
+		t.Errorf("expected from snapshot, got %q", msg.FromEmail)
+	}
+	if msg.ToEmails != "sender@x.com" {
+		t.Errorf("expected to snapshot, got %q", msg.ToEmails)
+	}
+	if msg.Subject != "Re: Hi John" {
+		t.Errorf("expected subject snapshot, got %q", msg.Subject)
+	}
+	if msg.TextBody != "Thanks for reaching out.\nCan you send pricing?" {
+		t.Errorf("expected text body snapshot, got %q", msg.TextBody)
+	}
+	if msg.Snippet != "Thanks for reaching out." {
+		t.Errorf("expected snippet snapshot, got %q", msg.Snippet)
+	}
+	if !strings.Contains(msg.RawHeaders, `"Message-ID":"<reply-1@gmail.com>"`) {
+		t.Errorf("expected raw headers JSON to include Message-ID, got %q", msg.RawHeaders)
 	}
 }
 

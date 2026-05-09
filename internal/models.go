@@ -90,3 +90,37 @@ type Event struct {
 	Timestamp  time.Time `json:"timestamp"`
 	Metadata   string    `json:"metadata,omitempty"`
 }
+
+const (
+	EmailMessageDirectionOutbound = "outbound"
+	EmailMessageDirectionInbound  = "inbound"
+
+	EmailMessageTypeSent        = "sent"
+	EmailMessageTypeReply       = "reply"
+	EmailMessageTypeUnsubscribe = "unsubscribe"
+	EmailMessageTypeManualReply = "manual_reply"
+)
+
+type EmailMessage struct {
+	ID              int64     `json:"id"`
+	CampaignID      int64     `json:"campaign_id"`
+	LeadID          int64     `json:"lead_id"`
+	AccountID       int64     `json:"account_id"`
+	Direction       string    `json:"direction"`
+	Type            string    `json:"type"`
+	StepNumber      int       `json:"step_number"`
+	ScheduledSendID *int64    `json:"scheduled_send_id,omitempty"`
+	EventID         *int64    `json:"event_id,omitempty"`
+	MessageID       string    `json:"message_id"`
+	ThreadID        string    `json:"thread_id"`
+	InReplyTo       string    `json:"in_reply_to,omitempty"`
+	FromEmail       string    `json:"from_email"`
+	ToEmails        string    `json:"to_emails"`
+	Subject         string    `json:"subject"`
+	TextBody        string    `json:"text_body"`
+	HTMLBody        string    `json:"html_body"`
+	Snippet         string    `json:"snippet"`
+	RawHeaders      string    `json:"raw_headers,omitempty"`
+	OccurredAt      time.Time `json:"occurred_at"`
+	CreatedAt       time.Time `json:"created_at"`
+}

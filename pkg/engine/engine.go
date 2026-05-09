@@ -10,16 +10,22 @@ import (
 
 type Account = internal.Account
 type AccountVerifyResult = internal.AccountVerifyResult
+type BackfillEmailMessagesConfig = internal.BackfillEmailMessagesConfig
+type BackfillEmailMessagesResult = internal.BackfillEmailMessagesResult
 type CreateCampaignOpts = internal.CreateCampaignOpts
 type CreateDraftCampaignOpts = internal.CreateDraftCampaignOpts
 type AddSMTPIMAPAccountOpts = internal.AddSMTPIMAPAccountOpts
 type AddSMTPIMAPAccountResult = internal.AddSMTPIMAPAccountResult
 type CreateCampaignResult = internal.CreateCampaignResult
+type EmailMessage = internal.EmailMessage
+type ListEmailThreadMessagesOpts = internal.ListEmailThreadMessagesOpts
 type PauseAccountResult = internal.PauseAccountResult
 type RemoveAccountResult = internal.PauseAccountResult
 type ResumeAccountResult = internal.ResumeAccountResult
 type SecretResolver = internal.SecretResolver
 type SecretResolverFunc = internal.SecretResolverFunc
+type SendInboxReplyConfig = internal.SendInboxReplyConfig
+type SendInboxReplyResult = internal.SendInboxReplyResult
 type SendSMTPTestEmailOpts = internal.SendSMTPTestEmailOpts
 type SendSMTPTestEmailResult = internal.SendSMTPTestEmailResult
 type Store = internal.Store
@@ -39,6 +45,10 @@ func OpenStore() (*Store, error) {
 
 func AddSMTPIMAPAccount(db *sql.DB, opts AddSMTPIMAPAccountOpts) (*AddSMTPIMAPAccountResult, error) {
 	return internal.AddSMTPIMAPAccount(db, opts)
+}
+
+func BackfillEmailMessages(cfg BackfillEmailMessagesConfig) (*BackfillEmailMessagesResult, error) {
+	return internal.BackfillEmailMessages(cfg)
 }
 
 func UpdateSMTPIMAPAccount(db *sql.DB, email string, opts UpdateSMTPIMAPAccountOpts) (*AddSMTPIMAPAccountResult, error) {
@@ -87,4 +97,12 @@ func SendSMTPTestEmail(account Account, opts SendSMTPTestEmailOpts, resolver Sec
 
 func Tick(cfg TickConfig) (*TickResult, error) {
 	return internal.Tick(cfg)
+}
+
+func ListEmailThreadMessages(db *sql.DB, opts ListEmailThreadMessagesOpts) ([]EmailMessage, error) {
+	return internal.ListEmailThreadMessages(db, opts)
+}
+
+func SendInboxReply(cfg SendInboxReplyConfig) (*SendInboxReplyResult, error) {
+	return internal.SendInboxReply(cfg)
 }

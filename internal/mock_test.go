@@ -3,6 +3,7 @@ package internal
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -101,6 +102,16 @@ func (m *MockGWS) ListMessages(account, query string, includeSpamTrash ...bool) 
 	})
 	if m.ListError != nil {
 		return nil, m.ListError
+	}
+	if strings.HasPrefix(query, "rfc822msgid:") {
+		want := "<" + strings.TrimPrefix(query, "rfc822msgid:") + ">"
+		var matches []GWSMessage
+		for _, message := range m.InboxMessages {
+			if message.Headers != nil && message.Headers["Message-ID"] == want {
+				matches = append(matches, message)
+			}
+		}
+		return matches, nil
 	}
 	return m.InboxMessages, nil
 }

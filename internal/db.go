@@ -108,6 +108,30 @@ CREATE TABLE IF NOT EXISTS events (
 	metadata TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE TABLE IF NOT EXISTS email_messages (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	campaign_id INTEGER NOT NULL REFERENCES campaigns(id),
+	lead_id INTEGER NOT NULL REFERENCES leads(id),
+	account_id INTEGER NOT NULL REFERENCES accounts(id),
+	direction TEXT NOT NULL,
+	type TEXT NOT NULL,
+	step_number INTEGER NOT NULL DEFAULT 0,
+	scheduled_send_id INTEGER REFERENCES scheduled_sends(id),
+	event_id INTEGER REFERENCES events(id),
+	message_id TEXT NOT NULL DEFAULT '',
+	thread_id TEXT NOT NULL DEFAULT '',
+	in_reply_to TEXT NOT NULL DEFAULT '',
+	from_email TEXT NOT NULL DEFAULT '',
+	to_emails TEXT NOT NULL DEFAULT '',
+	subject TEXT NOT NULL DEFAULT '',
+	text_body TEXT NOT NULL DEFAULT '',
+	html_body TEXT NOT NULL DEFAULT '',
+	snippet TEXT NOT NULL DEFAULT '',
+	raw_headers TEXT NOT NULL DEFAULT '{}',
+	occurred_at DATETIME NOT NULL,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS kv (
 	key TEXT PRIMARY KEY,
 	value TEXT NOT NULL
@@ -117,6 +141,9 @@ CREATE INDEX IF NOT EXISTS idx_sends_pending ON scheduled_sends(status, send_at)
 CREATE INDEX IF NOT EXISTS idx_events_account_day ON events(account_id, type, timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_message_id ON events(message_id);
 CREATE INDEX IF NOT EXISTS idx_events_thread_id ON events(thread_id);
+CREATE INDEX IF NOT EXISTS idx_email_messages_thread ON email_messages(campaign_id, lead_id, thread_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_email_messages_message_id ON email_messages(message_id);
+CREATE INDEX IF NOT EXISTS idx_email_messages_account ON email_messages(account_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
 CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(domain);
 `
@@ -208,6 +235,29 @@ var postgresSchemaStatements = []string{
 		timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		metadata TEXT NOT NULL DEFAULT '{}'
 	)`,
+	`CREATE TABLE IF NOT EXISTS email_messages (
+		id BIGSERIAL PRIMARY KEY,
+		campaign_id BIGINT NOT NULL REFERENCES campaigns(id),
+		lead_id BIGINT NOT NULL REFERENCES leads(id),
+		account_id BIGINT NOT NULL REFERENCES accounts(id),
+		direction TEXT NOT NULL,
+		type TEXT NOT NULL,
+		step_number INTEGER NOT NULL DEFAULT 0,
+		scheduled_send_id BIGINT REFERENCES scheduled_sends(id),
+		event_id BIGINT REFERENCES events(id),
+		message_id TEXT NOT NULL DEFAULT '',
+		thread_id TEXT NOT NULL DEFAULT '',
+		in_reply_to TEXT NOT NULL DEFAULT '',
+		from_email TEXT NOT NULL DEFAULT '',
+		to_emails TEXT NOT NULL DEFAULT '',
+		subject TEXT NOT NULL DEFAULT '',
+		text_body TEXT NOT NULL DEFAULT '',
+		html_body TEXT NOT NULL DEFAULT '',
+		snippet TEXT NOT NULL DEFAULT '',
+		raw_headers TEXT NOT NULL DEFAULT '{}',
+		occurred_at TIMESTAMPTZ NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`,
 	`CREATE TABLE IF NOT EXISTS kv (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
@@ -216,6 +266,9 @@ var postgresSchemaStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_events_account_day ON events(account_id, type, timestamp)`,
 	`CREATE INDEX IF NOT EXISTS idx_events_message_id ON events(message_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_events_thread_id ON events(thread_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_email_messages_thread ON email_messages(campaign_id, lead_id, thread_id, occurred_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_email_messages_message_id ON email_messages(message_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_email_messages_account ON email_messages(account_id, occurred_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email)`,
 	`CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(domain)`,
 }

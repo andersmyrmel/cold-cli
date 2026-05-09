@@ -273,14 +273,17 @@ func ParseIMAPRawMessage(accountEmail, mailbox string, uid uint32, raw []byte, e
 	parsed, err := mail.ReadMessage(strings.NewReader(string(raw)))
 	headers := map[string]string{}
 	var snippet string
+	var textBody string
 	if err == nil {
 		for key, values := range parsed.Header {
 			headers[textproto.CanonicalMIMEHeaderKey(key)] = strings.Join(values, ", ")
 		}
 		body, _ := io.ReadAll(io.LimitReader(parsed.Body, 4096))
-		snippet = strings.TrimSpace(string(body))
+		textBody = strings.TrimSpace(string(body))
+		snippet = textBody
 	} else {
 		snippet = strings.TrimSpace(string(raw))
+		textBody = snippet
 	}
 
 	subject := decodeHeader(headers["Subject"])
@@ -314,6 +317,7 @@ func ParseIMAPRawMessage(accountEmail, mailbox string, uid uint32, raw []byte, e
 		ID:        messageID,
 		ThreadID:  threadID,
 		Snippet:   snippet,
+		TextBody:  textBody,
 		Headers:   headers,
 		From:      from,
 		To:        to,

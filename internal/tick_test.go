@@ -151,6 +151,102 @@ func TestTick_SendsDueEmails(t *testing.T) {
 	}
 }
 
+func TestTick_PersistsOutboundEmailMessageSnapshot(t *testing.T) {
+	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
+	now := time.Date(2026, time.May, 6, 10, 30, 0, 0, time.UTC)
+
+	insertPendingSend(t, db, campaignID, leadIDs[0], accountIDs[0], 1, now.Add(-1*time.Hour))
+
+	mock := &MockGWS{
+		SendMsgID:        "gmail-msg-1",
+		SendThreadID:     "gmail-thread-1",
+		SendRFCMessageID: "<sent-1@example.com>",
+	}
+
+	result, err := Tick(TickConfig{
+		DB:      db,
+		GWS:     mock,
+		Now:     now,
+		NoSleep: true,
+	})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+	if result.Sent != 1 {
+		t.Fatalf("expected 1 sent, got %d", result.Sent)
+	}
+
+	var msg EmailMessage
+	if err := db.QueryRow(`
+		SELECT campaign_id, lead_id, account_id, direction, type, step_number,
+			scheduled_send_id, message_id, thread_id, from_email, to_emails,
+			subject, text_body, html_body, snippet, occurred_at
+		FROM email_messages
+		WHERE message_id = ?`,
+		"<sent-1@example.com>",
+	).Scan(
+		&msg.CampaignID,
+		&msg.LeadID,
+		&msg.AccountID,
+		&msg.Direction,
+		&msg.Type,
+		&msg.StepNumber,
+		&msg.ScheduledSendID,
+		&msg.MessageID,
+		&msg.ThreadID,
+		&msg.FromEmail,
+		&msg.ToEmails,
+		&msg.Subject,
+		&msg.TextBody,
+		&msg.HTMLBody,
+		&msg.Snippet,
+		&msg.OccurredAt,
+	); err != nil {
+		t.Fatalf("loading outbound email message snapshot: %v", err)
+	}
+
+	if msg.CampaignID != campaignID || msg.LeadID != leadIDs[0] || msg.AccountID != accountIDs[0] {
+		t.Fatalf("snapshot belongs to campaign=%d lead=%d account=%d, want campaign=%d lead=%d account=%d",
+			msg.CampaignID, msg.LeadID, msg.AccountID, campaignID, leadIDs[0], accountIDs[0])
+	}
+	if msg.Direction != EmailMessageDirectionOutbound {
+		t.Errorf("expected outbound direction, got %q", msg.Direction)
+	}
+	if msg.Type != EmailMessageTypeSent {
+		t.Errorf("expected sent type, got %q", msg.Type)
+	}
+	if msg.StepNumber != 1 {
+		t.Errorf("expected step 1, got %d", msg.StepNumber)
+	}
+	if msg.ScheduledSendID == nil || *msg.ScheduledSendID != 1 {
+		t.Fatalf("expected scheduled_send_id 1, got %v", msg.ScheduledSendID)
+	}
+	if msg.ThreadID != "gmail-thread-1" {
+		t.Errorf("expected thread id gmail-thread-1, got %q", msg.ThreadID)
+	}
+	if msg.FromEmail != "sender@x.com" {
+		t.Errorf("expected from sender@x.com, got %q", msg.FromEmail)
+	}
+	if msg.ToEmails != "john@acme.com" {
+		t.Errorf("expected to john@acme.com, got %q", msg.ToEmails)
+	}
+	if msg.Subject != "Hi John" {
+		t.Errorf("expected rendered subject, got %q", msg.Subject)
+	}
+	if msg.TextBody != "Hello John at Acme" {
+		t.Errorf("expected rendered text body, got %q", msg.TextBody)
+	}
+	if !strings.Contains(msg.HTMLBody, "Hello John at Acme") {
+		t.Errorf("expected rendered HTML body, got %q", msg.HTMLBody)
+	}
+	if msg.Snippet != "Hello John at Acme" {
+		t.Errorf("expected snippet from rendered body, got %q", msg.Snippet)
+	}
+	if !msg.OccurredAt.Equal(now) {
+		t.Errorf("expected occurred_at %s, got %s", now.Format(time.RFC3339), msg.OccurredAt.Format(time.RFC3339))
+	}
+}
+
 func TestTick_CompletesCampaignAfterFinalSend(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
 	now := time.Now().UTC()

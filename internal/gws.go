@@ -3,6 +3,7 @@ package internal
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -21,9 +22,11 @@ type GWSClient interface {
 
 // GWSMessage represents a parsed Gmail message from gws output.
 type GWSMessage struct {
-	ID        string            `json:"id"`
-	ThreadID  string            `json:"threadId"`
-	Snippet   string            `json:"snippet"`
+	ID        string `json:"id"`
+	ThreadID  string `json:"threadId"`
+	Snippet   string `json:"snippet"`
+	TextBody  string
+	HTMLBody  string
 	LabelIDs  []string          `json:"labelIds"`
 	Headers   map[string]string // parsed from payload.headers
 	From      string
@@ -48,16 +51,23 @@ type gwsListResponse struct {
 
 // gws get response (full format)
 type gwsGetResponse struct {
-	ID       string   `json:"id"`
-	ThreadID string   `json:"threadId"`
-	Snippet  string   `json:"snippet"`
-	LabelIDs []string `json:"labelIds"`
-	Payload  struct {
-		Headers []struct {
-			Name  string `json:"name"`
-			Value string `json:"value"`
-		} `json:"headers"`
-	} `json:"payload"`
+	ID       string         `json:"id"`
+	ThreadID string         `json:"threadId"`
+	Snippet  string         `json:"snippet"`
+	LabelIDs []string       `json:"labelIds"`
+	Payload  gwsMessagePart `json:"payload"`
+}
+
+type gwsMessagePart struct {
+	MimeType string `json:"mimeType"`
+	Body     struct {
+		Data string `json:"data"`
+	} `json:"body"`
+	Headers []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	} `json:"headers"`
+	Parts []gwsMessagePart `json:"parts"`
 }
 
 // GWSCLI is the real implementation that calls gws as a subprocess.
@@ -191,8 +201,46 @@ func (g *GWSCLI) GetMessage(account, msgID string) (*GWSMessage, error) {
 			msg.InReplyTo = h.Value
 		}
 	}
+	msg.TextBody, msg.HTMLBody = extractGWSMessageBodies(resp.Payload)
 
 	return msg, nil
+}
+
+func extractGWSMessageBodies(part gwsMessagePart) (textBody string, htmlBody string) {
+	if part.Body.Data != "" {
+		body, err := decodeGWSBody(part.Body.Data)
+		if err == nil {
+			switch strings.ToLower(part.MimeType) {
+			case "text/plain":
+				textBody = body
+			case "text/html":
+				htmlBody = body
+			}
+		}
+	}
+
+	for _, child := range part.Parts {
+		childText, childHTML := extractGWSMessageBodies(child)
+		if textBody == "" && childText != "" {
+			textBody = childText
+		}
+		if htmlBody == "" && childHTML != "" {
+			htmlBody = childHTML
+		}
+	}
+
+	return textBody, htmlBody
+}
+
+func decodeGWSBody(data string) (string, error) {
+	decoded, err := base64.URLEncoding.DecodeString(data)
+	if err != nil {
+		decoded, err = base64.RawURLEncoding.DecodeString(data)
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(decoded), nil
 }
 
 // gwsErrorResponse checks if gws returned a JSON error (API error with 200 exit code).
