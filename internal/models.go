@@ -116,6 +116,9 @@ type EmailMessage struct {
 	InReplyTo       string    `json:"in_reply_to,omitempty"`
 	FromEmail       string    `json:"from_email"`
 	ToEmails        string    `json:"to_emails"`
+	CcEmails        string    `json:"cc_emails,omitempty"`
+	BccEmails       string    `json:"bcc_emails,omitempty"`
+	ReplyToEmails   string    `json:"reply_to_emails,omitempty"`
 	Subject         string    `json:"subject"`
 	TextBody        string    `json:"text_body"`
 	DisplayBody     string    `json:"display_body"`

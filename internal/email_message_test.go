@@ -84,6 +84,55 @@ func TestListEmailThreadMessages(t *testing.T) {
 	}
 }
 
+func TestListEmailThreadMessagesHydratesRecipientHeaders(t *testing.T) {
+	db := testDB(t)
+	now := time.Date(2026, time.May, 6, 12, 0, 0, 0, time.UTC)
+
+	db.Exec("INSERT INTO accounts (email) VALUES ('sender@x.com')")
+	db.Exec("INSERT INTO campaigns (name, status, sequence_file) VALUES ('test', 'active', 'seq.yml')")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('john@acme.com', 'John', 'acme.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
+
+	if err := insertEmailMessage(db, EmailMessage{
+		CampaignID: 1,
+		LeadID:     1,
+		AccountID:  1,
+		Direction:  EmailMessageDirectionInbound,
+		Type:       EmailMessageTypeReply,
+		MessageID:  "reply",
+		ThreadID:   "thread-1",
+		FromEmail:  "John <john@acme.com>",
+		ToEmails:   "Anders <sender@x.com>",
+		Subject:    "Re: Hi",
+		TextBody:   "Looping Sarah in.",
+		RawHeaders: `{"Cc":"Sarah <sarah@acme.com>","Reply-To":"John Replies <reply@acme.com>","Bcc":"Hidden <hidden@acme.com>"}`,
+		OccurredAt: now,
+	}); err != nil {
+		t.Fatalf("inserting message: %v", err)
+	}
+
+	messages, err := ListEmailThreadMessages(db, ListEmailThreadMessagesOpts{
+		CampaignID: 1,
+		LeadID:     1,
+		ThreadID:   "thread-1",
+	})
+	if err != nil {
+		t.Fatalf("ListEmailThreadMessages error: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(messages))
+	}
+	if messages[0].CcEmails != "Sarah <sarah@acme.com>" {
+		t.Fatalf("expected cc header, got %q", messages[0].CcEmails)
+	}
+	if messages[0].ReplyToEmails != "John Replies <reply@acme.com>" {
+		t.Fatalf("expected reply-to header, got %q", messages[0].ReplyToEmails)
+	}
+	if messages[0].BccEmails != "Hidden <hidden@acme.com>" {
+		t.Fatalf("expected bcc header, got %q", messages[0].BccEmails)
+	}
+}
+
 func TestBackfillEmailMessageDisplayBodiesUsesMessageType(t *testing.T) {
 	db := testDB(t)
 	now := time.Date(2026, time.May, 6, 12, 0, 0, 0, time.UTC)

@@ -524,7 +524,45 @@ func scanEmailMessage(scanner emailMessageScanner) (EmailMessage, error) {
 	if eventID.Valid {
 		msg.EventID = &eventID.Int64
 	}
+	hydrateEmailMessageHeaderFields(&msg)
 	return msg, nil
+}
+
+func hydrateEmailMessageHeaderFields(msg *EmailMessage) {
+	if msg == nil {
+		return
+	}
+
+	headers := map[string]string{}
+	if err := json.Unmarshal([]byte(msg.RawHeaders), &headers); err != nil {
+		return
+	}
+
+	if strings.TrimSpace(msg.CcEmails) == "" {
+		msg.CcEmails = firstEmailHeader(headers, "Cc")
+	}
+	if strings.TrimSpace(msg.BccEmails) == "" {
+		msg.BccEmails = firstEmailHeader(headers, "Bcc")
+	}
+	if strings.TrimSpace(msg.ReplyToEmails) == "" {
+		msg.ReplyToEmails = firstEmailHeader(headers, "Reply-To")
+	}
+}
+
+func firstEmailHeader(headers map[string]string, names ...string) string {
+	if len(headers) == 0 {
+		return ""
+	}
+
+	for _, name := range names {
+		for key, value := range headers {
+			if strings.EqualFold(key, name) && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+
+	return ""
 }
 
 func nullableInt64(value *int64) any {
