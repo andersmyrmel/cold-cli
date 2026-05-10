@@ -1,6 +1,9 @@
 package internal
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestEmailDisplayBodyStripsGmailQuotedThread(t *testing.T) {
 	raw := `got it. article looks perfect.
@@ -111,5 +114,56 @@ On Thu, Apr 30, 2026 at 12:25 PM Trevor <trevor@example.com> wrote:
 	want := "Hi Trevor,\n\nPayment is done."
 	if got != want {
 		t.Fatalf("unexpected manual reply display body:\nwant:\n%s\n\ngot:\n%s", want, got)
+	}
+}
+
+func TestEmailDisplayHTMLKeepsBasicFormattingAndLinks(t *testing.T) {
+	raw := `<div dir="ltr">Regards,<p><strong>Josh McCann</strong><br><i>@monopolymccann</i></p>
+<p>📧 <strong>Email:</strong> <a href="mailto:monopolymccnn@gmail.com" target="_blank">monopolymccnn@gmail.com</a><br>
+📱 <strong>Instagram:</strong> <a rel="noopener" href="https://instagram.com/monopolymccann" target="_blank">@monopolymccann</a></p></div>`
+
+	got := emailDisplayHTML(EmailMessage{
+		Direction: EmailMessageDirectionInbound,
+		Type:      EmailMessageTypeReply,
+		HTMLBody:  raw,
+	})
+
+	for _, want := range []string{
+		"<strong>Josh McCann</strong>",
+		"<i>@monopolymccann</i>",
+		`href="mailto:monopolymccnn@gmail.com"`,
+		`href="https://instagram.com/monopolymccann"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected display html to contain %q, got %q", want, got)
+		}
+	}
+	if strings.Contains(got, "target=\"_blank\"><") {
+		t.Fatalf("expected target attributes to be normalized with rel, got %q", got)
+	}
+}
+
+func TestEmailDisplayHTMLStripsQuotedThreadAndUnsafeMarkup(t *testing.T) {
+	raw := `<div dir="ltr"><p>Hi there,</p><p>Just jumping in.</p></div>
+<script>alert("x")</script>
+<img src="https://tracker.example/pixel.png">
+<div class="gmail_quote gmail_quote_container">
+  <div class="gmail_attr">On Thu, Josh wrote:<br></div>
+  <blockquote><div dir="ltr">Old quoted thread</div></blockquote>
+</div>`
+
+	got := emailDisplayHTML(EmailMessage{
+		Direction: EmailMessageDirectionInbound,
+		Type:      EmailMessageTypeReply,
+		HTMLBody:  raw,
+	})
+
+	if !strings.Contains(got, "Just jumping in.") {
+		t.Fatalf("expected new body content, got %q", got)
+	}
+	for _, blocked := range []string{"Old quoted thread", "<script", "<img", "gmail_quote", "class="} {
+		if strings.Contains(got, blocked) {
+			t.Fatalf("expected %q to be stripped from display html, got %q", blocked, got)
+		}
 	}
 }

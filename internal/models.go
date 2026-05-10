@@ -119,6 +119,7 @@ type EmailMessage struct {
 	Subject         string    `json:"subject"`
 	TextBody        string    `json:"text_body"`
 	DisplayBody     string    `json:"display_body"`
+	DisplayHTML     string    `json:"display_html"`
 	HTMLBody        string    `json:"html_body"`
 	Snippet         string    `json:"snippet"`
 	RawHeaders      string    `json:"raw_headers,omitempty"`

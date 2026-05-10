@@ -2,7 +2,10 @@ package internal
 
 import (
 	"html"
+	"net/url"
 	"strings"
+
+	htmlnode "golang.org/x/net/html"
 )
 
 func emailDisplayBody(msg EmailMessage) string {
@@ -26,11 +29,172 @@ func emailDisplayBody(msg EmailMessage) string {
 	return displayBody
 }
 
+func emailDisplayHTML(msg EmailMessage) string {
+	htmlBody := strings.TrimSpace(msg.HTMLBody)
+	if htmlBody == "" {
+		return ""
+	}
+	stripQuotes := msg.Direction == EmailMessageDirectionInbound || msg.Type == EmailMessageTypeManualReply
+	return sanitizeEmailHTML(htmlBody, stripQuotes)
+}
+
 func normalizeEmailBodyText(body string) string {
 	body = strings.ReplaceAll(body, "\r\n", "\n")
 	body = strings.ReplaceAll(body, "\r", "\n")
 	lines := strings.Split(body, "\n")
 	return trimAndCollapseBlankLines(lines)
+}
+
+func sanitizeEmailHTML(raw string, stripQuotes bool) string {
+	root, err := htmlnode.Parse(strings.NewReader("<!doctype html><html><body>" + raw + "</body></html>"))
+	if err != nil {
+		return ""
+	}
+
+	var out strings.Builder
+	writeSanitizedHTML(&out, root, stripQuotes)
+	return strings.TrimSpace(out.String())
+}
+
+func writeSanitizedHTML(out *strings.Builder, node *htmlnode.Node, stripQuotes bool) {
+	switch node.Type {
+	case htmlnode.TextNode:
+		out.WriteString(html.EscapeString(node.Data))
+	case htmlnode.ElementNode:
+		tag := strings.ToLower(node.Data)
+		if shouldSkipEmailHTMLElement(node, stripQuotes) {
+			return
+		}
+		if isDroppedEmailHTMLTag(tag) {
+			return
+		}
+
+		sanitizedTag, allowed := sanitizedEmailHTMLTag(tag)
+		if !allowed {
+			writeSanitizedHTMLChildren(out, node, stripQuotes)
+			return
+		}
+
+		if sanitizedTag == "br" {
+			out.WriteString("<br>")
+			return
+		}
+
+		out.WriteByte('<')
+		out.WriteString(sanitizedTag)
+		if sanitizedTag == "a" {
+			if href := sanitizedEmailHTMLHref(node); href != "" {
+				out.WriteString(` href="`)
+				out.WriteString(html.EscapeString(href))
+				out.WriteString(`" target="_blank" rel="noopener noreferrer"`)
+			}
+		}
+		out.WriteByte('>')
+		writeSanitizedHTMLChildren(out, node, stripQuotes)
+		out.WriteString("</")
+		out.WriteString(sanitizedTag)
+		out.WriteByte('>')
+	case htmlnode.DocumentNode:
+		writeSanitizedHTMLChildren(out, node, stripQuotes)
+	}
+}
+
+func writeSanitizedHTMLChildren(out *strings.Builder, node *htmlnode.Node, stripQuotes bool) {
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		writeSanitizedHTML(out, child, stripQuotes)
+	}
+}
+
+func shouldSkipEmailHTMLElement(node *htmlnode.Node, stripQuotes bool) bool {
+	tag := strings.ToLower(node.Data)
+	if !stripQuotes {
+		return false
+	}
+	if tag == "blockquote" {
+		return true
+	}
+	classes := strings.Fields(strings.ToLower(attrValue(node, "class")))
+	for _, className := range classes {
+		switch className {
+		case "gmail_quote", "gmail_attr", "gmail_extra", "yahoo_quoted", "moz-cite-prefix", "protonmail_quote":
+			return true
+		}
+		if strings.Contains(className, "gmail_quote") || strings.Contains(className, "yahoo_quoted") {
+			return true
+		}
+	}
+	return false
+}
+
+func isDroppedEmailHTMLTag(tag string) bool {
+	switch tag {
+	case "script", "style", "meta", "link", "title", "head", "iframe", "object", "embed", "form", "input", "button", "img", "svg", "canvas", "video", "audio":
+		return true
+	default:
+		return false
+	}
+}
+
+func sanitizedEmailHTMLTag(tag string) (string, bool) {
+	switch tag {
+	case "a", "strong", "b", "em", "i", "u", "s", "p", "br", "div", "span", "ul", "ol", "li", "pre", "code", "table", "thead", "tbody", "tr", "th", "td":
+		return tag, true
+	default:
+		return "", false
+	}
+}
+
+func sanitizedEmailHTMLHref(node *htmlnode.Node) string {
+	href := strings.TrimSpace(attrValue(node, "href"))
+	if href == "" {
+		return ""
+	}
+	parsed, err := url.Parse(href)
+	if err != nil {
+		return ""
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https", "mailto":
+		return href
+	default:
+		return ""
+	}
+}
+
+func attrValue(node *htmlnode.Node, name string) string {
+	for _, attr := range node.Attr {
+		if strings.EqualFold(attr.Key, name) {
+			return attr.Val
+		}
+	}
+	return ""
+}
+
+func htmlTextContent(node *htmlnode.Node) string {
+	var out strings.Builder
+	var walk func(*htmlnode.Node)
+	walk = func(n *htmlnode.Node) {
+		if n.Type == htmlnode.TextNode {
+			out.WriteString(n.Data)
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(node)
+	return strings.TrimSpace(out.String())
+}
+
+func emailHTMLToText(raw string) string {
+	root, err := htmlnode.Parse(strings.NewReader("<!doctype html><html><body>" + raw + "</body></html>"))
+	if err != nil {
+		return ""
+	}
+	text := htmlTextContent(root)
+	if text == "" {
+		return ""
+	}
+	return trimAndCollapseBlankLines(strings.Split(text, "\n"))
 }
 
 func stripQuotedEmailText(body string) string {
