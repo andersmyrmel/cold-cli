@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS email_messages (
 	to_emails TEXT NOT NULL DEFAULT '',
 	subject TEXT NOT NULL DEFAULT '',
 	text_body TEXT NOT NULL DEFAULT '',
+	display_body TEXT NOT NULL DEFAULT '',
 	html_body TEXT NOT NULL DEFAULT '',
 	snippet TEXT NOT NULL DEFAULT '',
 	raw_headers TEXT NOT NULL DEFAULT '{}',
@@ -252,6 +253,7 @@ var postgresSchemaStatements = []string{
 		to_emails TEXT NOT NULL DEFAULT '',
 		subject TEXT NOT NULL DEFAULT '',
 		text_body TEXT NOT NULL DEFAULT '',
+		display_body TEXT NOT NULL DEFAULT '',
 		html_body TEXT NOT NULL DEFAULT '',
 		snippet TEXT NOT NULL DEFAULT '',
 		raw_headers TEXT NOT NULL DEFAULT '{}',
@@ -286,6 +288,7 @@ var postgresMigrationStatements = []string{
 	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS imap_username TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS imap_password_ref TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS imap_tls_mode TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS display_body TEXT NOT NULL DEFAULT ''`,
 }
 
 const (
@@ -337,6 +340,9 @@ func bootstrapSQLiteSchema(db *sql.DB) error {
 	if err := runSQLiteMigrations(db); err != nil {
 		return err
 	}
+	if err := backfillEmailMessageDisplayBodies(db); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -351,6 +357,9 @@ func bootstrapPostgresSchema(db *sql.DB) error {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("running postgres migration statement %q: %w", stmt, err)
 		}
+	}
+	if err := backfillEmailMessageDisplayBodies(db); err != nil {
+		return err
 	}
 	return nil
 }
@@ -370,6 +379,7 @@ func runSQLiteMigrations(db *sql.DB) error {
 		"ALTER TABLE accounts ADD COLUMN imap_username TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE accounts ADD COLUMN imap_password_ref TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE accounts ADD COLUMN imap_tls_mode TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE email_messages ADD COLUMN display_body TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE campaigns ADD COLUMN sequence_content TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE campaigns ADD COLUMN start_date TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE scheduled_sends ADD COLUMN error_message TEXT NOT NULL DEFAULT ''",

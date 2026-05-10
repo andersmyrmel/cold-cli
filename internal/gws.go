@@ -6,9 +6,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/mail"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,6 +20,7 @@ type GWSClient interface {
 	SendEmail(account, to, rawMsg, threadID string) (msgID, sentThreadID string, err error)
 	ListMessages(account, query string, includeSpamTrash ...bool) ([]GWSMessage, error)
 	GetMessage(account, msgID string) (*GWSMessage, error)
+	GetThreadMessages(account, threadID string) ([]GWSMessage, error)
 }
 
 // GWSMessage represents a parsed Gmail message from gws output.
@@ -33,6 +36,7 @@ type GWSMessage struct {
 	To        string
 	Subject   string
 	InReplyTo string
+	Date      time.Time
 }
 
 // gws send response
@@ -51,11 +55,17 @@ type gwsListResponse struct {
 
 // gws get response (full format)
 type gwsGetResponse struct {
-	ID       string         `json:"id"`
-	ThreadID string         `json:"threadId"`
-	Snippet  string         `json:"snippet"`
-	LabelIDs []string       `json:"labelIds"`
-	Payload  gwsMessagePart `json:"payload"`
+	ID           string         `json:"id"`
+	ThreadID     string         `json:"threadId"`
+	Snippet      string         `json:"snippet"`
+	InternalDate string         `json:"internalDate"`
+	LabelIDs     []string       `json:"labelIds"`
+	Payload      gwsMessagePart `json:"payload"`
+}
+
+type gwsThreadResponse struct {
+	ID       string           `json:"id"`
+	Messages []gwsGetResponse `json:"messages"`
 }
 
 type gwsMessagePart struct {
@@ -180,7 +190,42 @@ func (g *GWSCLI) GetMessage(account, msgID string) (*GWSMessage, error) {
 		return nil, fmt.Errorf("parsing gws get response: %w\nraw: %s", err, out)
 	}
 
-	msg := &GWSMessage{
+	msg := gwsMessageFromResponse(resp)
+	return &msg, nil
+}
+
+func (g *GWSCLI) GetThreadMessages(account, threadID string) ([]GWSMessage, error) {
+	params := map[string]any{
+		"userId": "me",
+		"id":     threadID,
+		"format": "full",
+	}
+	paramsJSON, _ := json.Marshal(params)
+
+	out, stderr, err := g.run(account, "gmail", "users", "threads", "get",
+		"--params", string(paramsJSON))
+	if err != nil {
+		return nil, fmt.Errorf("gws thread get failed: %w\nstderr: %s", err, stderr)
+	}
+
+	var resp gwsThreadResponse
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return nil, fmt.Errorf("parsing gws thread response: %w\nraw: %s", err, out)
+	}
+
+	messages := make([]GWSMessage, 0, len(resp.Messages))
+	for _, raw := range resp.Messages {
+		msg := gwsMessageFromResponse(raw)
+		if msg.ThreadID == "" {
+			msg.ThreadID = resp.ID
+		}
+		messages = append(messages, msg)
+	}
+	return messages, nil
+}
+
+func gwsMessageFromResponse(resp gwsGetResponse) GWSMessage {
+	msg := GWSMessage{
 		ID:       resp.ID,
 		ThreadID: resp.ThreadID,
 		Snippet:  resp.Snippet,
@@ -199,11 +244,17 @@ func (g *GWSCLI) GetMessage(account, msgID string) (*GWSMessage, error) {
 			msg.Subject = h.Value
 		case "In-Reply-To":
 			msg.InReplyTo = h.Value
+		case "Date":
+			if parsed, err := mail.ParseDate(h.Value); err == nil {
+				msg.Date = parsed.UTC()
+			}
 		}
 	}
+	if msg.Date.IsZero() {
+		msg.Date = parseGWSInternalDate(resp.InternalDate)
+	}
 	msg.TextBody, msg.HTMLBody = extractGWSMessageBodies(resp.Payload)
-
-	return msg, nil
+	return msg
 }
 
 func extractGWSMessageBodies(part gwsMessagePart) (textBody string, htmlBody string) {
@@ -241,6 +292,18 @@ func decodeGWSBody(data string) (string, error) {
 		return "", err
 	}
 	return string(decoded), nil
+}
+
+func parseGWSInternalDate(value string) time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}
+	}
+	ms, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms).UTC()
 }
 
 // gwsErrorResponse checks if gws returned a JSON error (API error with 200 exit code).

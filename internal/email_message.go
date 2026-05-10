@@ -10,11 +10,17 @@ import (
 	"time"
 )
 
+const emailDisplayBodyVersion = "4"
+
 func insertEmailMessage(db *sql.DB, msg EmailMessage) error {
 	if msg.OccurredAt.IsZero() {
 		msg.OccurredAt = time.Now().UTC()
 	}
 	msg.OccurredAt = msg.OccurredAt.UTC()
+
+	if strings.TrimSpace(msg.DisplayBody) == "" {
+		msg.DisplayBody = emailDisplayBody(msg)
+	}
 
 	if strings.TrimSpace(msg.RawHeaders) == "" {
 		msg.RawHeaders = "{}"
@@ -37,11 +43,12 @@ func insertEmailMessage(db *sql.DB, msg EmailMessage) error {
 			to_emails,
 			subject,
 			text_body,
+			display_body,
 			html_body,
 			snippet,
 			raw_headers,
 			occurred_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.CampaignID,
 		msg.LeadID,
 		msg.AccountID,
@@ -57,6 +64,7 @@ func insertEmailMessage(db *sql.DB, msg EmailMessage) error {
 		msg.ToEmails,
 		msg.Subject,
 		msg.TextBody,
+		msg.DisplayBody,
 		msg.HTMLBody,
 		msg.Snippet,
 		msg.RawHeaders,
@@ -106,6 +114,7 @@ func ListEmailThreadMessages(db *sql.DB, opts ListEmailThreadMessagesOpts) ([]Em
 			to_emails,
 			subject,
 			text_body,
+			display_body,
 			html_body,
 			snippet,
 			raw_headers,
@@ -138,6 +147,82 @@ func ListEmailThreadMessages(db *sql.DB, opts ListEmailThreadMessagesOpts) ([]Em
 		messages = append(messages, msg)
 	}
 	return messages, rows.Err()
+}
+
+func backfillEmailMessageDisplayBodies(db *sql.DB) error {
+	currentVersion := emailMessageDisplayBodyVersion(db)
+	recomputeAll := currentVersion != emailDisplayBodyVersion
+
+	where := "WHERE display_body = '' AND (text_body <> '' OR snippet <> '')"
+	if recomputeAll {
+		where = "WHERE text_body <> '' OR snippet <> ''"
+	}
+
+	rows, err := queryDB(db, `
+		SELECT id, direction, type, text_body, snippet, display_body
+		FROM email_messages
+		`+where)
+	if err != nil {
+		return fmt.Errorf("loading email messages for display body backfill: %w", err)
+	}
+	defer rows.Close()
+
+	type displayBodyBackfillRow struct {
+		ID        int64
+		Direction string
+		Type      string
+		TextBody  string
+		Snippet   string
+		Current   string
+	}
+
+	var pending []displayBodyBackfillRow
+	for rows.Next() {
+		var row displayBodyBackfillRow
+		if err := rows.Scan(&row.ID, &row.Direction, &row.Type, &row.TextBody, &row.Snippet, &row.Current); err != nil {
+			return err
+		}
+		pending = append(pending, row)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, row := range pending {
+		displayBody := emailDisplayBody(EmailMessage{
+			Direction: row.Direction,
+			Type:      row.Type,
+			TextBody:  row.TextBody,
+			Snippet:   row.Snippet,
+		})
+		if displayBody == row.Current {
+			continue
+		}
+		if _, err := execDB(db, `UPDATE email_messages SET display_body = ? WHERE id = ?`, displayBody, row.ID); err != nil {
+			return fmt.Errorf("backfilling email message display body %d: %w", row.ID, err)
+		}
+	}
+
+	if recomputeAll {
+		if _, err := execDB(db, `INSERT INTO kv (key, value) VALUES ('email_messages.display_body_version', ?)
+			ON CONFLICT(key) DO UPDATE SET value = ?`, emailDisplayBodyVersion, emailDisplayBodyVersion); err != nil {
+			return fmt.Errorf("recording email message display body version: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func emailMessageDisplayBodyVersion(db *sql.DB) string {
+	var version string
+	err := queryRowDB(db, "SELECT value FROM kv WHERE key = 'email_messages.display_body_version'").Scan(&version)
+	if err == nil {
+		return version
+	}
+	if err == sql.ErrNoRows {
+		return ""
+	}
+	return ""
 }
 
 type SendInboxReplyConfig struct {
@@ -288,6 +373,7 @@ func latestEmailThreadMessage(db *sql.DB, campaignID, leadID int64) (EmailMessag
 			to_emails,
 			subject,
 			text_body,
+			display_body,
 			html_body,
 			snippet,
 			raw_headers,
@@ -408,6 +494,7 @@ func scanEmailMessage(scanner emailMessageScanner) (EmailMessage, error) {
 		&msg.ToEmails,
 		&msg.Subject,
 		&msg.TextBody,
+		&msg.DisplayBody,
 		&msg.HTMLBody,
 		&msg.Snippet,
 		&msg.RawHeaders,

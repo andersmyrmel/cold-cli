@@ -98,18 +98,18 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 				continue
 			}
 
-			var campaignID, leadID int64
+			var campaignID, leadID, threadAccountID int64
 			matched := false
 
 			// Strategy 1: In-Reply-To header matching
 			if msg.InReplyTo != "" {
 				err := queryRowDB(db, `
-					SELECT e.campaign_id, e.lead_id
+					SELECT e.campaign_id, e.lead_id, e.account_id
 					FROM events e
 					WHERE e.message_id = ? AND e.type = 'sent'
 					LIMIT 1`,
 					msg.InReplyTo,
-				).Scan(&campaignID, &leadID)
+				).Scan(&campaignID, &leadID, &threadAccountID)
 
 				if err == nil {
 					matched = true
@@ -122,12 +122,12 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 			// forwarded addresses, or mail clients that don't set In-Reply-To)
 			if !matched && msg.ThreadID != "" {
 				err := queryRowDB(db, `
-					SELECT e.campaign_id, e.lead_id
+					SELECT e.campaign_id, e.lead_id, e.account_id
 					FROM events e
 					WHERE e.thread_id = ? AND e.type = 'sent'
 					LIMIT 1`,
 					msg.ThreadID,
-				).Scan(&campaignID, &leadID)
+				).Scan(&campaignID, &leadID, &threadAccountID)
 
 				if err == nil {
 					matched = true
@@ -140,18 +140,26 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 			if !matched {
 				continue
 			}
+			threadAccount := account
+			if threadAccountID != 0 && threadAccountID != account.ID {
+				loadedAccount, err := getAccountByID(db, threadAccountID)
+				if err != nil {
+					return replies, unsubscribes, err
+				}
+				threadAccount = loadedAccount
+			}
 
 			// Check if this is an unsubscribe request
 			if IsUnsubscribeRequest(msg.Subject, msg.Snippet) {
 				// Record unsubscribe event
 				if _, err := execDB(db, `INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
 					VALUES (?, ?, ?, 'unsubscribe', 0, ?, ?)`,
-					campaignID, leadID, account.ID, msg.ID, msg.ThreadID); err != nil {
+					campaignID, leadID, threadAccount.ID, msg.ID, msg.ThreadID); err != nil {
 					slog.Warn("failed to insert unsubscribe event",
 						"campaign_id", campaignID, "lead_id", leadID,
 						"message_id", msg.ID, "error", err)
 				}
-				if err := insertInboundEmailMessage(db, account, campaignID, leadID, msg, EmailMessageTypeUnsubscribe); err != nil {
+				if err := insertInboundEmailMessage(db, threadAccount, campaignID, leadID, msg, EmailMessageTypeUnsubscribe); err != nil {
 					slog.Warn("failed to insert unsubscribe email message snapshot",
 						"campaign_id", campaignID, "lead_id", leadID,
 						"message_id", msg.ID, "error", err)
@@ -177,12 +185,12 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 			// Record the reply event
 			if _, err := execDB(db, `INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
 				VALUES (?, ?, ?, 'reply', 0, ?, ?)`,
-				campaignID, leadID, account.ID, msg.ID, msg.ThreadID); err != nil {
+				campaignID, leadID, threadAccount.ID, msg.ID, msg.ThreadID); err != nil {
 				slog.Warn("failed to insert reply event",
 					"campaign_id", campaignID, "lead_id", leadID,
 					"message_id", msg.ID, "error", err)
 			}
-			if err := insertInboundEmailMessage(db, account, campaignID, leadID, msg, EmailMessageTypeReply); err != nil {
+			if err := insertInboundEmailMessage(db, threadAccount, campaignID, leadID, msg, EmailMessageTypeReply); err != nil {
 				slog.Warn("failed to insert reply email message snapshot",
 					"campaign_id", campaignID, "lead_id", leadID,
 					"message_id", msg.ID, "error", err)

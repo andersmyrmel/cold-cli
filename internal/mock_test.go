@@ -30,7 +30,9 @@ type MockGWS struct {
 	SendRFCMessageID string
 	ListError        error
 	GetError         error
+	ThreadError      error
 	ListCalls        []MockListCall
+	ThreadCalls      []MockThreadCall
 }
 
 type MockSentEmail struct {
@@ -44,6 +46,11 @@ type MockListCall struct {
 	Account          string
 	Query            string
 	IncludeSpamTrash bool
+}
+
+type MockThreadCall struct {
+	Account  string
+	ThreadID string
 }
 
 type MockSMTPEmailSender struct {
@@ -138,6 +145,20 @@ func (m *MockGWS) GetMessage(account, msgID string) (*GWSMessage, error) {
 	}, nil
 }
 
+func (m *MockGWS) GetThreadMessages(account, threadID string) ([]GWSMessage, error) {
+	m.ThreadCalls = append(m.ThreadCalls, MockThreadCall{Account: account, ThreadID: threadID})
+	if m.ThreadError != nil {
+		return nil, m.ThreadError
+	}
+	var messages []GWSMessage
+	for _, msg := range m.InboxMessages {
+		if msg.ThreadID == threadID {
+			messages = append(messages, msg)
+		}
+	}
+	return messages, nil
+}
+
 func (m *MockSMTPEmailSender) SendEmail(account Account, params EmailParams) (string, string, error) {
 	if m.SendError != nil {
 		return "", "", m.SendError
@@ -188,5 +209,9 @@ func (m *failFirstMockGWS) ListMessages(account, query string, includeSpamTrash 
 }
 
 func (m *failFirstMockGWS) GetMessage(account, msgID string) (*GWSMessage, error) {
+	return nil, fmt.Errorf("not found")
+}
+
+func (m *failFirstMockGWS) GetThreadMessages(account, threadID string) ([]GWSMessage, error) {
 	return nil, fmt.Errorf("not found")
 }

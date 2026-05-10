@@ -70,7 +70,7 @@ func TestProcessReplies_PersistsInboundEmailMessageSnapshot(t *testing.T) {
 				To:        "sender@x.com",
 				Subject:   "Re: Hi John",
 				Snippet:   "Thanks for reaching out.",
-				TextBody:  "Thanks for reaching out.\nCan you send pricing?",
+				TextBody:  "Thanks for reaching out.\nCan you send pricing?\n\nOn Tue, May 5, 2026 at 9:14 AM Sender <sender@x.com> wrote:\n> Hi John",
 				Headers: map[string]string{
 					"Message-ID":   "<reply-1@gmail.com>",
 					"In-Reply-To":  "<sent-1@gmail.com>",
@@ -93,7 +93,7 @@ func TestProcessReplies_PersistsInboundEmailMessageSnapshot(t *testing.T) {
 	if err := db.QueryRow(`
 		SELECT campaign_id, lead_id, account_id, direction, type, step_number,
 			message_id, thread_id, in_reply_to, from_email, to_emails, subject,
-			text_body, snippet, raw_headers
+			text_body, display_body, snippet, raw_headers
 		FROM email_messages
 		WHERE message_id = ?`,
 		"reply-1",
@@ -111,6 +111,7 @@ func TestProcessReplies_PersistsInboundEmailMessageSnapshot(t *testing.T) {
 		&msg.ToEmails,
 		&msg.Subject,
 		&msg.TextBody,
+		&msg.DisplayBody,
 		&msg.Snippet,
 		&msg.RawHeaders,
 	); err != nil {
@@ -144,14 +145,58 @@ func TestProcessReplies_PersistsInboundEmailMessageSnapshot(t *testing.T) {
 	if msg.Subject != "Re: Hi John" {
 		t.Errorf("expected subject snapshot, got %q", msg.Subject)
 	}
-	if msg.TextBody != "Thanks for reaching out.\nCan you send pricing?" {
+	if msg.TextBody != "Thanks for reaching out.\nCan you send pricing?\n\nOn Tue, May 5, 2026 at 9:14 AM Sender <sender@x.com> wrote:\n> Hi John" {
 		t.Errorf("expected text body snapshot, got %q", msg.TextBody)
+	}
+	if msg.DisplayBody != "Thanks for reaching out.\nCan you send pricing?" {
+		t.Errorf("expected display body snapshot, got %q", msg.DisplayBody)
 	}
 	if msg.Snippet != "Thanks for reaching out." {
 		t.Errorf("expected snippet snapshot, got %q", msg.Snippet)
 	}
 	if !strings.Contains(msg.RawHeaders, `"Message-ID":"<reply-1@gmail.com>"`) {
 		t.Errorf("expected raw headers JSON to include Message-ID, got %q", msg.RawHeaders)
+	}
+}
+
+func TestProcessReplies_StoresRepliesOnOriginalSendingAccount(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	db.Exec(`INSERT INTO accounts (email) VALUES ('alias@x.com')`)
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (1, 1, 1, 'sent', 1, '<sent-1@gmail.com>', 'thread-1')`)
+
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{
+				ID:       "reply-1",
+				ThreadID: "thread-1",
+				From:     "John Acme <john@acme.com>",
+				To:       "alias@x.com",
+				Subject:  "Re: Hi John",
+				Snippet:  "Thanks",
+				TextBody: "Thanks",
+			},
+		},
+	}
+
+	replies, _, err := ProcessReplies(db, mock, []Account{{ID: 2, Email: "alias@x.com", DailyLimit: 50, Status: "active"}})
+	if err != nil {
+		t.Fatalf("ProcessReplies error: %v", err)
+	}
+	if replies != 1 {
+		t.Fatalf("expected 1 reply, got %d", replies)
+	}
+
+	var eventAccountID, messageAccountID int64
+	if err := db.QueryRow("SELECT account_id FROM events WHERE message_id = 'reply-1'").Scan(&eventAccountID); err != nil {
+		t.Fatalf("loading reply event: %v", err)
+	}
+	if err := db.QueryRow("SELECT account_id FROM email_messages WHERE message_id = 'reply-1'").Scan(&messageAccountID); err != nil {
+		t.Fatalf("loading reply email message: %v", err)
+	}
+	if eventAccountID != 1 || messageAccountID != 1 {
+		t.Fatalf("expected original sending account 1, got event=%d message=%d", eventAccountID, messageAccountID)
 	}
 }
 

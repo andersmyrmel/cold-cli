@@ -143,12 +143,13 @@ func openStore(cfg storeOpenConfig) (*Store, error) {
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
 
+		registerDBDialect(db, dialect)
 		if err := cfg.bootstrapSQLite(db); err != nil {
+			unregisterDBDialect(db)
 			db.Close()
 			return nil, err
 		}
 
-		registerDBDialect(db, dialect)
 		store.DB = db
 		store.target = cfg.sqlitePath
 		store.displayTarget = cfg.sqlitePath
@@ -164,12 +165,13 @@ func openStore(cfg storeOpenConfig) (*Store, error) {
 			return nil, fmt.Errorf("opening database: %w", err)
 		}
 
+		registerDBDialect(db, dialect)
 		if err := cfg.bootstrapPostgres(db); err != nil {
+			unregisterDBDialect(db)
 			db.Close()
 			return nil, err
 		}
 
-		registerDBDialect(db, dialect)
 		store.DB = db
 		store.target = cfg.postgresURL
 		store.displayTarget = redactDatabaseURL(cfg.postgresURL)
