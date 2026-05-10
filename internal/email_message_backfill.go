@@ -383,6 +383,7 @@ func backfillProviderThreadEmailMessages(cfg BackfillEmailMessagesConfig, event 
 		return 0, 0, 0, 0, 1, nil
 	}
 
+	now := time.Now().UTC()
 	for _, msg := range messages {
 		if strings.TrimSpace(msg.ID) == "" {
 			continue
@@ -392,6 +393,9 @@ func backfillProviderThreadEmailMessages(cfg BackfillEmailMessagesConfig, event 
 		}
 		if msg.Headers == nil {
 			msg.Headers = map[string]string{}
+		}
+		if shouldSkipProviderThreadMessage(msg, event.AccountEmail, now) {
+			continue
 		}
 		exists, err := emailMessageSnapshotExistsForGWSMessage(cfg.DB, event.CampaignID, event.LeadID, msg)
 		if err != nil {
@@ -434,6 +438,20 @@ func backfillProviderThreadEmailMessages(cfg BackfillEmailMessagesConfig, event 
 	}
 
 	return backfilled, inbound, sent, unsupported, failed, nil
+}
+
+func shouldSkipProviderThreadMessage(msg GWSMessage, accountEmail string, now time.Time) bool {
+	for _, label := range msg.LabelIDs {
+		if strings.EqualFold(label, "SCHEDULED") || strings.EqualFold(label, "DRAFT") {
+			return true
+		}
+	}
+
+	if sameEmailAddress(msg.From, accountEmail) && !msg.Date.IsZero() && msg.Date.After(now.Add(2*time.Minute)) {
+		return true
+	}
+
+	return false
 }
 
 func loadRelatedSentEventsMissingEmailMessages(db *sql.DB, inbound emailMessageBackfillEvent) ([]emailMessageBackfillEvent, error) {

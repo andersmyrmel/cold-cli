@@ -3,6 +3,7 @@ package internal
 import (
 	"strings"
 	"testing"
+	"time"
 
 	imap "github.com/emersion/go-imap"
 )
@@ -15,6 +16,7 @@ func TestParseIMAPRawMessage(t *testing.T) {
 		"Subject: =?utf-8?q?Re=3A_Hello?=",
 		"In-Reply-To: <sent-1@example.com>",
 		"References: <thread-root@example.com> <sent-1@example.com>",
+		"Date: Thu, 30 Apr 2026 19:25:43 +0800",
 		"X-Failed-Recipients: failed@example.com",
 		"",
 		"Please stop emailing me.",
@@ -33,6 +35,10 @@ func TestParseIMAPRawMessage(t *testing.T) {
 	if msg.Subject != "Re: Hello" {
 		t.Errorf("expected decoded subject, got %q", msg.Subject)
 	}
+	expectedDate := time.Date(2026, time.April, 30, 11, 25, 43, 0, time.UTC)
+	if !msg.Date.Equal(expectedDate) {
+		t.Errorf("expected parsed date %s, got %s", expectedDate.Format(time.RFC3339), msg.Date.Format(time.RFC3339))
+	}
 	if msg.Headers["X-Failed-Recipients"] != "failed@example.com" {
 		t.Errorf("expected failed recipient header, got %q", msg.Headers["X-Failed-Recipients"])
 	}
@@ -42,10 +48,12 @@ func TestParseIMAPRawMessage(t *testing.T) {
 }
 
 func TestParseIMAPRawMessageEnvelopeFallback(t *testing.T) {
+	envelopeDate := time.Date(2026, time.April, 30, 11, 33, 47, 0, time.UTC)
 	msg := ParseIMAPRawMessage("sender@example.com", "INBOX", 7, []byte("not a valid RFC message"), &imap.Envelope{
 		MessageId: "<envelope@example.com>",
 		Subject:   "Envelope subject",
 		InReplyTo: "<sent@example.com>",
+		Date:      envelopeDate,
 	})
 	if msg.ID != "<envelope@example.com>" {
 		t.Errorf("expected envelope message ID, got %s", msg.ID)
@@ -55,6 +63,9 @@ func TestParseIMAPRawMessageEnvelopeFallback(t *testing.T) {
 	}
 	if msg.InReplyTo != "<sent@example.com>" {
 		t.Errorf("expected envelope InReplyTo, got %q", msg.InReplyTo)
+	}
+	if !msg.Date.Equal(envelopeDate) {
+		t.Errorf("expected envelope date %s, got %s", envelopeDate.Format(time.RFC3339), msg.Date.Format(time.RFC3339))
 	}
 }
 

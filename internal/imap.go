@@ -292,10 +292,17 @@ func ParseIMAPRawMessage(accountEmail, mailbox string, uid uint32, raw []byte, e
 	inReplyTo := normalizeMessageID(headers["In-Reply-To"])
 	references := headers["References"]
 	messageID := normalizeMessageID(headers["Message-Id"])
+	var date time.Time
+	if parsed, err := mail.ParseDate(headers["Date"]); err == nil {
+		date = parsed.UTC()
+	}
 
 	if envelope != nil {
 		if subject == "" {
 			subject = envelope.Subject
+		}
+		if date.IsZero() {
+			date = envelope.Date.UTC()
 		}
 		if inReplyTo == "" {
 			inReplyTo = normalizeMessageID(envelope.InReplyTo)
@@ -323,6 +330,7 @@ func ParseIMAPRawMessage(accountEmail, mailbox string, uid uint32, raw []byte, e
 		To:        to,
 		Subject:   subject,
 		InReplyTo: inReplyTo,
+		Date:      date,
 	}
 }
 

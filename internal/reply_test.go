@@ -54,6 +54,7 @@ func TestProcessReplies_Dedup(t *testing.T) {
 
 func TestProcessReplies_PersistsInboundEmailMessageSnapshot(t *testing.T) {
 	db := setupReplyTestDB(t)
+	messageDate := time.Date(2026, time.April, 30, 11, 25, 43, 0, time.UTC)
 
 	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
 		VALUES (1, 1, 1, 'sent', 1, '<sent-1@gmail.com>', 'thread-1')`)
@@ -71,6 +72,7 @@ func TestProcessReplies_PersistsInboundEmailMessageSnapshot(t *testing.T) {
 				Subject:   "Re: Hi John",
 				Snippet:   "Thanks for reaching out.",
 				TextBody:  "Thanks for reaching out.\nCan you send pricing?\n\nOn Tue, May 5, 2026 at 9:14 AM Sender <sender@x.com> wrote:\n> Hi John",
+				Date:      messageDate,
 				Headers: map[string]string{
 					"Message-ID":   "<reply-1@gmail.com>",
 					"In-Reply-To":  "<sent-1@gmail.com>",
@@ -93,7 +95,7 @@ func TestProcessReplies_PersistsInboundEmailMessageSnapshot(t *testing.T) {
 	if err := db.QueryRow(`
 		SELECT campaign_id, lead_id, account_id, direction, type, step_number,
 			message_id, thread_id, in_reply_to, from_email, to_emails, subject,
-			text_body, display_body, snippet, raw_headers
+			text_body, display_body, snippet, raw_headers, occurred_at
 		FROM email_messages
 		WHERE message_id = ?`,
 		"reply-1",
@@ -114,6 +116,7 @@ func TestProcessReplies_PersistsInboundEmailMessageSnapshot(t *testing.T) {
 		&msg.DisplayBody,
 		&msg.Snippet,
 		&msg.RawHeaders,
+		&msg.OccurredAt,
 	); err != nil {
 		t.Fatalf("loading inbound email message snapshot: %v", err)
 	}
@@ -156,6 +159,17 @@ func TestProcessReplies_PersistsInboundEmailMessageSnapshot(t *testing.T) {
 	}
 	if !strings.Contains(msg.RawHeaders, `"Message-ID":"<reply-1@gmail.com>"`) {
 		t.Errorf("expected raw headers JSON to include Message-ID, got %q", msg.RawHeaders)
+	}
+	if !msg.OccurredAt.Equal(messageDate) {
+		t.Fatalf("expected message occurred_at %s, got %s", messageDate.Format(time.RFC3339), msg.OccurredAt.Format(time.RFC3339))
+	}
+
+	var eventTimestamp time.Time
+	if err := db.QueryRow("SELECT timestamp FROM events WHERE message_id = ? AND type = 'reply'", "reply-1").Scan(&eventTimestamp); err != nil {
+		t.Fatalf("loading reply event timestamp: %v", err)
+	}
+	if !eventTimestamp.Equal(messageDate) {
+		t.Fatalf("expected event timestamp %s, got %s", messageDate.Format(time.RFC3339), eventTimestamp.Format(time.RFC3339))
 	}
 }
 

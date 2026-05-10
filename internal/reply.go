@@ -151,10 +151,12 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 
 			// Check if this is an unsubscribe request
 			if IsUnsubscribeRequest(msg.Subject, msg.Snippet) {
+				occurredAt := inboundEmailOccurredAt(msg)
+
 				// Record unsubscribe event
-				if _, err := execDB(db, `INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
-					VALUES (?, ?, ?, 'unsubscribe', 0, ?, ?)`,
-					campaignID, leadID, threadAccount.ID, msg.ID, msg.ThreadID); err != nil {
+				if _, err := execDB(db, `INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id, timestamp)
+					VALUES (?, ?, ?, 'unsubscribe', 0, ?, ?, ?)`,
+					campaignID, leadID, threadAccount.ID, msg.ID, msg.ThreadID, occurredAt); err != nil {
 					slog.Warn("failed to insert unsubscribe event",
 						"campaign_id", campaignID, "lead_id", leadID,
 						"message_id", msg.ID, "error", err)
@@ -182,10 +184,12 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 				continue
 			}
 
+			occurredAt := inboundEmailOccurredAt(msg)
+
 			// Record the reply event
-			if _, err := execDB(db, `INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
-				VALUES (?, ?, ?, 'reply', 0, ?, ?)`,
-				campaignID, leadID, threadAccount.ID, msg.ID, msg.ThreadID); err != nil {
+			if _, err := execDB(db, `INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id, timestamp)
+				VALUES (?, ?, ?, 'reply', 0, ?, ?, ?)`,
+				campaignID, leadID, threadAccount.ID, msg.ID, msg.ThreadID, occurredAt); err != nil {
 				slog.Warn("failed to insert reply event",
 					"campaign_id", campaignID, "lead_id", leadID,
 					"message_id", msg.ID, "error", err)
@@ -248,6 +252,13 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 	return replies, unsubscribes, nil
 }
 
+func inboundEmailOccurredAt(msg GWSMessage) time.Time {
+	if !msg.Date.IsZero() {
+		return msg.Date.UTC()
+	}
+	return time.Now().UTC()
+}
+
 func insertInboundEmailMessage(db *sql.DB, account Account, campaignID, leadID int64, msg GWSMessage, messageType string) error {
 	return insertEmailMessage(db, EmailMessage{
 		CampaignID: campaignID,
@@ -266,7 +277,7 @@ func insertInboundEmailMessage(db *sql.DB, account Account, campaignID, leadID i
 		HTMLBody:   msg.HTMLBody,
 		Snippet:    msg.Snippet,
 		RawHeaders: emailHeadersJSON(msg.Headers),
-		OccurredAt: time.Now().UTC(),
+		OccurredAt: inboundEmailOccurredAt(msg),
 	})
 }
 
