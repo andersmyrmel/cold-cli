@@ -571,6 +571,42 @@ func TestTick_FailedSendIsolation(t *testing.T) {
 	}
 }
 
+func TestTick_DoesNotSlideDueStartDateStep1PastNow(t *testing.T) {
+	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
+	now := time.Date(2026, time.May, 14, 15, 5, 0, 0, time.UTC)
+
+	origNow := timeNow
+	timeNow = func() time.Time { return now.Add(time.Second) }
+	t.Cleanup(func() { timeNow = origNow })
+
+	if _, err := db.Exec(`UPDATE campaigns
+		SET start_date = '2026-05-14',
+			send_window_start = '15:00',
+			send_window_end = '17:00',
+			send_days = '0,1,2,3,4,5,6',
+			timezone = 'UTC'
+		WHERE id = ?`, campaignID); err != nil {
+		t.Fatalf("updating campaign: %v", err)
+	}
+
+	insertPendingSend(t, db, campaignID, leadIDs[0], accountIDs[0], 1, now.Add(-5*time.Minute))
+
+	mock := &MockGWS{}
+	result, err := Tick(TickConfig{
+		DB:      db,
+		GWS:     mock,
+		Now:     now,
+		NoSleep: true,
+	})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+
+	if result.Sent != 1 {
+		t.Fatalf("expected due start-date step 1 to send, got %d sent", result.Sent)
+	}
+}
+
 func TestTick_DailyLimitEnforcement(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
 	now := time.Now().UTC()

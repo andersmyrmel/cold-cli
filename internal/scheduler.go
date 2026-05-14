@@ -606,10 +606,17 @@ func effectiveScheduleRulesForLead(base *campaignScheduleRules, row accountSched
 
 func firstPendingAnchorForRow(row accountScheduleRow, prevAnchor time.Time, havePrev bool, rules *campaignScheduleRules) (time.Time, error) {
 	if !havePrev {
+		existingAnchor := clampToWindow(row.SendAt.In(rules.Timezone), rules.WindowStartTOD, rules.WindowEndTOD, rules.SendDays, rules.Timezone)
 		if row.StepNumber == 1 && strings.TrimSpace(rules.StartDate) != "" {
-			return campaignStartAnchor(timeNow().In(rules.Timezone), rules.StartDate, rules.WindowStartTOD, rules.Timezone)
+			freshAnchor, err := campaignStartAnchor(timeNow().In(rules.Timezone), rules.StartDate, rules.WindowStartTOD, rules.Timezone)
+			if err != nil {
+				return time.Time{}, err
+			}
+			if shouldPullStep1AnchorBack(existingAnchor, freshAnchor) {
+				return freshAnchor, nil
+			}
 		}
-		return clampToWindow(row.SendAt.In(rules.Timezone), rules.WindowStartTOD, rules.WindowEndTOD, rules.SendDays, rules.Timezone), nil
+		return existingAnchor, nil
 	}
 
 	step, ok := rules.StepByNumber[row.StepNumber]
@@ -617,6 +624,16 @@ func firstPendingAnchorForRow(row accountScheduleRow, prevAnchor time.Time, have
 		return time.Time{}, fmt.Errorf("campaign %d is missing step %d", row.CampaignID, row.StepNumber)
 	}
 	return nextScheduledTime(prevAnchor, step.Delay, rules.WindowStartTOD, rules.WindowEndTOD, rules.SendDays, rules.Timezone), nil
+}
+
+func shouldPullStep1AnchorBack(existingAnchor, freshAnchor time.Time) bool {
+	if !existingAnchor.After(freshAnchor) {
+		return false
+	}
+
+	// Preserve normal jitter and daily-limit deferrals. Only repair clearly stale
+	// unsent step-1 rows, such as schedules stranded months/years in the future.
+	return existingAnchor.After(freshAnchor.AddDate(0, 0, 30))
 }
 
 func (q *leadScheduleQueue) advance(assignedAt time.Time) error {
