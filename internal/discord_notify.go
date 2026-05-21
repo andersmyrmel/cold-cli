@@ -46,10 +46,14 @@ type DiscordNotificationEvent struct {
 // DiscordWebhookNotifier posts cold-cli notifications to a Discord webhook URL.
 type DiscordWebhookNotifier struct {
 	WebhookURL string
+	Username   string
+	AvatarURL  string
 	HTTPClient *http.Client
 }
 
 type discordWebhookPayload struct {
+	Username        string                 `json:"username,omitempty"`
+	AvatarURL       string                 `json:"avatar_url,omitempty"`
 	AllowedMentions discordAllowedMentions `json:"allowed_mentions"`
 	Embeds          []discordEmbed         `json:"embeds"`
 }
@@ -79,6 +83,8 @@ func (n DiscordWebhookNotifier) NotifyDiscord(ctx context.Context, event Discord
 	}
 
 	payload := BuildDiscordWebhookPayload(event)
+	payload.Username = truncateDiscordText(cleanDiscordText(n.Username), 80)
+	payload.AvatarURL = strings.TrimSpace(n.AvatarURL)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("encoding discord webhook payload: %w", err)

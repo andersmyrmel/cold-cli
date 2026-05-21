@@ -213,6 +213,8 @@ phone notification surface.
 
 ```bash
 export DISCORD_WEBHOOK_URL='https://discord.com/api/webhooks/...'
+export DISCORD_WEBHOOK_USERNAME='StoreInspect Replies'
+export DISCORD_WEBHOOK_AVATAR_URL='https://storeinspect.com/brand/logo.png'
 cold-cli tick
 ```
 
@@ -220,6 +222,7 @@ Notes:
 
 - The webhook URL is a secret. Store it in your local/production env file, not in git.
 - Set `COLD_CLI_DISCORD_NOTIFY=0` to temporarily disable notifications while keeping the webhook configured.
+- Set `DISCORD_WEBHOOK_USERNAME` and `DISCORD_WEBHOOK_AVATAR_URL` to override the Discord webhook's default display name and icon.
 - The first enabled run initializes the notification cursor before polling inboxes, so old historical replies are not dumped into Discord. Replies discovered during that same tick still notify.
 - Alerts include campaign, inbox, lead, sender, subject, and a short snippet. Full message bodies are not sent.
 - Discord mentions are disabled in webhook payloads so prospect text cannot trigger `@everyone` or role pings.

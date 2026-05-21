@@ -144,7 +144,12 @@ func TestDiscordWebhookNotifierPostsPayload(t *testing.T) {
 	}))
 	defer server.Close()
 
-	notifier := DiscordWebhookNotifier{WebhookURL: server.URL, HTTPClient: server.Client()}
+	notifier := DiscordWebhookNotifier{
+		WebhookURL: server.URL,
+		Username:   "StoreInspect Replies",
+		AvatarURL:  "https://storeinspect.com/brand/logo.png",
+		HTTPClient: server.Client(),
+	}
 	err := notifier.NotifyDiscord(context.Background(), DiscordNotificationEvent{
 		EventType:    "reply",
 		CampaignName: "test",
@@ -160,6 +165,12 @@ func TestDiscordWebhookNotifierPostsPayload(t *testing.T) {
 	}
 	if len(payload.Embeds) != 1 || payload.Embeds[0].Title != "New cold email reply" {
 		t.Fatalf("unexpected payload: %#v", payload)
+	}
+	if payload.Username != "StoreInspect Replies" {
+		t.Fatalf("expected custom username, got %q", payload.Username)
+	}
+	if payload.AvatarURL != "https://storeinspect.com/brand/logo.png" {
+		t.Fatalf("expected custom avatar URL, got %q", payload.AvatarURL)
 	}
 }
 

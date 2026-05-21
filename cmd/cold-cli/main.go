@@ -68,7 +68,11 @@ func configuredDiscordNotifierFromEnv() internal.DiscordNotifier {
 	if webhookURL == "" {
 		return nil
 	}
-	return internal.DiscordWebhookNotifier{WebhookURL: webhookURL}
+	return internal.DiscordWebhookNotifier{
+		WebhookURL: webhookURL,
+		Username:   os.Getenv("DISCORD_WEBHOOK_USERNAME"),
+		AvatarURL:  os.Getenv("DISCORD_WEBHOOK_AVATAR_URL"),
+	}
 }
 
 func envFlagEnabled(key string, defaultValue bool) bool {
