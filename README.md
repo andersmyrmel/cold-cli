@@ -222,6 +222,7 @@ Notes:
 
 - The webhook URL is a secret. Store it in your local/production env file, not in git.
 - Set `COLD_CLI_DISCORD_NOTIFY=0` to temporarily disable notifications while keeping the webhook configured.
+- By default, Discord only alerts on SMTP/IMAP account replies because Gmail/GWS accounts already have Gmail notifications. Set `COLD_CLI_DISCORD_PROVIDERS=all` to notify for every provider, or a comma-separated list such as `smtp_imap,gws`.
 - Set `DISCORD_WEBHOOK_USERNAME` and `DISCORD_WEBHOOK_AVATAR_URL` to override the Discord webhook's default display name and icon.
 - The first enabled run initializes the notification cursor before polling inboxes, so old historical replies are not dumped into Discord. Replies discovered during that same tick still notify.
 - Alerts include campaign, inbox, lead, sender, subject, and a short snippet. Full message bodies are not sent.

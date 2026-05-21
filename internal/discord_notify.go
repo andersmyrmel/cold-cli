@@ -25,7 +25,8 @@ type DiscordNotifier interface {
 
 // DiscordNotifyOptions configures one notification processing pass.
 type DiscordNotifyOptions struct {
-	Limit int
+	Limit     int
+	Providers []string
 }
 
 // DiscordNotificationEvent is the compact event shape used for Discord alerts.
@@ -179,7 +180,7 @@ func ProcessDiscordNotifications(ctx context.Context, db *sql.DB, notifier Disco
 		limit = discordNotifyDefaultLimit
 	}
 
-	events, err := listDiscordNotificationEvents(db, lastID, limit)
+	events, err := listDiscordNotificationEvents(db, lastID, limit, opts.Providers)
 	if err != nil {
 		return 0, err
 	}
@@ -198,8 +199,8 @@ func ProcessDiscordNotifications(ctx context.Context, db *sql.DB, notifier Disco
 	return notified, nil
 }
 
-func listDiscordNotificationEvents(db *sql.DB, afterEventID int64, limit int) ([]DiscordNotificationEvent, error) {
-	rows, err := queryDB(db, `
+func listDiscordNotificationEvents(db *sql.DB, afterEventID int64, limit int, providers []string) ([]DiscordNotificationEvent, error) {
+	query := `
 		SELECT
 			e.id,
 			e.type,
@@ -246,11 +247,21 @@ func listDiscordNotificationEvents(db *sql.DB, afterEventID int64, limit int) ([
 		JOIN accounts a ON a.id = e.account_id
 		WHERE e.id > ?
 			AND e.type IN ('reply', 'unsubscribe')
-		ORDER BY e.id ASC
-		LIMIT ?`,
-		afterEventID,
-		limit,
-	)
+	`
+	args := []any{afterEventID}
+	providers = cleanDiscordNotifyProviders(providers)
+	if len(providers) > 0 {
+		placeholders := make([]string, 0, len(providers))
+		for _, provider := range providers {
+			placeholders = append(placeholders, "?")
+			args = append(args, provider)
+		}
+		query += " AND a.provider IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	query += " ORDER BY e.id ASC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := queryDB(db, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying discord notification events: %w", err)
 	}
@@ -277,6 +288,20 @@ func listDiscordNotificationEvents(db *sql.DB, afterEventID int64, limit int) ([
 		events = append(events, event)
 	}
 	return events, rows.Err()
+}
+
+func cleanDiscordNotifyProviders(providers []string) []string {
+	var cleaned []string
+	seen := map[string]bool{}
+	for _, provider := range providers {
+		provider = strings.TrimSpace(provider)
+		if provider == "" || seen[provider] {
+			continue
+		}
+		seen[provider] = true
+		cleaned = append(cleaned, provider)
+	}
+	return cleaned
 }
 
 func getKVInt64(db *sql.DB, key string) (int64, bool, error) {

@@ -75,6 +75,25 @@ func configuredDiscordNotifierFromEnv() internal.DiscordNotifier {
 	}
 }
 
+func configuredDiscordProvidersFromEnv() []string {
+	raw := strings.TrimSpace(os.Getenv("COLD_CLI_DISCORD_PROVIDERS"))
+	if raw == "" {
+		return []string{internal.AccountProviderSMTPIMAP}
+	}
+	if strings.EqualFold(raw, "all") || raw == "*" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	providers := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			providers = append(providers, part)
+		}
+	}
+	return providers
+}
+
 func envFlagEnabled(key string, defaultValue bool) bool {
 	value, ok := os.LookupEnv(key)
 	if !ok {
@@ -1610,6 +1629,7 @@ var tickCmd = &cobra.Command{
 			UnsubscribeHeader:  unsubHeader,
 			UnsubscribeSubject: unsubSubject,
 			DiscordNotifier:    configuredDiscordNotifierFromEnv(),
+			DiscordProviders:   configuredDiscordProvidersFromEnv(),
 		})
 		if err != nil {
 			return err

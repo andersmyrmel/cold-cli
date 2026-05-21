@@ -70,7 +70,7 @@ func TestListDiscordNotificationEvents(t *testing.T) {
 		t.Fatalf("insert unsubscribe event: %v", err)
 	}
 
-	events, err := listDiscordNotificationEvents(db, 1, 10)
+	events, err := listDiscordNotificationEvents(db, 1, 10, nil)
 	if err != nil {
 		t.Fatalf("listDiscordNotificationEvents error: %v", err)
 	}
@@ -82,6 +82,30 @@ func TestListDiscordNotificationEvents(t *testing.T) {
 	}
 	if events[1].EventType != "unsubscribe" {
 		t.Fatalf("expected unsubscribe event second, got %#v", events[1])
+	}
+}
+
+func TestListDiscordNotificationEventsFiltersByProvider(t *testing.T) {
+	db := setupReplyTestDB(t)
+	if _, err := execDB(db, `UPDATE accounts SET provider = ? WHERE id = 1`, AccountProviderSMTPIMAP); err != nil {
+		t.Fatalf("update smtp account: %v", err)
+	}
+	if _, err := execDB(db, `INSERT INTO accounts (email, provider) VALUES ('gmail@example.com', ?)`, AccountProviderGWS); err != nil {
+		t.Fatalf("insert gws account: %v", err)
+	}
+
+	insertDiscordEventForAccount(t, db, 1, "reply", "smtp-reply")
+	insertDiscordEventForAccount(t, db, 2, "reply", "gws-reply")
+
+	events, err := listDiscordNotificationEvents(db, 0, 10, []string{AccountProviderSMTPIMAP})
+	if err != nil {
+		t.Fatalf("listDiscordNotificationEvents error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 SMTP/IMAP event, got %d", len(events))
+	}
+	if events[0].MessageID != "smtp-reply" || events[0].AccountEmail != "sender@x.com" {
+		t.Fatalf("unexpected filtered event: %#v", events[0])
 	}
 }
 
@@ -289,8 +313,13 @@ func TestTickDryRunPreservesDiscordNotificationForLater(t *testing.T) {
 
 func insertDiscordEvent(t *testing.T, db *sql.DB, eventType, messageID string) int64 {
 	t.Helper()
+	return insertDiscordEventForAccount(t, db, 1, eventType, messageID)
+}
+
+func insertDiscordEventForAccount(t *testing.T, db *sql.DB, accountID int64, eventType, messageID string) int64 {
+	t.Helper()
 	result, err := execDB(db, `INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, timestamp)
-		VALUES (1, 1, 1, ?, 0, ?, ?)`, eventType, messageID, time.Now().UTC())
+		VALUES (1, 1, ?, ?, 0, ?, ?)`, accountID, eventType, messageID, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("insert %s event: %v", eventType, err)
 	}
@@ -298,7 +327,7 @@ func insertDiscordEvent(t *testing.T, db *sql.DB, eventType, messageID string) i
 	if err != nil {
 		t.Fatalf("last insert id: %v", err)
 	}
-	insertInboundTestMessage(t, db, 1, 1, 1, eventType, messageID, "John <john@acme.com>", "Re: Hello", "Interested.")
+	insertInboundTestMessage(t, db, 1, 1, accountID, eventType, messageID, "John <john@acme.com>", "Re: Hello", "Interested.")
 	return id
 }
 

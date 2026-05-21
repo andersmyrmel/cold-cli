@@ -38,6 +38,7 @@ type TickConfig struct {
 	IMAP               IMAPMessageLister
 	DiscordNotifier    DiscordNotifier
 	DiscordNotifyLimit int
+	DiscordProviders   []string
 }
 
 // Tick runs one tick cycle: poll replies, poll bounces, send due emails.
@@ -132,7 +133,8 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 	if discordNotificationsEnabled {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		notified, err := ProcessDiscordNotifications(ctx, cfg.DB, cfg.DiscordNotifier, DiscordNotifyOptions{
-			Limit: cfg.DiscordNotifyLimit,
+			Limit:     cfg.DiscordNotifyLimit,
+			Providers: cfg.DiscordProviders,
 		})
 		cancel()
 		if err != nil {
