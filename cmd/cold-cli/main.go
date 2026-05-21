@@ -60,6 +60,32 @@ func configuredGWSClient(store *internal.Store) *internal.GWSCLI {
 	return gwsCLI
 }
 
+func configuredDiscordNotifierFromEnv() internal.DiscordNotifier {
+	if !envFlagEnabled("COLD_CLI_DISCORD_NOTIFY", true) {
+		return nil
+	}
+	webhookURL := strings.TrimSpace(os.Getenv("DISCORD_WEBHOOK_URL"))
+	if webhookURL == "" {
+		return nil
+	}
+	return internal.DiscordWebhookNotifier{WebhookURL: webhookURL}
+}
+
+func envFlagEnabled(key string, defaultValue bool) bool {
+	value, ok := os.LookupEnv(key)
+	if !ok {
+		return defaultValue
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultValue
+	}
+}
+
 func parseBackfillSince(value string) (time.Time, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -1579,6 +1605,7 @@ var tickCmd = &cobra.Command{
 			Timezone:           tz,
 			UnsubscribeHeader:  unsubHeader,
 			UnsubscribeSubject: unsubSubject,
+			DiscordNotifier:    configuredDiscordNotifierFromEnv(),
 		})
 		if err != nil {
 			return err
@@ -1588,7 +1615,9 @@ var tickCmd = &cobra.Command{
 		slog.Info("tick complete",
 			"sent", result.Sent, "failed", result.Failed, "skipped", result.Skipped,
 			"replies", result.RepliesDetected, "unsubscribes", result.UnsubscribesDetected,
-			"bounces", result.BouncesDetected, "dry_run", result.DryRun)
+			"bounces", result.BouncesDetected,
+			"discord_notifications", result.DiscordNotificationsSent,
+			"dry_run", result.DryRun)
 
 		if jsonOutput {
 			return printJSON(result)

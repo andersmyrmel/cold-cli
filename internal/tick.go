@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -11,13 +12,14 @@ import (
 
 // TickResult holds the summary of a tick invocation.
 type TickResult struct {
-	RepliesDetected      int  `json:"replies_detected"`
-	UnsubscribesDetected int  `json:"unsubscribes_detected"`
-	BouncesDetected      int  `json:"bounces_detected"`
-	Sent                 int  `json:"sent"`
-	Failed               int  `json:"failed"`
-	Skipped              int  `json:"skipped"`
-	DryRun               bool `json:"dry_run"`
+	RepliesDetected          int  `json:"replies_detected"`
+	UnsubscribesDetected     int  `json:"unsubscribes_detected"`
+	BouncesDetected          int  `json:"bounces_detected"`
+	DiscordNotificationsSent int  `json:"discord_notifications_sent"`
+	Sent                     int  `json:"sent"`
+	Failed                   int  `json:"failed"`
+	Skipped                  int  `json:"skipped"`
+	DryRun                   bool `json:"dry_run"`
 }
 
 // TickConfig holds configuration for a tick invocation.
@@ -34,6 +36,8 @@ type TickConfig struct {
 	SecretResolver     SecretResolver // optional resolver for SMTP/IMAP password refs
 	SMTPSender         SMTPEmailSender
 	IMAP               IMAPMessageLister
+	DiscordNotifier    DiscordNotifier
+	DiscordNotifyLimit int
 }
 
 // Tick runs one tick cycle: poll replies, poll bounces, send due emails.
@@ -73,6 +77,15 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 
 	gwsAccounts := accountsByProvider(accounts, AccountProviderGWS)
 	smtpIMAPAccounts := accountsByProvider(accounts, AccountProviderSMTPIMAP)
+
+	discordCursorReady := cfg.DiscordNotifier != nil
+	if discordCursorReady {
+		if err := EnsureDiscordNotifyCursor(cfg.DB); err != nil {
+			slog.Warn("failed to initialize discord notification cursor", "error", err)
+			discordCursorReady = false
+		}
+	}
+	discordNotificationsEnabled := discordCursorReady && !cfg.DryRun
 
 	// 1. Poll for replies and unsubscribes.
 	if len(gwsAccounts) > 0 && cfg.GWS != nil {
@@ -114,6 +127,18 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			slog.Warn("IMAP bounce detection error", "error", err)
 		}
 		result.BouncesDetected += bounces
+	}
+
+	if discordNotificationsEnabled {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		notified, err := ProcessDiscordNotifications(ctx, cfg.DB, cfg.DiscordNotifier, DiscordNotifyOptions{
+			Limit: cfg.DiscordNotifyLimit,
+		})
+		cancel()
+		if err != nil {
+			slog.Warn("discord notification error", "error", err)
+		}
+		result.DiscordNotificationsSent = notified
 	}
 
 	// Update last_poll_at so next tick only checks new messages
@@ -751,6 +776,9 @@ func FormatTickResult(r *TickResult) string {
 	}
 	if r.BouncesDetected > 0 {
 		parts = append(parts, fmt.Sprintf("%d bounces", r.BouncesDetected))
+	}
+	if r.DiscordNotificationsSent > 0 {
+		parts = append(parts, fmt.Sprintf("%d discord notifications", r.DiscordNotificationsSent))
 	}
 	if len(parts) == 0 {
 		b.WriteString("nothing to do")

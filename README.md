@@ -205,6 +205,25 @@ cold-cli lead blacklist <email|domain>     # blacklist + cancel pending sends
 
 All commands support `--json` for programmatic use.
 
+## Discord Reply Notifications
+
+`tick` can post new reply and unsubscribe alerts to a Discord channel through an
+incoming webhook. This is intended for SMTP/IMAP inboxes where there is no Gmail
+phone notification surface.
+
+```bash
+export DISCORD_WEBHOOK_URL='https://discord.com/api/webhooks/...'
+cold-cli tick
+```
+
+Notes:
+
+- The webhook URL is a secret. Store it in your local/production env file, not in git.
+- Set `COLD_CLI_DISCORD_NOTIFY=0` to temporarily disable notifications while keeping the webhook configured.
+- The first enabled run initializes the notification cursor before polling inboxes, so old historical replies are not dumped into Discord. Replies discovered during that same tick still notify.
+- Alerts include campaign, inbox, lead, sender, subject, and a short snippet. Full message bodies are not sent.
+- Discord mentions are disabled in webhook payloads so prospect text cannot trigger `@everyone` or role pings.
+
 ## How It Works
 
 ### Eager Scheduling
