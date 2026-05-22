@@ -166,8 +166,10 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		accountIDs = append(accountIDs, a.ID)
 	}
 
-	if err := RebalancePendingSchedules(cfg.DB, accountIDs); err != nil {
-		return nil, fmt.Errorf("rebalancing pending schedules: %w", err)
+	if !cfg.DryRun {
+		if err := RebalancePendingSchedules(cfg.DB, accountIDs); err != nil {
+			return nil, fmt.Errorf("rebalancing pending schedules: %w", err)
+		}
 	}
 
 	// 4. Find due sends from active campaigns
@@ -212,8 +214,10 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 
 		// Check daily limit
 		if dailyCounts[send.AccountID] >= dailyLimits[send.AccountID] {
-			if err := RebalancePendingSchedules(cfg.DB, []int64{send.AccountID}); err != nil {
-				return nil, fmt.Errorf("rebalancing account %d after daily limit hit: %w", send.AccountID, err)
+			if !cfg.DryRun {
+				if err := RebalancePendingSchedules(cfg.DB, []int64{send.AccountID}); err != nil {
+					return nil, fmt.Errorf("rebalancing account %d after daily limit hit: %w", send.AccountID, err)
+				}
 			}
 			result.Skipped++
 			continue

@@ -535,6 +535,66 @@ func TestTick_DryRun(t *testing.T) {
 	}
 }
 
+func TestTick_DryRunDoesNotRebalancePendingSchedules(t *testing.T) {
+	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
+	now := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)
+
+	if _, err := db.Exec("UPDATE accounts SET daily_limit = 1 WHERE id = ?", accountIDs[0]); err != nil {
+		t.Fatalf("updating daily limit: %v", err)
+	}
+	sendAt := now.Add(-1 * time.Hour)
+	insertPendingSend(t, db, campaignID, leadIDs[0], accountIDs[0], 1, sendAt)
+	insertPendingSend(t, db, campaignID, leadIDs[1], accountIDs[0], 1, sendAt)
+
+	before := map[int]string{}
+	rows, err := db.Query("SELECT id, send_at FROM scheduled_sends ORDER BY id")
+	if err != nil {
+		t.Fatalf("querying sends before dry-run: %v", err)
+	}
+	for rows.Next() {
+		var id int
+		var at string
+		if err := rows.Scan(&id, &at); err != nil {
+			t.Fatalf("scanning before row: %v", err)
+		}
+		before[id] = at
+	}
+	rows.Close()
+
+	result, err := Tick(TickConfig{
+		DB:      db,
+		GWS:     &MockGWS{},
+		DryRun:  true,
+		Now:     now,
+		NoSleep: true,
+	})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+	if result.Sent != 2 {
+		t.Errorf("expected 2 dry-run sends before state mutation, got %d", result.Sent)
+	}
+
+	rows, err = db.Query("SELECT id, send_at, status FROM scheduled_sends ORDER BY id")
+	if err != nil {
+		t.Fatalf("querying sends after dry-run: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int
+		var at, status string
+		if err := rows.Scan(&id, &at, &status); err != nil {
+			t.Fatalf("scanning after row: %v", err)
+		}
+		if at != before[id] {
+			t.Fatalf("dry-run changed send_at for send %d: before=%s after=%s", id, before[id], at)
+		}
+		if status != "pending" {
+			t.Fatalf("dry-run changed status for send %d: %s", id, status)
+		}
+	}
+}
+
 func TestTick_FailedSendIsolation(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
 	now := time.Now().UTC()
