@@ -97,6 +97,8 @@ const (
 
 	EmailMessageTypeSent        = "sent"
 	EmailMessageTypeReply       = "reply"
+	EmailMessageTypeBounce      = "bounce"
+	EmailMessageTypeAutoReply   = "auto_reply"
 	EmailMessageTypeUnsubscribe = "unsubscribe"
 	EmailMessageTypeManualReply = "manual_reply"
 )

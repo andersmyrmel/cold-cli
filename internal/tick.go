@@ -90,24 +90,26 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 
 	// 1. Poll for replies and unsubscribes.
 	if len(gwsAccounts) > 0 && cfg.GWS != nil {
-		replies, unsubs, err := ProcessReplies(cfg.DB, cfg.GWS, gwsAccounts)
+		replyResult, err := processGWSReplyMessages(cfg.DB, cfg.GWS, gwsAccounts)
 		if err != nil {
 			slog.Warn("reply detection error", "error", err)
 		}
-		result.RepliesDetected = replies
-		result.UnsubscribesDetected = unsubs
+		result.RepliesDetected = replyResult.Replies
+		result.UnsubscribesDetected = replyResult.Unsubscribes
+		result.BouncesDetected += replyResult.Bounces
 	}
 	if len(smtpIMAPAccounts) > 0 {
 		imap := cfg.IMAP
 		if imap == nil {
 			imap = NewIMAPTransport(cfg.SecretResolver)
 		}
-		replies, unsubs, err := ProcessIMAPReplies(cfg.DB, imap, smtpIMAPAccounts)
+		replyResult, err := processIMAPReplyMessages(cfg.DB, imap, smtpIMAPAccounts)
 		if err != nil {
 			slog.Warn("IMAP reply detection error", "error", err)
 		}
-		result.RepliesDetected += replies
-		result.UnsubscribesDetected += unsubs
+		result.RepliesDetected += replyResult.Replies
+		result.UnsubscribesDetected += replyResult.Unsubscribes
+		result.BouncesDetected += replyResult.Bounces
 	}
 
 	// 2. Poll for bounces
@@ -116,7 +118,7 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		if err != nil {
 			slog.Warn("bounce detection error", "error", err)
 		}
-		result.BouncesDetected = bounces
+		result.BouncesDetected += bounces
 	}
 	if len(smtpIMAPAccounts) > 0 {
 		imap := cfg.IMAP

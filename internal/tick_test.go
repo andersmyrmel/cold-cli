@@ -863,6 +863,65 @@ func TestTick_ReplyDetection(t *testing.T) {
 	}
 }
 
+func TestTick_DSNClassifiedAsBounceNotReply(t *testing.T) {
+	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
+	now := time.Now().UTC()
+
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (?, ?, ?, 'sent', 1, '<sent-msg-1@gmail.com>', 'thread-dsn')`,
+		campaignID, leadIDs[0], accountIDs[0])
+	insertPendingSend(t, db, campaignID, leadIDs[0], accountIDs[0], 2, now.Add(72*time.Hour))
+
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{
+				ID:        "dsn-casper",
+				ThreadID:  "thread-dsn",
+				InReplyTo: "<sent-msg-1@gmail.com>",
+				From:      "Mail Delivery Subsystem <mailer-daemon@googlemail.com>",
+				Subject:   "Delivery Status Notification (Failure)",
+				Snippet:   "Address not found. Your message wasn't delivered because the address couldn't be found.",
+				TextBody:  "Address not found. 550 5.1.1 NoSuchUser.",
+				Headers: map[string]string{
+					"Content-Type": "multipart/report; report-type=delivery-status",
+				},
+			},
+		},
+	}
+
+	result, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+	if result.RepliesDetected != 0 {
+		t.Fatalf("expected 0 replies for DSN, got %d", result.RepliesDetected)
+	}
+	if result.BouncesDetected != 1 {
+		t.Fatalf("expected 1 bounce for DSN, got %d", result.BouncesDetected)
+	}
+
+	var replyEvents, bounceEvents int
+	db.QueryRow("SELECT COUNT(*) FROM events WHERE type = 'reply'").Scan(&replyEvents)
+	db.QueryRow("SELECT COUNT(*) FROM events WHERE type = 'bounce'").Scan(&bounceEvents)
+	if replyEvents != 0 {
+		t.Fatalf("expected no reply event for DSN, got %d", replyEvents)
+	}
+	if bounceEvents != 1 {
+		t.Fatalf("expected one bounce event for DSN, got %d", bounceEvents)
+	}
+
+	var globalStatus, followUpStatus string
+	db.QueryRow("SELECT global_status FROM leads WHERE id = ?", leadIDs[0]).Scan(&globalStatus)
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE campaign_id = ? AND lead_id = ? AND step_number = 2",
+		campaignID, leadIDs[0]).Scan(&followUpStatus)
+	if globalStatus != "bounced" {
+		t.Errorf("expected lead global_status bounced, got %q", globalStatus)
+	}
+	if followUpStatus != "skipped" {
+		t.Errorf("expected pending follow-up skipped for bounce, got %q", followUpStatus)
+	}
+}
+
 func TestTick_DomainReplyCascade(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
 

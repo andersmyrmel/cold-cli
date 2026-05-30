@@ -25,18 +25,20 @@ type GWSClient interface {
 
 // GWSMessage represents a parsed Gmail message from gws output.
 type GWSMessage struct {
-	ID        string `json:"id"`
-	ThreadID  string `json:"threadId"`
-	Snippet   string `json:"snippet"`
-	TextBody  string
-	HTMLBody  string
-	LabelIDs  []string          `json:"labelIds"`
-	Headers   map[string]string // parsed from payload.headers
-	From      string
-	To        string
-	Subject   string
-	InReplyTo string
-	Date      time.Time
+	ID            string `json:"id"`
+	ThreadID      string `json:"threadId"`
+	Snippet       string `json:"snippet"`
+	TextBody      string
+	HTMLBody      string
+	MimeType      string
+	PartMimeTypes []string
+	LabelIDs      []string          `json:"labelIds"`
+	Headers       map[string]string // parsed from payload.headers
+	From          string
+	To            string
+	Subject       string
+	InReplyTo     string
+	Date          time.Time
 }
 
 // gws send response
@@ -226,11 +228,13 @@ func (g *GWSCLI) GetThreadMessages(account, threadID string) ([]GWSMessage, erro
 
 func gwsMessageFromResponse(resp gwsGetResponse) GWSMessage {
 	msg := GWSMessage{
-		ID:       resp.ID,
-		ThreadID: resp.ThreadID,
-		Snippet:  resp.Snippet,
-		LabelIDs: resp.LabelIDs,
-		Headers:  make(map[string]string),
+		ID:            resp.ID,
+		ThreadID:      resp.ThreadID,
+		Snippet:       resp.Snippet,
+		MimeType:      resp.Payload.MimeType,
+		PartMimeTypes: collectGWSMimeTypes(resp.Payload),
+		LabelIDs:      resp.LabelIDs,
+		Headers:       make(map[string]string),
 	}
 
 	for _, h := range resp.Payload.Headers {
@@ -255,6 +259,17 @@ func gwsMessageFromResponse(resp gwsGetResponse) GWSMessage {
 	}
 	msg.TextBody, msg.HTMLBody = extractGWSMessageBodies(resp.Payload)
 	return msg
+}
+
+func collectGWSMimeTypes(part gwsMessagePart) []string {
+	var out []string
+	if strings.TrimSpace(part.MimeType) != "" {
+		out = append(out, part.MimeType)
+	}
+	for _, child := range part.Parts {
+		out = append(out, collectGWSMimeTypes(child)...)
+	}
+	return out
 }
 
 func extractGWSMessageBodies(part gwsMessagePart) (textBody string, htmlBody string) {

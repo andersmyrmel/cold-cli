@@ -63,6 +63,14 @@ func IsUnsubscribeRequest(subject, snippet string) bool {
 // ProcessReplies checks inbox messages for replies to our sent emails.
 // Returns the number of new replies and unsubscribes detected.
 func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (replies int, unsubscribes int, err error) {
+	result, err := processGWSReplyMessages(db, gws, accounts)
+	if err != nil {
+		return 0, 0, err
+	}
+	return result.Replies, result.Unsubscribes, nil
+}
+
+func processGWSReplyMessages(db *sql.DB, gws GWSClient, accounts []Account) (replyPollResult, error) {
 	lastPoll := GetLastPollAt(db)
 
 	// Gmail 'after:' uses epoch seconds
@@ -75,6 +83,14 @@ func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (replies int,
 
 // ProcessIMAPReplies checks IMAP inbox messages for replies to sent SMTP/IMAP emails.
 func ProcessIMAPReplies(db *sql.DB, imap IMAPMessageLister, accounts []Account) (replies int, unsubscribes int, err error) {
+	result, err := processIMAPReplyMessages(db, imap, accounts)
+	if err != nil {
+		return 0, 0, err
+	}
+	return result.Replies, result.Unsubscribes, nil
+}
+
+func processIMAPReplyMessages(db *sql.DB, imap IMAPMessageLister, accounts []Account) (replyPollResult, error) {
 	lastPoll := GetLastPollAt(db)
 
 	return processReplyMessages(db, accounts, func(account Account) ([]GWSMessage, error) {
@@ -82,17 +98,34 @@ func ProcessIMAPReplies(db *sql.DB, imap IMAPMessageLister, accounts []Account) 
 	})
 }
 
-func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Account) ([]GWSMessage, error)) (replies int, unsubscribes int, err error) {
+type replyPollResult struct {
+	Replies      int
+	Unsubscribes int
+	Bounces      int
+	AutoReplies  int
+}
+
+type inboundClassification string
+
+const (
+	inboundClassificationReply       inboundClassification = "reply"
+	inboundClassificationUnsubscribe inboundClassification = "unsubscribe"
+	inboundClassificationBounce      inboundClassification = "bounce"
+	inboundClassificationAutoReply   inboundClassification = "auto_reply"
+)
+
+func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Account) ([]GWSMessage, error)) (replyPollResult, error) {
+	var result replyPollResult
 	for _, account := range accounts {
 		messages, err := listMessages(account)
 		if err != nil {
-			return replies, unsubscribes, fmt.Errorf("listing messages for %s: %w", account.Email, err)
+			return result, fmt.Errorf("listing messages for %s: %w", account.Email, err)
 		}
 
 		for _, msg := range messages {
-			// Dedup: skip if we already recorded this message as a reply or unsubscribe event
+			// Dedup: skip if we already recorded this inbound message classification.
 			var existing int
-			queryRowDB(db, "SELECT COUNT(*) FROM events WHERE message_id = ? AND type IN ('reply', 'unsubscribe')",
+			queryRowDB(db, "SELECT COUNT(*) FROM events WHERE message_id = ? AND type IN ('reply', 'unsubscribe', 'bounce', 'auto_reply')",
 				msg.ID).Scan(&existing)
 			if existing > 0 {
 				continue
@@ -114,7 +147,7 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 				if err == nil {
 					matched = true
 				} else if err != sql.ErrNoRows {
-					return replies, unsubscribes, fmt.Errorf("looking up event for In-Reply-To %s: %w", msg.InReplyTo, err)
+					return result, fmt.Errorf("looking up event for In-Reply-To %s: %w", msg.InReplyTo, err)
 				}
 			}
 
@@ -144,13 +177,23 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 			if threadAccountID != 0 && threadAccountID != account.ID {
 				loadedAccount, err := getAccountByID(db, threadAccountID)
 				if err != nil {
-					return replies, unsubscribes, err
+					return result, err
 				}
 				threadAccount = loadedAccount
 			}
 
-			// Check if this is an unsubscribe request
-			if IsUnsubscribeRequest(msg.Subject, msg.Snippet) {
+			switch classifyInboundMessage(msg) {
+			case inboundClassificationBounce:
+				if recordBounceForLead(db, threadAccount, campaignID, leadID, msg) {
+					result.Bounces++
+				}
+				continue
+			case inboundClassificationAutoReply:
+				if recordAutoReply(db, threadAccount, campaignID, leadID, msg) {
+					result.AutoReplies++
+				}
+				continue
+			case inboundClassificationUnsubscribe:
 				occurredAt := inboundEmailOccurredAt(msg)
 
 				// Record unsubscribe event
@@ -180,7 +223,7 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 				slog.Info("unsubscribe detected",
 					"campaign_id", campaignID, "lead_id", leadID,
 					"lead_email", leadEmail, "message_id", msg.ID)
-				unsubscribes++
+				result.Unsubscribes++
 				continue
 			}
 
@@ -245,11 +288,11 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 				}
 			}
 
-			replies++
+			result.Replies++
 		}
 	}
 
-	return replies, unsubscribes, nil
+	return result, nil
 }
 
 func inboundEmailOccurredAt(msg GWSMessage) time.Time {
@@ -279,6 +322,156 @@ func insertInboundEmailMessage(db *sql.DB, account Account, campaignID, leadID i
 		RawHeaders: emailHeadersJSON(msg.Headers),
 		OccurredAt: inboundEmailOccurredAt(msg),
 	})
+}
+
+func classifyInboundMessage(msg GWSMessage) inboundClassification {
+	if isBounceMessage(msg) {
+		return inboundClassificationBounce
+	}
+	if isAutoReplyMessage(msg) {
+		return inboundClassificationAutoReply
+	}
+	if IsUnsubscribeRequest(msg.Subject, msg.Snippet) {
+		return inboundClassificationUnsubscribe
+	}
+	return inboundClassificationReply
+}
+
+func recordAutoReply(db *sql.DB, account Account, campaignID, leadID int64, msg GWSMessage) bool {
+	if eventExistsForMessage(db, msg.ID, EmailMessageTypeAutoReply) {
+		return false
+	}
+
+	occurredAt := inboundEmailOccurredAt(msg)
+	if _, err := execDB(db, `INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id, timestamp)
+		VALUES (?, ?, ?, 'auto_reply', 0, ?, ?, ?)`,
+		campaignID, leadID, account.ID, msg.ID, msg.ThreadID, occurredAt); err != nil {
+		slog.Warn("failed to insert auto_reply event",
+			"campaign_id", campaignID, "lead_id", leadID,
+			"message_id", msg.ID, "error", err)
+		return false
+	}
+	if err := insertInboundEmailMessage(db, account, campaignID, leadID, msg, EmailMessageTypeAutoReply); err != nil {
+		slog.Warn("failed to insert auto_reply email message snapshot",
+			"campaign_id", campaignID, "lead_id", leadID,
+			"message_id", msg.ID, "error", err)
+	}
+
+	slog.Info("auto-reply ignored for reply stats",
+		"campaign_id", campaignID, "lead_id", leadID, "message_id", msg.ID)
+	return true
+}
+
+func recordBounceForLead(db *sql.DB, account Account, campaignID, leadID int64, msg GWSMessage) bool {
+	if leadID == 0 {
+		return false
+	}
+
+	var globalStatus string
+	queryRowDB(db, "SELECT global_status FROM leads WHERE id = ?", leadID).Scan(&globalStatus)
+	if globalStatus == "bounced" {
+		return false
+	}
+
+	campaignID, account.ID = resolveBounceEventContext(db, account, campaignID, leadID, msg)
+
+	if _, err := execDB(db, "UPDATE leads SET global_status = 'bounced' WHERE id = ?", leadID); err != nil {
+		slog.Warn("failed to mark lead as bounced",
+			"lead_id", leadID, "error", err)
+	}
+
+	if _, err := execDB(db, "UPDATE campaign_leads SET status = 'bounced' WHERE lead_id = ? AND status IN ('active', 'pending')", leadID); err != nil {
+		slog.Warn("failed to update campaign_leads to bounced",
+			"lead_id", leadID, "error", err)
+	}
+
+	if _, err := execDB(db, "UPDATE scheduled_sends SET status = 'skipped' WHERE lead_id = ? AND status = 'pending'", leadID); err != nil {
+		slog.Warn("failed to skip pending sends for bounced lead",
+			"lead_id", leadID, "error", err)
+	}
+
+	if campaignID != 0 && account.ID != 0 && !eventExistsForMessage(db, msg.ID, EmailMessageTypeBounce) {
+		occurredAt := inboundEmailOccurredAt(msg)
+		if _, err := execDB(db, `INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id, timestamp)
+			VALUES (?, ?, ?, 'bounce', 0, ?, ?, ?)`,
+			campaignID, leadID, account.ID, msg.ID, msg.ThreadID, occurredAt); err != nil {
+			slog.Warn("failed to insert bounce event",
+				"campaign_id", campaignID, "lead_id", leadID,
+				"message_id", msg.ID, "error", err)
+		}
+		if err := insertInboundEmailMessage(db, account, campaignID, leadID, msg, EmailMessageTypeBounce); err != nil {
+			slog.Warn("failed to insert bounce email message snapshot",
+				"campaign_id", campaignID, "lead_id", leadID,
+				"message_id", msg.ID, "error", err)
+		}
+	}
+
+	slog.Info("bounce detected",
+		"campaign_id", campaignID, "lead_id", leadID, "message_id", msg.ID)
+	return true
+}
+
+func resolveBounceEventContext(db *sql.DB, account Account, campaignID, leadID int64, msg GWSMessage) (int64, int64) {
+	accountID := account.ID
+	if campaignID != 0 && accountID != 0 {
+		return campaignID, accountID
+	}
+
+	if msg.ThreadID != "" {
+		var sentCampaignID, sentAccountID int64
+		err := queryRowDB(db, `
+			SELECT e.campaign_id, e.account_id
+			FROM events e
+			WHERE e.thread_id = ? AND e.type = 'sent'
+			ORDER BY e.timestamp DESC, e.id DESC
+			LIMIT 1`, msg.ThreadID).Scan(&sentCampaignID, &sentAccountID)
+		if err == nil {
+			if campaignID == 0 {
+				campaignID = sentCampaignID
+			}
+			if sentAccountID != 0 {
+				accountID = sentAccountID
+			}
+		}
+	}
+
+	if leadID != 0 && (campaignID == 0 || accountID == 0) {
+		var sentCampaignID, sentAccountID int64
+		err := queryRowDB(db, `
+			SELECT e.campaign_id, e.account_id
+			FROM events e
+			WHERE e.lead_id = ? AND e.type = 'sent'
+			ORDER BY e.timestamp DESC, e.id DESC
+			LIMIT 1`, leadID).Scan(&sentCampaignID, &sentAccountID)
+		if err == nil {
+			if campaignID == 0 {
+				campaignID = sentCampaignID
+			}
+			if sentAccountID != 0 {
+				accountID = sentAccountID
+			}
+		}
+	}
+
+	if leadID != 0 && campaignID == 0 {
+		_ = queryRowDB(db, `
+			SELECT campaign_id
+			FROM campaign_leads
+			WHERE lead_id = ?
+			ORDER BY campaign_id
+			LIMIT 1`, leadID).Scan(&campaignID)
+	}
+
+	return campaignID, accountID
+}
+
+func eventExistsForMessage(db *sql.DB, messageID, eventType string) bool {
+	if strings.TrimSpace(messageID) == "" {
+		return false
+	}
+	var existing int
+	queryRowDB(db, "SELECT COUNT(*) FROM events WHERE message_id = ? AND type = ?", messageID, eventType).Scan(&existing)
+	return existing > 0
 }
 
 // ProcessBounces checks inbox messages for bounce NDRs.
@@ -323,32 +516,9 @@ func processBounceMessages(db *sql.DB, accounts []Account, listMessages func(Acc
 				continue
 			}
 
-			// Dedup: skip if already bounced
-			var globalStatus string
-			queryRowDB(db, "SELECT global_status FROM leads WHERE id = ?", leadID).Scan(&globalStatus)
-			if globalStatus == "bounced" {
-				continue
+			if recordBounceForLead(db, account, 0, leadID, msg) {
+				bouncesFound++
 			}
-
-			// Mark lead as globally bounced
-			if _, err := execDB(db, "UPDATE leads SET global_status = 'bounced' WHERE id = ?", leadID); err != nil {
-				slog.Warn("failed to mark lead as bounced",
-					"lead_id", leadID, "error", err)
-			}
-
-			// Update all campaign_leads
-			if _, err := execDB(db, "UPDATE campaign_leads SET status = 'bounced' WHERE lead_id = ? AND status IN ('active', 'pending')", leadID); err != nil {
-				slog.Warn("failed to update campaign_leads to bounced",
-					"lead_id", leadID, "error", err)
-			}
-
-			// Skip all pending sends across all campaigns
-			if _, err := execDB(db, "UPDATE scheduled_sends SET status = 'skipped' WHERE lead_id = ? AND status = 'pending'", leadID); err != nil {
-				slog.Warn("failed to skip pending sends for bounced lead",
-					"lead_id", leadID, "error", err)
-			}
-
-			bouncesFound++
 		}
 	}
 
@@ -356,32 +526,185 @@ func processBounceMessages(db *sql.DB, accounts []Account, listMessages func(Acc
 }
 
 func isBounceMessage(msg GWSMessage) bool {
-	if strings.TrimSpace(msg.Headers["X-Failed-Recipients"]) != "" {
+	if strings.TrimSpace(headerValue(msg.Headers, "X-Failed-Recipients")) != "" {
 		return true
 	}
 
-	from := strings.ToLower(msg.From + " " + msg.Headers["From"])
+	if isDeliveryStatusReport(msg) {
+		return true
+	}
+
+	from := classificationText(msg.From + " " + headerValue(msg.Headers, "From"))
 	if strings.Contains(from, "mailer-daemon") || strings.Contains(from, "postmaster") {
 		return true
 	}
 
-	subject := strings.ToLower(msg.Subject)
-	bounceSubjects := []string{
+	text := classificationText(msg.Subject + " " + msg.Snippet + " " + msg.TextBody + " " + msg.HTMLBody)
+	bouncePhrases := []string{
 		"delivery status notification",
 		"delivery failed",
 		"delivery failure",
+		"delivery has failed",
 		"undelivered mail",
+		"undelivered mail returned to sender",
 		"undeliverable",
 		"address not found",
 		"mail delivery failed",
+		"message not delivered",
+		"message wasn't delivered",
+		"message could not be delivered",
 		"returned mail",
+		"550 5.1.1",
+		"nosuchuser",
+		"no such user",
+		"user unknown",
+		"recipient address rejected",
+		"mailbox unavailable",
 	}
-	for _, phrase := range bounceSubjects {
-		if strings.Contains(subject, phrase) {
+	for _, phrase := range bouncePhrases {
+		if strings.Contains(text, phrase) {
 			return true
 		}
 	}
 	return false
+}
+
+func isAutoReplyMessage(msg GWSMessage) bool {
+	if isDispositionNotificationReport(msg) {
+		return true
+	}
+
+	autoSubmitted := strings.ToLower(strings.TrimSpace(headerValue(msg.Headers, "Auto-Submitted")))
+	if autoSubmitted != "" && autoSubmitted != "no" {
+		return true
+	}
+
+	autoHeaders := []string{
+		"X-Autoreply",
+		"X-Autorespond",
+		"X-Auto-Reply",
+		"X-Auto-Response",
+	}
+	for _, name := range autoHeaders {
+		if strings.TrimSpace(headerValue(msg.Headers, name)) != "" {
+			return true
+		}
+	}
+
+	precedence := classificationText(headerValue(msg.Headers, "Precedence"))
+	if precedence == "bulk" || precedence == "auto_reply" || precedence == "auto-reply" {
+		return true
+	}
+
+	text := classificationText(msg.Subject + " " + msg.Snippet + " " + msg.TextBody + " " + msg.HTMLBody)
+	autoPhrases := []string{
+		"auto reply",
+		"auto-reply",
+		"automatic reply",
+		"automated reply",
+		"automatic response",
+		"out of office",
+		"out of the office",
+		"away from the office",
+		"thank you for contacting us",
+		"thanks for contacting us",
+		"ticket submitted",
+		"ticket has been submitted",
+		"your ticket has been submitted",
+		"we'll pick up your ticket",
+		"we will pick up your ticket",
+		"we have received your request",
+		"we've received your request",
+		"we received your request",
+		"your request has been received",
+		"support ticket",
+		"read receipt",
+		"return receipt",
+		"disposition notification",
+	}
+	for _, phrase := range autoPhrases {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isDeliveryStatusReport(msg GWSMessage) bool {
+	contentType := classificationText(headerValue(msg.Headers, "Content-Type"))
+	if strings.Contains(contentType, "message/delivery-status") {
+		return true
+	}
+	if strings.Contains(contentType, "multipart/report") && reportTypeValue(contentType) == "delivery-status" {
+		return true
+	}
+	for _, mimeType := range messageMimeTypes(msg) {
+		if strings.Contains(classificationText(mimeType), "message/delivery-status") {
+			return true
+		}
+	}
+	return false
+}
+
+func isDispositionNotificationReport(msg GWSMessage) bool {
+	contentType := classificationText(headerValue(msg.Headers, "Content-Type"))
+	if strings.Contains(contentType, "message/disposition-notification") {
+		return true
+	}
+	if strings.Contains(contentType, "multipart/report") && reportTypeValue(contentType) == "disposition-notification" {
+		return true
+	}
+	for _, mimeType := range messageMimeTypes(msg) {
+		if strings.Contains(classificationText(mimeType), "message/disposition-notification") {
+			return true
+		}
+	}
+	return false
+}
+
+func messageMimeTypes(msg GWSMessage) []string {
+	mimeTypes := []string{msg.MimeType}
+	mimeTypes = append(mimeTypes, msg.PartMimeTypes...)
+	return mimeTypes
+}
+
+func reportTypeValue(contentType string) string {
+	for _, part := range strings.Split(contentType, ";") {
+		part = strings.TrimSpace(part)
+		key, value, ok := strings.Cut(part, "=")
+		if !ok || strings.TrimSpace(key) != "report-type" {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(value), `"'`)
+	}
+	return ""
+}
+
+func headerValue(headers map[string]string, names ...string) string {
+	for _, name := range names {
+		for key, value := range headers {
+			if strings.EqualFold(key, name) {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func classificationText(value string) string {
+	value = strings.ToLower(value)
+	value = strings.NewReplacer(
+		"\u2018", "'",
+		"\u2019", "'",
+		"\u201c", `"`,
+		"\u201d", `"`,
+		"\u00a0", " ",
+		"\r", " ",
+		"\n", " ",
+		"\t", " ",
+	).Replace(value)
+	return strings.Join(strings.Fields(value), " ")
 }
 
 // resolveBounceToLead identifies which lead a bounce NDR belongs to.
@@ -402,7 +725,7 @@ func resolveBounceToLead(db *sql.DB, msg GWSMessage) (leadID int64, found bool) 
 	}
 
 	// Strategy 2: X-Failed-Recipients header
-	if failedRecip, ok := msg.Headers["X-Failed-Recipients"]; ok && failedRecip != "" {
+	if failedRecip := headerValue(msg.Headers, "X-Failed-Recipients"); failedRecip != "" {
 		email := strings.ToLower(strings.TrimSpace(failedRecip))
 		var id int64
 		err := queryRowDB(db, "SELECT id FROM leads WHERE email = ?", email).Scan(&id)
@@ -412,7 +735,7 @@ func resolveBounceToLead(db *sql.DB, msg GWSMessage) (leadID int64, found bool) 
 	}
 
 	// Strategy 3: Snippet/subject text parsing (fallback)
-	bouncedEmail := extractBouncedEmail(msg.Snippet, msg.Subject)
+	bouncedEmail := extractBouncedEmail(msg.Snippet+" "+msg.TextBody, msg.Subject)
 	if bouncedEmail != "" {
 		var id int64
 		err := queryRowDB(db, "SELECT id FROM leads WHERE email = ?", bouncedEmail).Scan(&id)

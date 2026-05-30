@@ -214,6 +214,268 @@ func TestProcessReplies_StoresRepliesOnOriginalSendingAccount(t *testing.T) {
 	}
 }
 
+func TestProcessReplies_GmailDSNClassifiedAsBounce(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (1, 1, 1, 'sent', 1, '<sent-1@gmail.com>', 'thread-casper')`)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 2, '2099-01-01', 'pending')`)
+
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{
+				ID:        "dsn-casper",
+				ThreadID:  "thread-casper",
+				InReplyTo: "<sent-1@gmail.com>",
+				From:      "Mail Delivery Subsystem <mailer-daemon@googlemail.com>",
+				Subject:   "Delivery Status Notification (Failure)",
+				Snippet:   "Address not found. Your message wasn't delivered because the address couldn't be found.",
+				TextBody:  "Address not found. 550 5.1.1 The email account that you tried to reach does not exist. NoSuchUser.",
+				Headers: map[string]string{
+					"Content-Type": "multipart/report; report-type=delivery-status",
+				},
+			},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	replies, unsubs, err := ProcessReplies(db, mock, accounts)
+	if err != nil {
+		t.Fatalf("ProcessReplies error: %v", err)
+	}
+	if replies != 0 || unsubs != 0 {
+		t.Fatalf("expected DSN to produce 0 replies and 0 unsubscribes, got replies=%d unsubs=%d", replies, unsubs)
+	}
+
+	var replyEvents, bounceEvents int
+	db.QueryRow("SELECT COUNT(*) FROM events WHERE type = 'reply'").Scan(&replyEvents)
+	db.QueryRow("SELECT COUNT(*) FROM events WHERE type = 'bounce'").Scan(&bounceEvents)
+	if replyEvents != 0 {
+		t.Fatalf("expected no reply event for DSN, got %d", replyEvents)
+	}
+	if bounceEvents != 1 {
+		t.Fatalf("expected one bounce event for DSN, got %d", bounceEvents)
+	}
+
+	var globalStatus, campaignStatus, sendStatus string
+	db.QueryRow("SELECT global_status FROM leads WHERE id = 1").Scan(&globalStatus)
+	db.QueryRow("SELECT status FROM campaign_leads WHERE campaign_id = 1 AND lead_id = 1").Scan(&campaignStatus)
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE campaign_id = 1 AND lead_id = 1").Scan(&sendStatus)
+	if globalStatus != "bounced" {
+		t.Errorf("expected lead global_status bounced, got %q", globalStatus)
+	}
+	if campaignStatus != "bounced" {
+		t.Errorf("expected campaign lead status bounced, got %q", campaignStatus)
+	}
+	if sendStatus != "skipped" {
+		t.Errorf("expected pending follow-up skipped for bounce, got %q", sendStatus)
+	}
+}
+
+func TestProcessReplies_ReadReceiptReportDoesNotBounceOrMarkReplied(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (1, 1, 1, 'sent', 1, '<sent-1@gmail.com>', 'thread-mdn')`)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 2, '2099-01-01', 'pending')`)
+
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{
+				ID:            "mdn-read-receipt",
+				ThreadID:      "thread-mdn",
+				InReplyTo:     "<sent-1@gmail.com>",
+				From:          "John Acme <john@acme.com>",
+				Subject:       "Read: product quizzes",
+				Snippet:       "This is a Return Receipt for the mail that you sent.",
+				TextBody:      "This is a Return Receipt for the mail that you sent.",
+				MimeType:      "multipart/report",
+				PartMimeTypes: []string{"text/plain", "message/disposition-notification"},
+				Headers: map[string]string{
+					"Content-Type": "multipart/report; report-type=disposition-notification",
+				},
+			},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	replies, unsubs, err := ProcessReplies(db, mock, accounts)
+	if err != nil {
+		t.Fatalf("ProcessReplies error: %v", err)
+	}
+	if replies != 0 || unsubs != 0 {
+		t.Fatalf("expected read receipt to produce 0 replies and 0 unsubscribes, got replies=%d unsubs=%d", replies, unsubs)
+	}
+
+	var replyEvents, bounceEvents, autoReplyEvents int
+	db.QueryRow("SELECT COUNT(*) FROM events WHERE type = 'reply'").Scan(&replyEvents)
+	db.QueryRow("SELECT COUNT(*) FROM events WHERE type = 'bounce'").Scan(&bounceEvents)
+	db.QueryRow("SELECT COUNT(*) FROM events WHERE type = 'auto_reply'").Scan(&autoReplyEvents)
+	if replyEvents != 0 {
+		t.Fatalf("expected no reply event for read receipt, got %d", replyEvents)
+	}
+	if bounceEvents != 0 {
+		t.Fatalf("expected no bounce event for read receipt, got %d", bounceEvents)
+	}
+	if autoReplyEvents != 1 {
+		t.Fatalf("expected one auto_reply event for read receipt, got %d", autoReplyEvents)
+	}
+
+	var globalStatus, campaignStatus, sendStatus string
+	db.QueryRow("SELECT global_status FROM leads WHERE id = 1").Scan(&globalStatus)
+	db.QueryRow("SELECT status FROM campaign_leads WHERE campaign_id = 1 AND lead_id = 1").Scan(&campaignStatus)
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE campaign_id = 1 AND lead_id = 1").Scan(&sendStatus)
+	if globalStatus != "active" {
+		t.Errorf("expected lead global_status active, got %q", globalStatus)
+	}
+	if campaignStatus != "active" {
+		t.Errorf("expected campaign lead to remain active, got %q", campaignStatus)
+	}
+	if sendStatus != "pending" {
+		t.Errorf("expected follow-up to remain pending, got %q", sendStatus)
+	}
+}
+
+func TestProcessReplies_AutoReplyDoesNotMarkLeadRepliedOrCountReplyRate(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	sentAt := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status, sent_at)
+		VALUES (1, 1, 1, 1, ?, 'sent', ?)`, sentAt, sentAt)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 2, '2099-01-01', 'pending')`)
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id, timestamp)
+		VALUES (1, 1, 1, 'sent', 1, '<sent-1@gmail.com>', 'thread-seal', ?)`, sentAt)
+
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{
+				ID:        "auto-seal",
+				ThreadID:  "thread-seal",
+				InReplyTo: "<sent-1@gmail.com>",
+				From:      "support@sealsubscriptions.com",
+				Subject:   "Re: subscriptions - auto reply",
+				Snippet:   "Thank you for contacting us. Your ticket has been submitted.",
+				TextBody:  "Thank you for contacting us. Your ticket has been submitted and we'll pick up your ticket as soon as possible.",
+				Headers: map[string]string{
+					"Auto-Submitted": "auto-replied",
+				},
+			},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	replies, unsubs, err := ProcessReplies(db, mock, accounts)
+	if err != nil {
+		t.Fatalf("ProcessReplies error: %v", err)
+	}
+	if replies != 0 || unsubs != 0 {
+		t.Fatalf("expected auto-reply to produce 0 replies and 0 unsubscribes, got replies=%d unsubs=%d", replies, unsubs)
+	}
+
+	var campaignStatus, followUpStatus string
+	db.QueryRow("SELECT status FROM campaign_leads WHERE campaign_id = 1 AND lead_id = 1").Scan(&campaignStatus)
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE campaign_id = 1 AND lead_id = 1 AND step_number = 2").Scan(&followUpStatus)
+	if campaignStatus != "active" {
+		t.Errorf("expected campaign lead to remain active, got %q", campaignStatus)
+	}
+	if followUpStatus != "pending" {
+		t.Errorf("expected follow-up to remain pending, got %q", followUpStatus)
+	}
+
+	var replyEvents, autoReplyEvents int
+	db.QueryRow("SELECT COUNT(*) FROM events WHERE type = 'reply'").Scan(&replyEvents)
+	db.QueryRow("SELECT COUNT(*) FROM events WHERE type = 'auto_reply'").Scan(&autoReplyEvents)
+	if replyEvents != 0 {
+		t.Fatalf("expected no reply events for auto-reply, got %d", replyEvents)
+	}
+	if autoReplyEvents != 1 {
+		t.Fatalf("expected one auto_reply event, got %d", autoReplyEvents)
+	}
+
+	info, err := GetCampaignStatus(db, "test")
+	if err != nil {
+		t.Fatalf("GetCampaignStatus error: %v", err)
+	}
+	if info.ReplyRate == nil {
+		t.Fatal("expected reply rate to be set")
+	}
+	if *info.ReplyRate != 0 {
+		t.Fatalf("expected 0%% reply rate for auto-reply, got %.1f%%", *info.ReplyRate)
+	}
+}
+
+func TestClassifyInboundMessage_PickZenTicketAckIsAutoReply(t *testing.T) {
+	msg := GWSMessage{
+		From:     "Fin from PickZen <support@pickzen.com>",
+		Subject:  "Re: product quizzes",
+		Snippet:  "Thanks for reaching out. We'll pick up your ticket as soon as possible.",
+		TextBody: "Thanks for reaching out. We\u2019ll pick up your ticket as soon as possible.",
+	}
+
+	if got := classifyInboundMessage(msg); got != inboundClassificationAutoReply {
+		t.Fatalf("expected PickZen-style ticket acknowledgement to classify as auto_reply, got %q", got)
+	}
+}
+
+func TestProcessReplies_HumanReplyStillCounts(t *testing.T) {
+	db := setupReplyTestDB(t)
+
+	sentAt := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status, sent_at)
+		VALUES (1, 1, 1, 1, ?, 'sent', ?)`, sentAt, sentAt)
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 2, '2099-01-01', 'pending')`)
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id, timestamp)
+		VALUES (1, 1, 1, 'sent', 1, '<sent-1@gmail.com>', 'thread-help', ?)`, sentAt)
+
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{
+				ID:        "reply-help",
+				ThreadID:  "thread-help",
+				InReplyTo: "<sent-1@gmail.com>",
+				From:      "Amir <amir@helptochoose.com>",
+				Subject:   "Re: product quizzes",
+				Snippet:   "I'm interested. Can you send more details?",
+				TextBody:  "I'm interested. Can you send more details?",
+			},
+		},
+	}
+
+	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	replies, unsubs, err := ProcessReplies(db, mock, accounts)
+	if err != nil {
+		t.Fatalf("ProcessReplies error: %v", err)
+	}
+	if replies != 1 || unsubs != 0 {
+		t.Fatalf("expected 1 human reply and 0 unsubscribes, got replies=%d unsubs=%d", replies, unsubs)
+	}
+
+	var campaignStatus, followUpStatus string
+	db.QueryRow("SELECT status FROM campaign_leads WHERE campaign_id = 1 AND lead_id = 1").Scan(&campaignStatus)
+	db.QueryRow("SELECT status FROM scheduled_sends WHERE campaign_id = 1 AND lead_id = 1 AND step_number = 2").Scan(&followUpStatus)
+	if campaignStatus != "replied" {
+		t.Errorf("expected campaign lead replied, got %q", campaignStatus)
+	}
+	if followUpStatus != "skipped" {
+		t.Errorf("expected follow-up skipped after human reply, got %q", followUpStatus)
+	}
+
+	info, err := GetCampaignStatus(db, "test")
+	if err != nil {
+		t.Fatalf("GetCampaignStatus error: %v", err)
+	}
+	if info.ReplyRate == nil {
+		t.Fatal("expected reply rate to be set")
+	}
+	if *info.ReplyRate != 100 {
+		t.Fatalf("expected 100%% reply rate for human reply, got %.1f%%", *info.ReplyRate)
+	}
+}
+
 func TestProcessIMAPReplies(t *testing.T) {
 	db := setupReplyTestDB(t)
 	db.Exec(`UPDATE accounts SET provider = ? WHERE id = 1`, AccountProviderSMTPIMAP)
