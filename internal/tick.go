@@ -88,68 +88,70 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 	}
 	discordNotificationsEnabled := discordCursorReady && !cfg.DryRun
 
-	// 1. Poll for replies and unsubscribes.
-	if len(gwsAccounts) > 0 && cfg.GWS != nil {
-		replyResult, err := processGWSReplyMessages(cfg.DB, cfg.GWS, gwsAccounts)
-		if err != nil {
-			slog.Warn("reply detection error", "error", err)
+	if !cfg.DryRun {
+		// 1. Poll for replies and unsubscribes.
+		if len(gwsAccounts) > 0 && cfg.GWS != nil {
+			replyResult, err := processGWSReplyMessages(cfg.DB, cfg.GWS, gwsAccounts)
+			if err != nil {
+				slog.Warn("reply detection error", "error", err)
+			}
+			result.RepliesDetected = replyResult.Replies
+			result.UnsubscribesDetected = replyResult.Unsubscribes
+			result.BouncesDetected += replyResult.Bounces
 		}
-		result.RepliesDetected = replyResult.Replies
-		result.UnsubscribesDetected = replyResult.Unsubscribes
-		result.BouncesDetected += replyResult.Bounces
-	}
-	if len(smtpIMAPAccounts) > 0 {
-		imap := cfg.IMAP
-		if imap == nil {
-			imap = NewIMAPTransport(cfg.SecretResolver)
+		if len(smtpIMAPAccounts) > 0 {
+			imap := cfg.IMAP
+			if imap == nil {
+				imap = NewIMAPTransport(cfg.SecretResolver)
+			}
+			replyResult, err := processIMAPReplyMessages(cfg.DB, imap, smtpIMAPAccounts)
+			if err != nil {
+				slog.Warn("IMAP reply detection error", "error", err)
+			}
+			result.RepliesDetected += replyResult.Replies
+			result.UnsubscribesDetected += replyResult.Unsubscribes
+			result.BouncesDetected += replyResult.Bounces
 		}
-		replyResult, err := processIMAPReplyMessages(cfg.DB, imap, smtpIMAPAccounts)
-		if err != nil {
-			slog.Warn("IMAP reply detection error", "error", err)
-		}
-		result.RepliesDetected += replyResult.Replies
-		result.UnsubscribesDetected += replyResult.Unsubscribes
-		result.BouncesDetected += replyResult.Bounces
-	}
 
-	// 2. Poll for bounces
-	if len(gwsAccounts) > 0 && cfg.GWS != nil {
-		bounces, err := ProcessBounces(cfg.DB, cfg.GWS, gwsAccounts)
-		if err != nil {
-			slog.Warn("bounce detection error", "error", err)
+		// 2. Poll for bounces
+		if len(gwsAccounts) > 0 && cfg.GWS != nil {
+			bounces, err := ProcessBounces(cfg.DB, cfg.GWS, gwsAccounts)
+			if err != nil {
+				slog.Warn("bounce detection error", "error", err)
+			}
+			result.BouncesDetected += bounces
 		}
-		result.BouncesDetected += bounces
-	}
-	if len(smtpIMAPAccounts) > 0 {
-		imap := cfg.IMAP
-		if imap == nil {
-			imap = NewIMAPTransport(cfg.SecretResolver)
+		if len(smtpIMAPAccounts) > 0 {
+			imap := cfg.IMAP
+			if imap == nil {
+				imap = NewIMAPTransport(cfg.SecretResolver)
+			}
+			bounces, err := ProcessIMAPBounces(cfg.DB, imap, smtpIMAPAccounts)
+			if err != nil {
+				slog.Warn("IMAP bounce detection error", "error", err)
+			}
+			result.BouncesDetected += bounces
 		}
-		bounces, err := ProcessIMAPBounces(cfg.DB, imap, smtpIMAPAccounts)
-		if err != nil {
-			slog.Warn("IMAP bounce detection error", "error", err)
-		}
-		result.BouncesDetected += bounces
-	}
 
-	if discordNotificationsEnabled {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		notified, err := ProcessDiscordNotifications(ctx, cfg.DB, cfg.DiscordNotifier, DiscordNotifyOptions{
-			Limit:     cfg.DiscordNotifyLimit,
-			Providers: cfg.DiscordProviders,
-		})
-		cancel()
-		if err != nil {
-			slog.Warn("discord notification error", "error", err)
+		if discordNotificationsEnabled {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			notified, err := ProcessDiscordNotifications(ctx, cfg.DB, cfg.DiscordNotifier, DiscordNotifyOptions{
+				Limit:     cfg.DiscordNotifyLimit,
+				Providers: cfg.DiscordProviders,
+			})
+			cancel()
+			if err != nil {
+				slog.Warn("discord notification error", "error", err)
+			}
+			result.DiscordNotificationsSent = notified
 		}
-		result.DiscordNotificationsSent = notified
-	}
 
-	// Update last_poll_at so next tick only checks new messages
-	SetLastPollAt(cfg.DB, now)
+		// Update last_poll_at so next tick only checks new messages.
+		SetLastPollAt(cfg.DB, now)
 
-	if err := completeFinishedCampaigns(cfg.DB); err != nil {
-		return nil, err
+		if err := completeFinishedCampaigns(cfg.DB); err != nil {
+			return nil, err
+		}
 	}
 
 	// 3. Preload daily send counts per account (timezone-aware day boundary)

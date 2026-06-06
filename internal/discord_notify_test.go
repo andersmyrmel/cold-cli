@@ -248,7 +248,7 @@ func TestTickSendsDiscordNotificationForNewIMAPReply(t *testing.T) {
 	}
 }
 
-func TestTickDryRunPreservesDiscordNotificationForLater(t *testing.T) {
+func TestTickDryRunLeavesReplyNotificationForRealTick(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
 	now := time.Now().UTC()
 
@@ -293,6 +293,9 @@ func TestTickDryRunPreservesDiscordNotificationForLater(t *testing.T) {
 	if tickResult.DiscordNotificationsSent != 0 || len(notifier.Events) != 0 {
 		t.Fatalf("dry-run should not send discord notifications, got result=%d events=%d", tickResult.DiscordNotificationsSent, len(notifier.Events))
 	}
+	if tickResult.RepliesDetected != 0 {
+		t.Fatalf("dry-run should not poll replies, got replies=%d", tickResult.RepliesDetected)
+	}
 
 	cursor, ok, err := getKVInt64(db, discordNotifyLastEventIDKey)
 	if err != nil {
@@ -302,12 +305,30 @@ func TestTickDryRunPreservesDiscordNotificationForLater(t *testing.T) {
 		t.Fatalf("expected dry-run cursor to stay at pre-poll sent event %d, got ok=%v id=%d", sentEventID, ok, cursor)
 	}
 
-	notified, err := ProcessDiscordNotifications(context.Background(), db, notifier, DiscordNotifyOptions{})
-	if err != nil {
-		t.Fatalf("ProcessDiscordNotifications error: %v", err)
+	var replyEvents int
+	if err := queryRowDB(db, "SELECT COUNT(*) FROM events WHERE type = 'reply'").Scan(&replyEvents); err != nil {
+		t.Fatalf("count reply events: %v", err)
 	}
-	if notified != 1 || len(notifier.Events) != 1 {
-		t.Fatalf("expected later notification for dry-run-detected reply, got notified=%d events=%d", notified, len(notifier.Events))
+	if replyEvents != 0 {
+		t.Fatalf("expected no reply event after dry-run, got %d", replyEvents)
+	}
+
+	tickResult, err = Tick(TickConfig{
+		DB:              db,
+		GWS:             &MockGWS{},
+		IMAP:            imapMock,
+		DiscordNotifier: notifier,
+		Now:             now,
+		NoSleep:         true,
+	})
+	if err != nil {
+		t.Fatalf("real tick error: %v", err)
+	}
+	if tickResult.RepliesDetected != 1 {
+		t.Fatalf("expected real tick to detect reply, got %d", tickResult.RepliesDetected)
+	}
+	if tickResult.DiscordNotificationsSent != 1 || len(notifier.Events) != 1 {
+		t.Fatalf("expected real tick notification, got result=%d events=%d", tickResult.DiscordNotificationsSent, len(notifier.Events))
 	}
 }
 

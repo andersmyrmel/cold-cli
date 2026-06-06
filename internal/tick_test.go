@@ -499,10 +499,19 @@ func TestTick_SendNowIgnoresSchedule(t *testing.T) {
 func TestTick_DryRun(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
 	now := time.Now().UTC()
+	lastPoll := time.Date(2026, 6, 2, 10, 55, 0, 0, time.UTC)
+	SetLastPollAt(db, lastPoll)
 
 	insertPendingSend(t, db, campaignID, leadIDs[0], accountIDs[0], 1, now.Add(-1*time.Hour))
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (?, ?, ?, 'sent', 1, 'sent-1', 'thread-1')`,
+		campaignID, leadIDs[0], accountIDs[0])
 
-	mock := &MockGWS{}
+	mock := &MockGWS{
+		InboxMessages: []GWSMessage{
+			{ID: "reply-1", ThreadID: "thread-1", InReplyTo: "sent-1", From: "lead@example.com"},
+		},
+	}
 
 	result, err := Tick(TickConfig{
 		DB:      db,
@@ -525,6 +534,12 @@ func TestTick_DryRun(t *testing.T) {
 	if len(mock.SentEmails) != 0 {
 		t.Errorf("expected 0 actual sends in dry-run, got %d", len(mock.SentEmails))
 	}
+	if result.RepliesDetected != 0 {
+		t.Errorf("expected 0 replies detected in dry-run, got %d", result.RepliesDetected)
+	}
+	if len(mock.ListCalls) != 0 {
+		t.Errorf("expected 0 mailbox polls in dry-run, got %d", len(mock.ListCalls))
+	}
 
 	// Send status should still be pending
 	var status string
@@ -532,6 +547,15 @@ func TestTick_DryRun(t *testing.T) {
 		campaignID, leadIDs[0]).Scan(&status)
 	if status != "pending" {
 		t.Errorf("expected status 'pending' after dry-run, got %q", status)
+	}
+
+	var replyEvents int
+	db.QueryRow("SELECT COUNT(*) FROM events WHERE type = 'reply'").Scan(&replyEvents)
+	if replyEvents != 0 {
+		t.Errorf("expected 0 reply events after dry-run, got %d", replyEvents)
+	}
+	if got := GetLastPollAt(db); !got.Equal(lastPoll) {
+		t.Errorf("expected last_poll_at unchanged at %s, got %s", lastPoll, got)
 	}
 }
 
