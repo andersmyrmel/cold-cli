@@ -2,6 +2,7 @@ package internal
 
 import (
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -606,8 +607,10 @@ func TestProcessBounces_IncludesSpamTrash(t *testing.T) {
 	}
 }
 
-func TestProcessReplies_DoesNotIncludeSpamTrash(t *testing.T) {
+func TestProcessReplies_QueryLooksBackAndExcludesOwnSender(t *testing.T) {
 	db := setupReplyTestDB(t)
+	lastPoll := time.Date(2026, 6, 2, 10, 55, 0, 0, time.UTC)
+	SetLastPollAt(db, lastPoll)
 
 	mock := &MockGWS{}
 	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
@@ -619,7 +622,20 @@ func TestProcessReplies_DoesNotIncludeSpamTrash(t *testing.T) {
 		t.Fatalf("expected 1 ListMessages call, got %d", len(mock.ListCalls))
 	}
 	if mock.ListCalls[0].IncludeSpamTrash {
-		t.Fatal("reply polling should stay inbox-scoped and not include spam/trash")
+		t.Fatal("reply polling should not include spam/trash")
+	}
+	query := mock.ListCalls[0].Query
+	for _, want := range []string{
+		"to:sender@x.com",
+		"-from:sender@x.com",
+		fmt.Sprintf("after:%d", lastPoll.Add(-replyPollOverlap).Unix()),
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("expected query %q to contain %q", query, want)
+		}
+	}
+	if strings.Contains(query, "in:inbox") {
+		t.Fatalf("reply polling should not be inbox-only, got query %q", query)
 	}
 }
 

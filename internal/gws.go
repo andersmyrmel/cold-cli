@@ -53,6 +53,7 @@ type gwsListResponse struct {
 		ID       string `json:"id"`
 		ThreadID string `json:"threadId"`
 	} `json:"messages"`
+	NextPageToken string `json:"nextPageToken"`
 }
 
 // gws get response (full format)
@@ -138,35 +139,43 @@ func (g *GWSCLI) ListMessages(account, query string, includeSpamTrash ...bool) (
 	params := map[string]any{
 		"userId":     "me",
 		"q":          query,
-		"maxResults": 25,
+		"maxResults": 100,
 	}
 	if len(includeSpamTrash) > 0 && includeSpamTrash[0] {
 		params["includeSpamTrash"] = true
 	}
-	paramsJSON, _ := json.Marshal(params)
-
-	out, stderr, err := g.run(account, "gmail", "users", "messages", "list",
-		"--params", string(paramsJSON))
-	if err != nil {
-		return nil, fmt.Errorf("gws list failed: %w\nstderr: %s", err, stderr)
-	}
-
-	if len(bytes.TrimSpace(out)) == 0 {
-		return nil, nil
-	}
-
-	var resp gwsListResponse
-	if err := json.Unmarshal(out, &resp); err != nil {
-		return nil, fmt.Errorf("parsing gws list response: %w\nraw: %s", err, out)
-	}
 
 	var messages []GWSMessage
-	for _, m := range resp.Messages {
-		msg, err := g.GetMessage(account, m.ID)
+	for {
+		paramsJSON, _ := json.Marshal(params)
+
+		out, stderr, err := g.run(account, "gmail", "users", "messages", "list",
+			"--params", string(paramsJSON))
 		if err != nil {
-			return nil, fmt.Errorf("getting message %s: %w", m.ID, err)
+			return nil, fmt.Errorf("gws list failed: %w\nstderr: %s", err, stderr)
 		}
-		messages = append(messages, *msg)
+
+		if len(bytes.TrimSpace(out)) == 0 {
+			return messages, nil
+		}
+
+		var resp gwsListResponse
+		if err := json.Unmarshal(out, &resp); err != nil {
+			return nil, fmt.Errorf("parsing gws list response: %w\nraw: %s", err, out)
+		}
+
+		for _, m := range resp.Messages {
+			msg, err := g.GetMessage(account, m.ID)
+			if err != nil {
+				return nil, fmt.Errorf("getting message %s: %w", m.ID, err)
+			}
+			messages = append(messages, *msg)
+		}
+
+		if resp.NextPageToken == "" {
+			break
+		}
+		params["pageToken"] = resp.NextPageToken
 	}
 
 	return messages, nil

@@ -72,12 +72,13 @@ func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (replies int,
 
 func processGWSReplyMessages(db *sql.DB, gws GWSClient, accounts []Account) (replyPollResult, error) {
 	lastPoll := GetLastPollAt(db)
-
-	// Gmail 'after:' uses epoch seconds
-	afterFilter := fmt.Sprintf("in:inbox after:%d", lastPoll.Unix())
+	pollSince := lastPoll.Add(-replyPollOverlap)
 
 	return processReplyMessages(db, accounts, func(account Account) ([]GWSMessage, error) {
-		return gws.ListMessages(account.Email, afterFilter)
+		// Search all mail addressed to this account, not just INBOX. Manual
+		// replies/archive actions can remove INBOX before the next tick.
+		query := fmt.Sprintf("to:%s -from:%s after:%d", account.Email, account.Email, pollSince.Unix())
+		return gws.ListMessages(account.Email, query)
 	})
 }
 
@@ -104,6 +105,8 @@ type replyPollResult struct {
 	Bounces      int
 	AutoReplies  int
 }
+
+const replyPollOverlap = 2 * time.Hour
 
 type inboundClassification string
 
