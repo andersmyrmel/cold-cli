@@ -1358,6 +1358,72 @@ var campaignAddLeadsCmd = &cobra.Command{
 	},
 }
 
+var campaignValidateLeadsCmd = &cobra.Command{
+	Use:   "validate-leads",
+	Short: "Validate campaign lead recipient emails before import",
+	Long:  "Validate a leads CSV before campaign create/add-leads. Company-domain emails are checked with MX + SMTP RCPT. Free-mail and catch-all domains require manual review unless explicitly allowed.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		leadsFile, _ := cmd.Flags().GetString("leads")
+		leadsInline, _ := cmd.Flags().GetString("leads-inline")
+		allowFreeEmail, _ := cmd.Flags().GetBool("allow-free-email")
+		allowCatchAll, _ := cmd.Flags().GetBool("allow-catch-all")
+		allowUnknown, _ := cmd.Flags().GetBool("allow-unknown")
+		noStrictExit, _ := cmd.Flags().GetBool("no-strict-exit")
+		timeoutSeconds, _ := cmd.Flags().GetInt("timeout")
+
+		if leadsFile == "" && leadsInline == "" {
+			return fmt.Errorf("provide --leads (file path) or --leads-inline (CSV content)")
+		}
+		if timeoutSeconds < 1 {
+			return fmt.Errorf("--timeout must be at least 1 second")
+		}
+
+		var records []internal.LeadRecord
+		var err error
+		if leadsInline != "" {
+			records, _, err = internal.ParseLeadsCSVFromReader(strings.NewReader(leadsInline))
+		} else {
+			records, _, err = internal.ParseLeadsCSV(leadsFile)
+		}
+		if err != nil {
+			return err
+		}
+
+		result, err := internal.ValidateLeadEmails(records, nil, internal.EmailValidationPolicy{
+			AllowFreeEmail: allowFreeEmail,
+			AllowCatchAll:  allowCatchAll,
+			AllowUnknown:   allowUnknown,
+			Timeout:        time.Duration(timeoutSeconds) * time.Second,
+		})
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			if err := printJSON(result); err != nil {
+				return err
+			}
+		} else {
+			fmt.Println("Lead email validation")
+			fmt.Printf("  checked:       %d\n", result.Checked)
+			fmt.Printf("  pass:          %d\n", result.Pass)
+			fmt.Printf("  manual_review: %d\n", result.ManualReview)
+			fmt.Printf("  fail:          %d\n", result.Fail)
+			for _, row := range result.Rows {
+				if row.ValidationStatus == internal.EmailValidationPass {
+					continue
+				}
+				fmt.Printf("  - %s %s (%s): %s\n", row.ValidationStatus, row.Email, row.SMTPStatus, row.Detail)
+			}
+		}
+
+		if result.HasBlockingRows() && !noStrictExit {
+			return fmt.Errorf("lead email validation did not pass: %d manual review, %d failed", result.ManualReview, result.Fail)
+		}
+		return nil
+	},
+}
+
 var campaignRetryCmd = &cobra.Command{
 	Use:   "retry <name|id>",
 	Short: "Reset failed sends back to pending so they get retried",
@@ -2041,9 +2107,16 @@ func init() {
 	campaignCloneCmd.Flags().String("accounts", "", "comma-separated account emails (default: reuse source accounts)")
 	campaignAddLeadsCmd.Flags().String("leads", "", "path to leads CSV file (optional per-lead schedule_timezone column supported)")
 	campaignAddLeadsCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads; optional per-lead schedule_timezone column supported)")
+	campaignValidateLeadsCmd.Flags().String("leads", "", "path to leads CSV file")
+	campaignValidateLeadsCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads)")
+	campaignValidateLeadsCmd.Flags().Bool("allow-free-email", false, "allow Gmail/free-mail domains to pass even though exact mailboxes are not SMTP-verified")
+	campaignValidateLeadsCmd.Flags().Bool("allow-catch-all", false, "allow catch-all domains to pass even though exact mailboxes are not verified")
+	campaignValidateLeadsCmd.Flags().Bool("allow-unknown", false, "allow inconclusive SMTP checks to pass")
+	campaignValidateLeadsCmd.Flags().Bool("no-strict-exit", false, "exit 0 even when rows require manual review or fail")
+	campaignValidateLeadsCmd.Flags().Int("timeout", 10, "SMTP connection/command timeout in seconds")
 	campaignRetryCmd.Flags().Int("step", 0, "only retry failed sends for this step number")
 	campaignActivateCmd.Flags().Bool("send-now", false, "set all pending sends to now so they send immediately")
-	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignRemoveLeadCmd, campaignUpdateCmd, campaignCloneCmd, campaignAddLeadsCmd, campaignInitCmd, campaignRetryCmd, campaignSendNowCmd)
+	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignRemoveLeadCmd, campaignUpdateCmd, campaignCloneCmd, campaignAddLeadsCmd, campaignValidateLeadsCmd, campaignInitCmd, campaignRetryCmd, campaignSendNowCmd)
 
 	tickCmd.Flags().Bool("dry-run", false, "show what would be sent without actually sending")
 	tickCmd.Flags().Bool("now", false, "ignore send_at timestamps and send all pending emails immediately")

@@ -162,6 +162,7 @@ cold-cli account resume <email>            # reactivate a paused account
 cold-cli account remove <email>            # deactivate (re-add later with account add)
 
 cold-cli campaign init [directory]         # scaffold example sequence.yml + leads.csv
+cold-cli campaign validate-leads --leads <csv>  # MX + SMTP recipient preflight before create/add-leads
 cold-cli --workspace storeinspect campaign create --name --sequence --leads --accounts [--start-date YYYY-MM-DD] [--send-days "1,2,3,4,5"]
 cold-cli --workspace storeinspect campaign create --name --sequence-inline '...' --leads-inline '...' --accounts  # no files needed
 cold-cli campaign clone <source> --name <new> --leads <csv>
@@ -289,6 +290,34 @@ Current limitation:
 
 Run it manually, via cron (`*/10 * * * *`), or have an agent call it. All tick activity is logged to `~/.cold-cli/tick.log` as structured JSON.
 
+### Lead Email Validation
+
+Run lead validation before `campaign create`, `campaign clone`, or `campaign add-leads`:
+
+```bash
+cold-cli campaign validate-leads --leads leads.csv
+```
+
+The validator expects the same `email` column used by campaign CSVs. It performs syntax validation, MX lookup, catch-all detection, and SMTP `RCPT TO` checks for company-domain recipients. By default it exits non-zero if any row fails or needs manual review, so it can be used as a hard preflight gate.
+
+Default policy:
+
+- `verified` company-domain recipients pass.
+- `rejected` recipients and no-MX domains fail.
+- Gmail/free-mail domains require manual review because exact mailboxes are not reliably SMTP-verifiable.
+- Catch-all domains require manual review because the exact mailbox is not verified.
+- Unknown SMTP results require manual review.
+
+Use overrides only when you have a stronger manual reason:
+
+```bash
+cold-cli campaign validate-leads --leads leads.csv --allow-free-email
+cold-cli campaign validate-leads --leads leads.csv --allow-catch-all
+cold-cli campaign validate-leads --leads leads.csv --allow-unknown
+```
+
+Do not run recipient validation inside `tick`: live SMTP checks are slow and can be inconclusive. Validate during campaign prep, then import only rows that pass or have an explicit manual approval.
+
 ### Reply & Unsubscribe Detection
 
 Matches inbox messages to sent emails using `In-Reply-To` headers, with provider thread/message IDs as a fallback where available. When a reply is detected, the lead is marked `replied` and remaining sends for that lead are cancelled. With `stop_on_domain_reply`, all other leads on the same domain are paused.
@@ -388,6 +417,7 @@ cold-cli campaign clone q1-outreach --name q2-outreach --leads new-leads.csv
 Add more leads to a running campaign:
 
 ```bash
+cold-cli campaign validate-leads --leads more-leads.csv
 cold-cli campaign add-leads q1-outreach --leads more-leads.csv
 ```
 

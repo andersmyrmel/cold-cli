@@ -1286,10 +1286,39 @@ func TestCLI_CampaignHelp(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("help failed (exit %d): %s", code, out)
 	}
-	for _, sub := range []string{"create", "preview", "activate", "pause", "resume", "status"} {
+	for _, sub := range []string{"create", "preview", "activate", "pause", "resume", "status", "validate-leads"} {
 		if !strings.Contains(out, sub) {
 			t.Errorf("campaign help missing subcommand %q: %s", sub, out)
 		}
+	}
+}
+
+func TestCLI_CampaignValidateLeadsFreeMailRequiresReview(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+
+	out, code := runCLI(t, bin, env,
+		"campaign", "validate-leads",
+		"--leads-inline", "email,first_name\nperson@gmail.com,Person\n",
+		"--json",
+	)
+	if code == 0 {
+		t.Fatalf("expected strict validation to fail, got exit 0: %s", out)
+	}
+	if !strings.Contains(out, `"manual_review": 1`) {
+		t.Fatalf("expected manual_review count in JSON output, got: %s", out)
+	}
+
+	out, code = runCLI(t, bin, env,
+		"campaign", "validate-leads",
+		"--leads-inline", "email,first_name\nperson@gmail.com,Person\n",
+		"--allow-free-email",
+		"--json",
+	)
+	if code != 0 {
+		t.Fatalf("expected allowed free-mail validation to pass (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, `"pass": 1`) {
+		t.Fatalf("expected pass count in JSON output, got: %s", out)
 	}
 }
 
