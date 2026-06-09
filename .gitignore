@@ -1,6 +1,29 @@
+# Local database/config/runtime state
 *.db
+*.db-*
+*.sqlite
+*.sqlite3
 config.yaml
+config.yml
 tick.lock
 .cold-cli/
+memory/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Logs and OS files
+*.log
+.DS_Store
+
+# Agent-local tooling
 .claude/skills/
+
+# Build artifacts
 /cold-cli

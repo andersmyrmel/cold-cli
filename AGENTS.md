@@ -81,7 +81,7 @@ Core tables: `accounts`, `campaigns`, `campaign_accounts`, `leads`, `campaign_le
 Agents adding inboxes for the hosted product should run account commands with an explicit workspace, for example:
 
 ```bash
-cold-cli --workspace storeinspect account add-smtp maya@trystoreinspect.com ...
+cold-cli --workspace workspace-a account add-smtp sender@workspace-a.example ...
 ```
 
 Campaigns can only use active accounts from the same workspace.

@@ -29,7 +29,7 @@ func TestBuildDiscordWebhookPayloadDisablesMentionsAndTruncates(t *testing.T) {
 	event := DiscordNotificationEvent{
 		EventType:    "reply",
 		Timestamp:    "2026-05-21T12:00:00Z",
-		CampaignName: "v5-app-gap-lead-gift",
+		CampaignName: "example-campaign",
 		LeadEmail:    "john@example.com",
 		LeadCompany:  "Example",
 		AccountEmail: "sender@example.com",
@@ -170,8 +170,8 @@ func TestDiscordWebhookNotifierPostsPayload(t *testing.T) {
 
 	notifier := DiscordWebhookNotifier{
 		WebhookURL: server.URL,
-		Username:   "StoreInspect Replies",
-		AvatarURL:  "https://storeinspect.com/brand/logo.png",
+		Username:   "cold-cli Replies",
+		AvatarURL:  "https://example.com/brand/logo.png",
 		HTTPClient: server.Client(),
 	}
 	err := notifier.NotifyDiscord(context.Background(), DiscordNotificationEvent{
@@ -190,10 +190,10 @@ func TestDiscordWebhookNotifierPostsPayload(t *testing.T) {
 	if len(payload.Embeds) != 1 || payload.Embeds[0].Title != "New cold email reply" {
 		t.Fatalf("unexpected payload: %#v", payload)
 	}
-	if payload.Username != "StoreInspect Replies" {
+	if payload.Username != "cold-cli Replies" {
 		t.Fatalf("expected custom username, got %q", payload.Username)
 	}
-	if payload.AvatarURL != "https://storeinspect.com/brand/logo.png" {
+	if payload.AvatarURL != "https://example.com/brand/logo.png" {
 		t.Fatalf("expected custom avatar URL, got %q", payload.AvatarURL)
 	}
 }

@@ -402,7 +402,7 @@ func TestCLI_WorkspaceScopesAccountList(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	runCLI(t, bin, env, "init")
 
-	out, code := runCLI(t, bin, env, "--workspace", "storeinspect", "account", "add", "--skip-auth", "maya@trystoreinspect.com", "--json")
+	out, code := runCLI(t, bin, env, "--workspace", "brand-a", "account", "add", "--skip-auth", "sender@brand-a.example", "--json")
 	if code != 0 {
 		t.Fatalf("workspace account add failed (exit %d): %s", code, out)
 	}
@@ -410,23 +410,23 @@ func TestCLI_WorkspaceScopesAccountList(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &added); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, out)
 	}
-	if added["workspace_id"] != "storeinspect" {
-		t.Fatalf("expected workspace_id storeinspect, got %v", added["workspace_id"])
+	if added["workspace_id"] != "brand-a" {
+		t.Fatalf("expected workspace_id brand-a, got %v", added["workspace_id"])
 	}
 
-	runCLI(t, bin, env, "--workspace", "productlair", "account", "add", "--skip-auth", "anders@productlair.com")
+	runCLI(t, bin, env, "--workspace", "brand-b", "account", "add", "--skip-auth", "sender@brand-b.example")
 
-	out, code = runCLI(t, bin, env, "--workspace", "storeinspect", "account", "list")
+	out, code = runCLI(t, bin, env, "--workspace", "brand-a", "account", "list")
 	if code != 0 {
 		t.Fatalf("workspace account list failed (exit %d): %s", code, out)
 	}
-	if !strings.Contains(out, "maya@trystoreinspect.com") {
-		t.Fatalf("expected StoreInspect account in list: %s", out)
+	if !strings.Contains(out, "sender@brand-a.example") {
+		t.Fatalf("expected brand-a account in list: %s", out)
 	}
-	if strings.Contains(out, "anders@productlair.com") {
-		t.Fatalf("did not expect ProductLair account in StoreInspect list: %s", out)
+	if strings.Contains(out, "sender@brand-b.example") {
+		t.Fatalf("did not expect brand-b account in brand-a list: %s", out)
 	}
-	if !strings.Contains(out, "WORKSPACE") || !strings.Contains(out, "storeinspect") {
+	if !strings.Contains(out, "WORKSPACE") || !strings.Contains(out, "brand-a") {
 		t.Fatalf("expected workspace column in account list: %s", out)
 	}
 }
@@ -600,27 +600,27 @@ func TestCLI_CampaignCreateUsesWorkspaceEnv(t *testing.T) {
 	bin, env, _ := setupTestEnv(t)
 	seqFile, leadsFile := setupCampaignTestFiles(t)
 	runCLI(t, bin, env, "init")
-	runCLI(t, bin, env, "--workspace", "storeinspect", "account", "add", "--skip-auth", "maya@trystoreinspect.com")
-	runCLI(t, bin, env, "--workspace", "productlair", "account", "add", "--skip-auth", "anders@productlair.com")
+	runCLI(t, bin, env, "--workspace", "brand-a", "account", "add", "--skip-auth", "sender@brand-a.example")
+	runCLI(t, bin, env, "--workspace", "brand-b", "account", "add", "--skip-auth", "sender@brand-b.example")
 
-	workspaceEnv := append(env, "COLD_CLI_WORKSPACE_ID=storeinspect")
+	workspaceEnv := append(env, "COLD_CLI_WORKSPACE_ID=brand-a")
 	out, code := runCLI(t, bin, workspaceEnv, "campaign", "create",
 		"--name", "wrong-workspace",
 		"--sequence", seqFile,
 		"--leads", leadsFile,
-		"--accounts", "anders@productlair.com")
+		"--accounts", "sender@brand-b.example")
 	if code == 0 {
 		t.Fatalf("expected cross-workspace campaign create to fail: %s", out)
 	}
-	if !strings.Contains(out, "workspace storeinspect") {
+	if !strings.Contains(out, "workspace brand-a") {
 		t.Fatalf("expected workspace error, got: %s", out)
 	}
 
 	out, code = runCLI(t, bin, workspaceEnv, "campaign", "create",
-		"--name", "storeinspect-campaign",
+		"--name", "brand-a-campaign",
 		"--sequence", seqFile,
 		"--leads", leadsFile,
-		"--accounts", "maya@trystoreinspect.com",
+		"--accounts", "sender@brand-a.example",
 		"--json")
 	if code != 0 {
 		t.Fatalf("campaign create in workspace failed (exit %d): %s", code, out)
@@ -629,8 +629,8 @@ func TestCLI_CampaignCreateUsesWorkspaceEnv(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &created); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, out)
 	}
-	if created["workspace_id"] != "storeinspect" {
-		t.Fatalf("expected campaign workspace_id storeinspect, got %v", created["workspace_id"])
+	if created["workspace_id"] != "brand-a" {
+		t.Fatalf("expected campaign workspace_id brand-a, got %v", created["workspace_id"])
 	}
 }
 

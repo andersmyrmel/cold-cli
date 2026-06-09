@@ -222,7 +222,7 @@ func TestCreateCampaign_RenderedPreview_UsesCustomCSVFields(t *testing.T) {
 
 	seqInline := `name: Test
 defaults:
-  from_name: Anders
+  from_name: Alex
 steps:
   - step: 1
     delay: 0
@@ -232,7 +232,7 @@ steps:
 
       {{opening_1}}
 
-      Anders
+      Alex
 `
 	leadsInline := "email,first_name,last_name,company,subject_1,opening_1\ntest@example.com,Alice,Smith,Acme,hello subject,Saw your page builder roundup.\n"
 
@@ -1416,33 +1416,33 @@ func TestCreateCampaignRejectsAccountFromOtherWorkspace(t *testing.T) {
 	leadsFile := tmpDir + "/leads.csv"
 	os.WriteFile(leadsFile, []byte("email\na@x.com\n"), 0644)
 
-	if _, err := AddAccountInWorkspace(db, "storeinspect", "maya@trystoreinspect.com", 8, "/tmp/storeinspect"); err != nil {
+	if _, err := AddAccountInWorkspace(db, "brand-a", "sender@brand-a.example", 8, "/tmp/brand-a"); err != nil {
 		t.Fatalf("AddAccountInWorkspace error: %v", err)
 	}
-	if _, err := AddAccountInWorkspace(db, "productlair", "anders@productlair.com", 20, "/tmp/productlair"); err != nil {
+	if _, err := AddAccountInWorkspace(db, "brand-b", "sender@brand-b.example", 20, "/tmp/brand-b"); err != nil {
 		t.Fatalf("AddAccountInWorkspace error: %v", err)
 	}
 
 	_, err := CreateCampaign(db, CreateCampaignOpts{
-		WorkspaceID:   "storeinspect",
+		WorkspaceID:   "brand-a",
 		Name:          "wrong-workspace",
 		SequenceFile:  seqFile,
 		LeadsFile:     leadsFile,
-		AccountEmails: []string{"anders@productlair.com"},
+		AccountEmails: []string{"sender@brand-b.example"},
 	})
 	if err == nil {
 		t.Fatal("expected cross-workspace account error")
 	}
-	if !strings.Contains(err.Error(), "workspace storeinspect") {
+	if !strings.Contains(err.Error(), "workspace brand-a") {
 		t.Fatalf("expected workspace-scoped account error, got %v", err)
 	}
 
 	result, err := CreateCampaign(db, CreateCampaignOpts{
-		WorkspaceID:   "storeinspect",
-		Name:          "storeinspect-campaign",
+		WorkspaceID:   "brand-a",
+		Name:          "brand-a-campaign",
 		SequenceFile:  seqFile,
 		LeadsFile:     leadsFile,
-		AccountEmails: []string{"maya@trystoreinspect.com"},
+		AccountEmails: []string{"sender@brand-a.example"},
 	})
 	if err != nil {
 		t.Fatalf("CreateCampaign error: %v", err)
@@ -1451,8 +1451,8 @@ func TestCreateCampaignRejectsAccountFromOtherWorkspace(t *testing.T) {
 	if err := db.QueryRow("SELECT workspace_id FROM campaigns WHERE id = ?", result.ID).Scan(&workspaceID); err != nil {
 		t.Fatalf("loading campaign workspace: %v", err)
 	}
-	if workspaceID != "storeinspect" {
-		t.Fatalf("expected campaign workspace storeinspect, got %q", workspaceID)
+	if workspaceID != "brand-a" {
+		t.Fatalf("expected campaign workspace brand-a, got %q", workspaceID)
 	}
 }
 

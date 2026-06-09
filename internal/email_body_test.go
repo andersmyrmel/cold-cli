@@ -10,7 +10,7 @@ func TestEmailDisplayBodyStripsGmailQuotedThread(t *testing.T) {
 here's the published link:
 https://example.com/post
 
-On Thu, Apr 30, 2026 at 7:00 PM Anders From ProductLair <anders@productlair.com> wrote:
+On Thu, Apr 30, 2026 at 7:00 PM Alex Example <alex@example.com> wrote:
 > Hi Trevor,
 >
 > Payment is done.
@@ -33,8 +33,8 @@ On Thu, Apr 30, 2026 at 7:00 PM Anders From ProductLair <anders@productlair.com>
 func TestEmailDisplayBodyStripsWrappedGmailQuotedThread(t *testing.T) {
 	raw := `Awesome, thanks!
 
-On Thu, Apr 30, 2026 at 7:28 PM Anders From ProductLair <
-anders@productlair.com> wrote:
+On Thu, Apr 30, 2026 at 7:28 PM Alex Example <
+alex@example.com> wrote:
 > Hi Trevor,
 > Thanks, looks good on my end.`
 
@@ -50,14 +50,14 @@ anders@productlair.com> wrote:
 }
 
 func TestEmailDisplayBodyStripsOutlookQuotedThread(t *testing.T) {
-	raw := `Hi Anders,
+	raw := `Hi Alex,
 
 Please go ahead and send the article.
 
 Best,
 Marcia
 
-From: Anders <anders@example.com>
+From: Alex <alex@example.com>
 Sent: Tuesday, May 5, 2026 9:14 AM
 To: Marcia <marcia@example.com>
 Subject: camp vehicle safety article
@@ -71,7 +71,7 @@ I wanted to ask about a guest article.`
 		TextBody:  raw,
 	})
 
-	want := "Hi Anders,\n\nPlease go ahead and send the article.\n\nBest,\nMarcia"
+	want := "Hi Alex,\n\nPlease go ahead and send the article.\n\nBest,\nMarcia"
 	if got != want {
 		t.Fatalf("unexpected display body:\nwant:\n%s\n\ngot:\n%s", want, got)
 	}
@@ -118,9 +118,9 @@ On Thu, Apr 30, 2026 at 12:25 PM Trevor <trevor@example.com> wrote:
 }
 
 func TestEmailDisplayHTMLKeepsBasicFormattingAndLinks(t *testing.T) {
-	raw := `<div dir="ltr">Regards,<p><strong>Josh McCann</strong><br><i>@monopolymccann</i></p>
-<p>📧 <strong>Email:</strong> <a href="mailto:monopolymccnn@gmail.com" target="_blank">monopolymccnn@gmail.com</a><br>
-📱 <strong>Instagram:</strong> <a rel="noopener" href="https://instagram.com/monopolymccann" target="_blank">@monopolymccann</a></p></div>`
+	raw := `<div dir="ltr">Regards,<p><strong>Jamie Example</strong><br><i>@examplehandle</i></p>
+<p><strong>Email:</strong> <a href="mailto:hello@example.com" target="_blank">hello@example.com</a><br>
+<strong>Profile:</strong> <a rel="noopener" href="https://example.com/profile" target="_blank">@examplehandle</a></p></div>`
 
 	got := emailDisplayHTML(EmailMessage{
 		Direction: EmailMessageDirectionInbound,
@@ -129,10 +129,10 @@ func TestEmailDisplayHTMLKeepsBasicFormattingAndLinks(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"<strong>Josh McCann</strong>",
-		"<i>@monopolymccann</i>",
-		`href="mailto:monopolymccnn@gmail.com"`,
-		`href="https://instagram.com/monopolymccann"`,
+		"<strong>Jamie Example</strong>",
+		"<i>@examplehandle</i>",
+		`href="mailto:hello@example.com"`,
+		`href="https://example.com/profile"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected display html to contain %q, got %q", want, got)

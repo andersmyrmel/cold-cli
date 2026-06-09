@@ -9,8 +9,8 @@ import (
 
 func TestBuildRawMessage_Step1(t *testing.T) {
 	raw := BuildRawMessage(EmailParams{
-		FromName:  "Anders",
-		FromEmail: "anders@example.com",
+		FromName:  "Alex",
+		FromEmail: "sender@example.com",
 		ToEmail:   "john@acme.com",
 		Subject:   "Quick question about Acme",
 		Body:      "Hi John, wanted to chat about Acme.",
@@ -27,7 +27,7 @@ func TestBuildRawMessage_Step1(t *testing.T) {
 		name     string
 		contains string
 	}{
-		{"From header", "From: Anders <anders@example.com>"},
+		{"From header", "From: Alex <sender@example.com>"},
 		{"To header", "To: john@acme.com"},
 		{"Subject header", "Subject: Quick question about Acme"},
 		{"Content-Type", "Content-Type: text/html; charset=utf-8"},
@@ -51,8 +51,8 @@ func TestBuildRawMessage_Step1(t *testing.T) {
 
 func TestBuildRawMessage_FollowUp(t *testing.T) {
 	raw := BuildRawMessage(EmailParams{
-		FromName:   "Anders",
-		FromEmail:  "anders@example.com",
+		FromName:   "Alex",
+		FromEmail:  "sender@example.com",
 		ToEmail:    "john@acme.com",
 		Subject:    "Re: Quick question about Acme",
 		Body:       "Following up...",
@@ -76,7 +76,7 @@ func TestBuildRawMessage_FollowUp(t *testing.T) {
 
 func TestBuildRawMessage_NoFromName(t *testing.T) {
 	raw := BuildRawMessage(EmailParams{
-		FromEmail: "anders@example.com",
+		FromEmail: "sender@example.com",
 		ToEmail:   "john@acme.com",
 		Subject:   "Hi",
 		Body:      "Hello",
@@ -85,14 +85,14 @@ func TestBuildRawMessage_NoFromName(t *testing.T) {
 	decoded, _ := base64.URLEncoding.DecodeString(raw)
 	msg := string(decoded)
 
-	if !strings.Contains(msg, "From: anders@example.com\r\n") {
+	if !strings.Contains(msg, "From: sender@example.com\r\n") {
 		t.Errorf("expected plain From header, got:\n%s", msg)
 	}
 }
 
 func TestBuildEmailForSend_BaseVariant(t *testing.T) {
 	seq := &Sequence{
-		Defaults: SequenceDefaults{FromName: "Anders"},
+		Defaults: SequenceDefaults{FromName: "Alex"},
 		Steps: []SequenceStep{
 			{
 				Step:    1,
@@ -112,19 +112,19 @@ func TestBuildEmailForSend_BaseVariant(t *testing.T) {
 	}
 
 	// Variant 0 = base
-	p := BuildEmailForSend(seq, 1, 0, lead, "anders@x.com")
+	p := BuildEmailForSend(seq, 1, 0, lead, "sender@x.com")
 	if p.Subject != "Hi John" {
 		t.Errorf("expected 'Hi John', got %q", p.Subject)
 	}
 	if p.Body != "Hello John at Acme" {
 		t.Errorf("expected rendered body, got %q", p.Body)
 	}
-	if p.FromName != "Anders" {
-		t.Errorf("expected from_name 'Anders', got %q", p.FromName)
+	if p.FromName != "Alex" {
+		t.Errorf("expected from_name 'Alex', got %q", p.FromName)
 	}
 
 	// Variant 1 = first variant
-	p = BuildEmailForSend(seq, 1, 1, lead, "anders@x.com")
+	p = BuildEmailForSend(seq, 1, 1, lead, "sender@x.com")
 	if p.Subject != "Acme intro" {
 		t.Errorf("expected 'Acme intro', got %q", p.Subject)
 	}
@@ -163,7 +163,7 @@ func TestBuildEmailForSend_StripsUnresolved(t *testing.T) {
 		"first_name": "John",
 	}
 
-	p := BuildEmailForSend(seq, 1, 0, lead, "anders@x.com")
+	p := BuildEmailForSend(seq, 1, 0, lead, "sender@x.com")
 	if p.Subject != "Hi John, about" {
 		t.Errorf("expected trailing unresolved stripped, got %q", p.Subject)
 	}
@@ -188,7 +188,7 @@ func TestBuildEmailForSend_EmptyFieldStripped(t *testing.T) {
 		"first_name": "",
 	}
 
-	p := BuildEmailForSend(seq, 1, 0, lead, "anders@x.com")
+	p := BuildEmailForSend(seq, 1, 0, lead, "sender@x.com")
 	// Empty value renders as empty string via RenderTemplate, no leftover placeholder
 	if p.Subject != "Hi ," {
 		t.Errorf("expected empty first_name rendered, got %q", p.Subject)
@@ -197,7 +197,7 @@ func TestBuildEmailForSend_EmptyFieldStripped(t *testing.T) {
 
 func TestPrepareFollowUp(t *testing.T) {
 	p := EmailParams{
-		FromEmail: "anders@x.com",
+		FromEmail: "sender@x.com",
 		ToEmail:   "john@acme.com",
 		Body:      "Following up...",
 	}
@@ -270,7 +270,7 @@ func TestPlainTextToHTML(t *testing.T) {
 		{"Has <html> & \"quotes\"", "<div>Has &lt;html&gt; &amp; \"quotes\"</div>"},
 		{"\n\nLeading whitespace\n\n", "<div>Leading whitespace</div>"},         // trimmed
 		{"Windows\r\nLine\r\nEndings", "<div>Windows<br>Line<br>Endings</div>"}, // CRLF
-		{"Sign off\nAnders\nCompany", "<div>Sign off<br>Anders<br>Company</div>"},
+		{"Sign off\nAlex\nCompany", "<div>Sign off<br>Alex<br>Company</div>"},
 	}
 
 	for _, tt := range tests {
@@ -316,11 +316,11 @@ func TestMockGWS_MessageIDValidation(t *testing.T) {
 
 func TestBuildRawMessage_ListUnsubscribeHeaders(t *testing.T) {
 	raw := BuildRawMessage(EmailParams{
-		FromEmail:          "anders@example.com",
+		FromEmail:          "sender@example.com",
 		ToEmail:            "john@acme.com",
 		Subject:            "Quick question",
 		Body:               "Hi John",
-		UnsubscribeEmail:   "anders@example.com",
+		UnsubscribeEmail:   "sender@example.com",
 		UnsubscribeSubject: "Unsubscribe",
 	})
 
@@ -330,7 +330,7 @@ func TestBuildRawMessage_ListUnsubscribeHeaders(t *testing.T) {
 	}
 	msg := string(decoded)
 
-	if !strings.Contains(msg, "List-Unsubscribe: <mailto:anders@example.com?subject=Unsubscribe>") {
+	if !strings.Contains(msg, "List-Unsubscribe: <mailto:sender@example.com?subject=Unsubscribe>") {
 		t.Error("missing or incorrect List-Unsubscribe header")
 	}
 	if !strings.Contains(msg, "List-Unsubscribe-Post: List-Unsubscribe=One-Click") {
@@ -340,7 +340,7 @@ func TestBuildRawMessage_ListUnsubscribeHeaders(t *testing.T) {
 
 func TestBuildRawMessage_NoUnsubscribeWhenEmpty(t *testing.T) {
 	raw := BuildRawMessage(EmailParams{
-		FromEmail: "anders@example.com",
+		FromEmail: "sender@example.com",
 		ToEmail:   "john@acme.com",
 		Subject:   "Hi",
 		Body:      "Hello",

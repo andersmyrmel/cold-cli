@@ -102,7 +102,7 @@ func TestListEmailThreadMessagesHydratesRecipientHeaders(t *testing.T) {
 		MessageID:  "reply",
 		ThreadID:   "thread-1",
 		FromEmail:  "John <john@acme.com>",
-		ToEmails:   "Anders <sender@x.com>",
+		ToEmails:   "Alex <sender@x.com>",
 		Subject:    "Re: Hi",
 		TextBody:   "Looping Sarah in.",
 		RawHeaders: `{"Cc":"Sarah <sarah@acme.com>","Reply-To":"John Replies <reply@acme.com>","Bcc":"Hidden <hidden@acme.com>"}`,

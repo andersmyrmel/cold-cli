@@ -12,7 +12,7 @@ func TestParseSequenceFromBytes_Basic(t *testing.T) {
 	yaml := []byte(`
 name: Test Sequence
 defaults:
-  from_name: "Anders"
+  from_name: "Alex"
 steps:
   - step: 1
     delay: 0

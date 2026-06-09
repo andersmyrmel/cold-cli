@@ -271,41 +271,41 @@ func TestListAccountsIncludesProvider(t *testing.T) {
 func TestAccountWorkspaceOwnership(t *testing.T) {
 	db := testDB(t)
 
-	gwsAccount, err := AddAccountInWorkspace(db, "storeinspect", "maya@trystoreinspect.com", 8, "/tmp/gws")
+	gwsAccount, err := AddAccountInWorkspace(db, "brand-a", "sender@brand-a.example", 8, "/tmp/gws")
 	if err != nil {
 		t.Fatalf("AddAccountInWorkspace error: %v", err)
 	}
-	if gwsAccount.WorkspaceID != "storeinspect" {
-		t.Fatalf("expected workspace storeinspect, got %q", gwsAccount.WorkspaceID)
+	if gwsAccount.WorkspaceID != "brand-a" {
+		t.Fatalf("expected workspace brand-a, got %q", gwsAccount.WorkspaceID)
 	}
 
 	smtpAccount, err := AddSMTPIMAPAccount(db, AddSMTPIMAPAccountOpts{
-		WorkspaceID:     "golf-cart-search",
-		Email:           "anders@mail.golfcartsearch.com",
+		WorkspaceID:     "brand-b",
+		Email:           "sender@brand-b.example",
 		DailyLimit:      25,
 		SMTPHost:        "smtp.example.com",
-		SMTPPasswordRef: "env:GOLF_PASSWORD",
+		SMTPPasswordRef: "env:BRAND_B_MAIL_PASSWORD",
 		SMTPTLSMode:     "ssl",
 		IMAPHost:        "imap.example.com",
-		IMAPPasswordRef: "env:GOLF_PASSWORD",
+		IMAPPasswordRef: "env:BRAND_B_MAIL_PASSWORD",
 		IMAPTLSMode:     "ssl",
 	})
 	if err != nil {
 		t.Fatalf("AddSMTPIMAPAccount error: %v", err)
 	}
-	if smtpAccount.WorkspaceID != "golf-cart-search" {
-		t.Fatalf("expected workspace golf-cart-search, got %q", smtpAccount.WorkspaceID)
+	if smtpAccount.WorkspaceID != "brand-b" {
+		t.Fatalf("expected workspace brand-b, got %q", smtpAccount.WorkspaceID)
 	}
 
-	storeinspectAccounts, err := ListAccountsForWorkspace(db, "storeinspect")
+	brandAAccounts, err := ListAccountsForWorkspace(db, "brand-a")
 	if err != nil {
 		t.Fatalf("ListAccountsForWorkspace error: %v", err)
 	}
-	if len(storeinspectAccounts) != 1 || storeinspectAccounts[0].Email != "maya@trystoreinspect.com" {
-		t.Fatalf("expected only StoreInspect account, got %#v", storeinspectAccounts)
+	if len(brandAAccounts) != 1 || brandAAccounts[0].Email != "sender@brand-a.example" {
+		t.Fatalf("expected only brand-a account, got %#v", brandAAccounts)
 	}
-	if storeinspectAccounts[0].WorkspaceID != "storeinspect" {
-		t.Fatalf("expected listed account workspace storeinspect, got %q", storeinspectAccounts[0].WorkspaceID)
+	if brandAAccounts[0].WorkspaceID != "brand-a" {
+		t.Fatalf("expected listed account workspace brand-a, got %q", brandAAccounts[0].WorkspaceID)
 	}
 }
 

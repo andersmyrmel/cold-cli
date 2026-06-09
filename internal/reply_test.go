@@ -356,7 +356,7 @@ func TestProcessReplies_AutoReplyDoesNotMarkLeadRepliedOrCountReplyRate(t *testi
 				ID:        "auto-seal",
 				ThreadID:  "thread-seal",
 				InReplyTo: "<sent-1@gmail.com>",
-				From:      "support@sealsubscriptions.com",
+				From:      "support@subscription-service.example",
 				Subject:   "Re: subscriptions - auto reply",
 				Snippet:   "Thank you for contacting us. Your ticket has been submitted.",
 				TextBody:  "Thank you for contacting us. Your ticket has been submitted and we'll pick up your ticket as soon as possible.",
@@ -408,16 +408,16 @@ func TestProcessReplies_AutoReplyDoesNotMarkLeadRepliedOrCountReplyRate(t *testi
 	}
 }
 
-func TestClassifyInboundMessage_PickZenTicketAckIsAutoReply(t *testing.T) {
+func TestClassifyInboundMessage_TicketAckIsAutoReply(t *testing.T) {
 	msg := GWSMessage{
-		From:     "Fin from PickZen <support@pickzen.com>",
+		From:     "Fin from Example Support <support@example-app.example>",
 		Subject:  "Re: product quizzes",
 		Snippet:  "Thanks for reaching out. We'll pick up your ticket as soon as possible.",
 		TextBody: "Thanks for reaching out. We\u2019ll pick up your ticket as soon as possible.",
 	}
 
 	if got := classifyInboundMessage(msg); got != inboundClassificationAutoReply {
-		t.Fatalf("expected PickZen-style ticket acknowledgement to classify as auto_reply, got %q", got)
+		t.Fatalf("expected ticket acknowledgement to classify as auto_reply, got %q", got)
 	}
 }
 
@@ -438,7 +438,7 @@ func TestProcessReplies_HumanReplyStillCounts(t *testing.T) {
 				ID:        "reply-help",
 				ThreadID:  "thread-help",
 				InReplyTo: "<sent-1@gmail.com>",
-				From:      "Amir <amir@helptochoose.com>",
+				From:      "Jordan <jordan@buyer.example>",
 				Subject:   "Re: product quizzes",
 				Snippet:   "I'm interested. Can you send more details?",
 				TextBody:  "I'm interested. Can you send more details?",
@@ -884,45 +884,45 @@ func TestBounce_NoMatchSkipped(t *testing.T) {
 	}
 }
 
-func TestBounce_RealWorldExamples(t *testing.T) {
-	// Simulate the three real NDR examples from the user
+func TestBounce_CommonNDRShapes(t *testing.T) {
+	// Simulate three common NDR shapes.
 	db := testDB(t)
 	db.Exec("INSERT INTO accounts (email) VALUES ('sender@x.com')")
 	db.Exec("INSERT INTO campaigns (name, status, sequence_file) VALUES ('camp1', 'active', 'seq.yml')")
-	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('paul@shopifreaks.com', 'Paul', 'shopifreaks.com')")
-	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('jill@modernretail.co', 'Jill', 'modernretail.co')")
-	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('info@nygolfcenter.com', 'Golf Center', 'nygolfcenter.com')")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('alex@alpha.example', 'Alex', 'alpha.example')")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('blake@bravo.example', 'Blake', 'bravo.example')")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('info@charlie.example', 'Charlie', 'charlie.example')")
 	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
 	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 2, 'active')")
 	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 3, 'active')")
 
 	// Sent events with thread IDs
 	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
-		VALUES (1, 1, 1, 'sent', 1, '<to-paul>', 'thread-paul')`)
+		VALUES (1, 1, 1, 'sent', 1, '<to-alpha>', 'thread-alpha')`)
 	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
-		VALUES (1, 2, 1, 'sent', 1, '<to-jill>', 'thread-jill')`)
+		VALUES (1, 2, 1, 'sent', 1, '<to-bravo>', 'thread-bravo')`)
 	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
-		VALUES (1, 3, 1, 'sent', 1, '<to-golf>', 'thread-golf')`)
+		VALUES (1, 3, 1, 'sent', 1, '<to-charlie>', 'thread-charlie')`)
 
 	mock := &MockGWS{
 		InboxMessages: []GWSMessage{
-			// Example 1: ProductLair outgoing limit — same thread, no email in snippet
+			// Example 1: sender alias failure, same thread, no email in snippet
 			{
-				ID: "ndr-paul", ThreadID: "thread-paul",
+				ID: "ndr-alpha", ThreadID: "thread-alpha",
 				From: "mailer-daemon@googlemail.com", Subject: "Delivery Status Notification",
 				Snippet: "Message not delivered. You're sending this from a different address or alias using the 'Send mail as' feature.",
 				Headers: map[string]string{},
 			},
-			// Example 2: Modern Retail address not found — same thread + email in snippet
+			// Example 2: address not found, same thread plus email in snippet
 			{
-				ID: "ndr-jill", ThreadID: "thread-jill",
+				ID: "ndr-bravo", ThreadID: "thread-bravo",
 				From: "mailer-daemon@googlemail.com", Subject: "Address not found",
-				Snippet: "Your message wasn't delivered to jill@modernretail.co because the address couldn't be found",
+				Snippet: "Your message wasn't delivered to blake@bravo.example because the address couldn't be found",
 				Headers: map[string]string{},
 			},
-			// Example 3: Migadu bounce — different thread, email buried in body (not in snippet)
+			// Example 3: provider bounce, same thread, no bounced address in snippet
 			{
-				ID: "ndr-golf", ThreadID: "thread-golf",
+				ID: "ndr-charlie", ThreadID: "thread-charlie",
 				From: "MAILER-DAEMON@migadu.com", Subject: "Undelivered Mail Returned to Sender",
 				Snippet: "This is the mail system at host mta0.migadu.com. I'm sorry to have to inform you that your message could not be delivered",
 				Headers: map[string]string{},
@@ -938,11 +938,11 @@ func TestBounce_RealWorldExamples(t *testing.T) {
 
 	// All 3 should be caught via thread matching
 	if bounces != 3 {
-		t.Errorf("expected 3 bounces from real-world examples, got %d", bounces)
+		t.Errorf("expected 3 bounces from common NDR shapes, got %d", bounces)
 	}
 
 	// Verify all leads are bounced
-	for _, email := range []string{"paul@shopifreaks.com", "jill@modernretail.co", "info@nygolfcenter.com"} {
+	for _, email := range []string{"alex@alpha.example", "blake@bravo.example", "info@charlie.example"} {
 		var status string
 		db.QueryRow("SELECT global_status FROM leads WHERE email = ?", email).Scan(&status)
 		if status != "bounced" {
