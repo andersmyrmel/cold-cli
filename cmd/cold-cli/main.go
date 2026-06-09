@@ -19,6 +19,14 @@ import (
 
 var jsonOutput bool
 var envFilePath string
+var workspaceFlag string
+
+func currentWorkspaceID() string {
+	if strings.TrimSpace(workspaceFlag) != "" {
+		return internal.NormalizeWorkspaceID(workspaceFlag)
+	}
+	return internal.WorkspaceIDFromEnv()
+}
 
 func openStore() (*internal.Store, error) {
 	if internal.CurrentDialect() == internal.DialectSQLite {
@@ -348,7 +356,8 @@ cold-cli account add sender@company.com --no-login
 		}
 		defer db.Close()
 
-		result, err := internal.AddAccount(db, email, dailyLimit, configDir)
+		workspaceID := currentWorkspaceID()
+		result, err := internal.AddAccountInWorkspace(db, workspaceID, email, dailyLimit, configDir)
 		if err != nil {
 			return err
 		}
@@ -357,7 +366,7 @@ cold-cli account add sender@company.com --no-login
 			return printJSON(result)
 		}
 
-		fmt.Printf("Added account %s (id=%d, daily_limit=%d)\n", result.Email, result.ID, result.DailyLimit)
+		fmt.Printf("Added account %s (id=%d, workspace=%s, daily_limit=%d)\n", result.Email, result.ID, result.WorkspaceID, result.DailyLimit)
 
 		// Auto-check domain deliverability
 		parts := strings.SplitN(email, "@", 2)
@@ -431,6 +440,7 @@ cold-cli account verify sender@company.com
 		defer db.Close()
 
 		result, err := internal.AddSMTPIMAPAccount(db, internal.AddSMTPIMAPAccountOpts{
+			WorkspaceID:     currentWorkspaceID(),
 			Email:           email,
 			DailyLimit:      dailyLimit,
 			SMTPHost:        smtpHost,
@@ -452,7 +462,7 @@ cold-cli account verify sender@company.com
 			return printJSON(result)
 		}
 
-		fmt.Printf("Added SMTP/IMAP account %s (id=%d, daily_limit=%d)\n", result.Email, result.ID, result.DailyLimit)
+		fmt.Printf("Added SMTP/IMAP account %s (id=%d, workspace=%s, daily_limit=%d)\n", result.Email, result.ID, result.WorkspaceID, result.DailyLimit)
 		fmt.Printf("  smtp: %s:%d (%s)\n", result.SMTPHost, result.SMTPPort, result.SMTPTLSMode)
 		fmt.Printf("  imap: %s:%d (%s)\n", result.IMAPHost, result.IMAPPort, result.IMAPTLSMode)
 		fmt.Println()
@@ -471,7 +481,13 @@ var accountListCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		accounts, err := internal.ListAccounts(db)
+		allWorkspaces, _ := cmd.Flags().GetBool("all-workspaces")
+		var accounts []internal.ListAccountsRow
+		if allWorkspaces {
+			accounts, err = internal.ListAllAccounts(db)
+		} else {
+			accounts, err = internal.ListAccountsForWorkspace(db, currentWorkspaceID())
+		}
 		if err != nil {
 			return err
 		}
@@ -486,9 +502,9 @@ var accountListCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tEMAIL\tPROVIDER\tDAILY LIMIT\tSTATUS")
+		fmt.Fprintln(w, "ID\tWORKSPACE\tEMAIL\tPROVIDER\tDAILY LIMIT\tSTATUS")
 		for _, a := range accounts {
-			fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%s\n", a.ID, a.Email, a.Provider, a.DailyLimit, a.Status)
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%d\t%s\n", a.ID, a.WorkspaceID, a.Email, a.Provider, a.DailyLimit, a.Status)
 		}
 		return w.Flush()
 	},
@@ -949,6 +965,7 @@ var campaignCreateCmd = &cobra.Command{
 		defer db.Close()
 
 		result, err := internal.CreateCampaign(db, internal.CreateCampaignOpts{
+			WorkspaceID:    currentWorkspaceID(),
 			Name:           name,
 			SequenceFile:   seqFile,
 			SequenceInline: seqInline,
@@ -990,7 +1007,7 @@ var campaignPreviewCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		name, err := internal.ResolveCampaignName(db, args[0])
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
 		if err != nil {
 			return err
 		}
@@ -1078,7 +1095,7 @@ var campaignListCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		campaigns, err := internal.ListCampaigns(db)
+		campaigns, err := internal.ListCampaignsForWorkspace(db, currentWorkspaceID())
 		if err != nil {
 			return err
 		}
@@ -1093,9 +1110,9 @@ var campaignListCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tNAME\tSTATUS\tLEADS\tSENDS\tWINDOW\tDAYS")
+		fmt.Fprintln(w, "ID\tWORKSPACE\tNAME\tSTATUS\tLEADS\tSENDS\tWINDOW\tDAYS")
 		for _, c := range campaigns {
-			fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%d\t%s\t%s\n", c.ID, c.Name, c.Status, c.Leads, c.Sends, c.SendWindow, c.SendDays)
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n", c.ID, c.WorkspaceID, c.Name, c.Status, c.Leads, c.Sends, c.SendWindow, c.SendDays)
 		}
 		return w.Flush()
 	},
@@ -1112,7 +1129,7 @@ var campaignRemoveLeadCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		name, err := internal.ResolveCampaignName(db, args[0])
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
 		if err != nil {
 			return err
 		}
@@ -1143,7 +1160,7 @@ var campaignDeleteCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		name, err := internal.ResolveCampaignName(db, args[0])
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
 		if err != nil {
 			return err
 		}
@@ -1174,7 +1191,7 @@ var campaignUpdateCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		name, err := internal.ResolveCampaignName(db, args[0])
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
 		if err != nil {
 			return err
 		}
@@ -1259,7 +1276,7 @@ var campaignCloneCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		sourceName, err := internal.ResolveCampaignName(db, args[0])
+		sourceName, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
 		if err != nil {
 			return err
 		}
@@ -1270,6 +1287,7 @@ var campaignCloneCmd = &cobra.Command{
 		}
 
 		result, err := internal.CloneCampaign(db, internal.CloneCampaignOpts{
+			WorkspaceID: currentWorkspaceID(),
 			SourceName:  sourceName,
 			NewName:     name,
 			LeadsFile:   leadsFile,
@@ -1315,7 +1333,7 @@ var campaignAddLeadsCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		name, err := internal.ResolveCampaignName(db, args[0])
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
 		if err != nil {
 			return err
 		}
@@ -1351,7 +1369,7 @@ var campaignRetryCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		name, err := internal.ResolveCampaignName(db, args[0])
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
 		if err != nil {
 			return err
 		}
@@ -1391,7 +1409,7 @@ var campaignSendNowCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		name, err := internal.ResolveCampaignName(db, args[0])
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
 		if err != nil {
 			return err
 		}
@@ -1426,7 +1444,7 @@ var campaignActivateCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		name, err := internal.ResolveCampaignName(db, args[0])
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
 		if err != nil {
 			return err
 		}
@@ -1483,7 +1501,7 @@ func campaignStateCmd(action, from, to string) func(cmd *cobra.Command, args []s
 		}
 		defer db.Close()
 
-		name, err := internal.ResolveCampaignName(db, args[0])
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
 		if err != nil {
 			return err
 		}
@@ -1512,7 +1530,7 @@ var campaignStatusCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		name, err := internal.ResolveCampaignName(db, args[0])
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
 		if err != nil {
 			return err
 		}
@@ -1724,7 +1742,7 @@ var statsCmd = &cobra.Command{
 		perVariants, _ := cmd.Flags().GetBool("variants")
 
 		if len(args) == 1 {
-			name, err := internal.ResolveCampaignName(db, args[0])
+			name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
 			if err != nil {
 				return err
 			}
@@ -1835,7 +1853,7 @@ var logCmd = &cobra.Command{
 		limit, _ := cmd.Flags().GetInt("limit")
 		var campaignName string
 		if len(args) == 1 {
-			resolved, err := internal.ResolveCampaignName(db, args[0])
+			resolved, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
 			if err != nil {
 				return err
 			}
@@ -1964,6 +1982,7 @@ bob@example.com,Bob,Jones,Widget Inc,Europe/Oslo
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 	rootCmd.PersistentFlags().StringVar(&envFilePath, "env-file", "", "load KEY=VALUE secrets from an explicit env file before running the command")
+	rootCmd.PersistentFlags().StringVar(&workspaceFlag, "workspace", "", "workspace id for account/campaign commands (default: COLD_CLI_WORKSPACE_ID or default)")
 
 	accountAddCmd.Flags().Int("daily-limit", 50, "max emails per day, shared across all campaigns using this account")
 	accountAddCmd.Flags().Bool("no-login", false, "skip OAuth login (use when gws is already authenticated)")
@@ -1992,6 +2011,7 @@ func init() {
 	accountUpdateSMTPCmd.Flags().String("imap-user", "", "IMAP username")
 	accountUpdateSMTPCmd.Flags().String("imap-password-ref", "", "IMAP password reference (empty uses SMTP password ref)")
 	accountUpdateSMTPCmd.Flags().String("imap-tls", "", "IMAP TLS mode: ssl, starttls, none")
+	accountListCmd.Flags().Bool("all-workspaces", false, "list accounts from every workspace")
 	accountCmd.AddCommand(accountAddCmd, accountAddSMTPCmd, accountListCmd, accountVerifyCmd, accountPauseCmd, accountResumeCmd, accountRemoveCmd, accountUpdateCmd, accountUpdateSMTPCmd)
 	leadListCmd.Flags().String("domain", "", "filter by domain")
 	leadListCmd.Flags().String("status", "", "filter by status (active, blacklisted, bounced)")

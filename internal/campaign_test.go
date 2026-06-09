@@ -1403,6 +1403,59 @@ func TestCreateCampaign_BadAccount(t *testing.T) {
 	}
 }
 
+func TestCreateCampaignRejectsAccountFromOtherWorkspace(t *testing.T) {
+	db := testDB(t)
+	tmpDir := t.TempDir()
+	t.Setenv("COLD_CLI_DATA_DIR", tmpDir)
+
+	os.WriteFile(tmpDir+"/config.yml", []byte("default_timezone: UTC\ndefault_daily_limit: 50\nmin_gap_seconds: 90\nmax_gap_seconds: 140\nsend_window_start: \"09:00\"\nsend_window_end: \"17:00\"\nsend_days: \"1,2,3,4,5\"\n"), 0644)
+
+	seqFile := tmpDir + "/seq.yml"
+	os.WriteFile(seqFile, []byte("name: Test\ndefaults:\n  from_name: X\nsteps:\n  - step: 1\n    delay: 0\n    subject: \"Hi\"\n    body: \"Hello\"\n"), 0644)
+
+	leadsFile := tmpDir + "/leads.csv"
+	os.WriteFile(leadsFile, []byte("email\na@x.com\n"), 0644)
+
+	if _, err := AddAccountInWorkspace(db, "storeinspect", "maya@trystoreinspect.com", 8, "/tmp/storeinspect"); err != nil {
+		t.Fatalf("AddAccountInWorkspace error: %v", err)
+	}
+	if _, err := AddAccountInWorkspace(db, "productlair", "anders@productlair.com", 20, "/tmp/productlair"); err != nil {
+		t.Fatalf("AddAccountInWorkspace error: %v", err)
+	}
+
+	_, err := CreateCampaign(db, CreateCampaignOpts{
+		WorkspaceID:   "storeinspect",
+		Name:          "wrong-workspace",
+		SequenceFile:  seqFile,
+		LeadsFile:     leadsFile,
+		AccountEmails: []string{"anders@productlair.com"},
+	})
+	if err == nil {
+		t.Fatal("expected cross-workspace account error")
+	}
+	if !strings.Contains(err.Error(), "workspace storeinspect") {
+		t.Fatalf("expected workspace-scoped account error, got %v", err)
+	}
+
+	result, err := CreateCampaign(db, CreateCampaignOpts{
+		WorkspaceID:   "storeinspect",
+		Name:          "storeinspect-campaign",
+		SequenceFile:  seqFile,
+		LeadsFile:     leadsFile,
+		AccountEmails: []string{"maya@trystoreinspect.com"},
+	})
+	if err != nil {
+		t.Fatalf("CreateCampaign error: %v", err)
+	}
+	var workspaceID string
+	if err := db.QueryRow("SELECT workspace_id FROM campaigns WHERE id = ?", result.ID).Scan(&workspaceID); err != nil {
+		t.Fatalf("loading campaign workspace: %v", err)
+	}
+	if workspaceID != "storeinspect" {
+		t.Fatalf("expected campaign workspace storeinspect, got %q", workspaceID)
+	}
+}
+
 func TestCreateCampaign_SkipsBlacklistedLeads(t *testing.T) {
 	db := testDB(t)
 	tmpDir := t.TempDir()

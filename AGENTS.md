@@ -47,6 +47,7 @@ These are settled — do not revisit without explicit instruction:
 8. **Status semantics** — `skipped` = auto-cancelled (reply/bounce/domain-reply). `cancelled` = user action (pause/blacklist). These are distinct.
 9. **Tick locking** — SQLite mode uses flock/fcntl on `~/.cold-cli/tick.lock`; Postgres mode uses an advisory lock on a dedicated connection. Keep the semantics aligned.
 10. **Validation at creation** — template placeholders validated against lead CSV at campaign creation with alias resolution and Levenshtein "Did you mean?" suggestions. Unresolved vars stripped at send time as a safety net.
+11. **Workspace ownership** — `cold-cli` is the source of truth for account/campaign ownership. Accounts and campaigns carry `workspace_id`, defaulting to `default` for backward compatibility; there is no separate app-side account mapping to maintain. Use `--workspace <id>` or `COLD_CLI_WORKSPACE_ID` when adding inboxes or campaigns for hosted/multi-brand setups; do not rely on email-domain inference as the access boundary.
 
 ## Testing
 
@@ -75,7 +76,15 @@ cancelled → user-cancelled (pause/blacklist)
 
 ## Data Model
 
-6 tables: `accounts`, `campaigns`, `campaign_accounts`, `leads`, `campaign_leads`, `scheduled_sends`, `events`. See ARCHITECTURE.md for full schema.
+Core tables: `accounts`, `campaigns`, `campaign_accounts`, `leads`, `campaign_leads`, `scheduled_sends`, `events`, plus support tables such as `email_messages` and `kv`. See ARCHITECTURE.md for full schema.
+
+Agents adding inboxes for the hosted product should run account commands with an explicit workspace, for example:
+
+```bash
+cold-cli --workspace storeinspect account add-smtp maya@trystoreinspect.com ...
+```
+
+Campaigns can only use active accounts from the same workspace.
 
 Key: `scheduled_sends` is the core table. Each row is a self-contained send instruction with current `send_at`, assigned `account_id`, `variant_index`, and (after step 1 sends) `thread_id` + `parent_message_id`. Pending rows may be rebalanced later to reflect account daily limits or actual sent-time drift. Failed sends store the reason in `error_message` and insert a `'failed'` event.
 

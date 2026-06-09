@@ -17,6 +17,7 @@ import (
 const schema = `
 CREATE TABLE IF NOT EXISTS accounts (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	workspace_id TEXT NOT NULL DEFAULT 'default',
 	email TEXT NOT NULL UNIQUE,
 	daily_limit INTEGER NOT NULL DEFAULT 50,
 	last_send_at DATETIME,
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS accounts (
 
 CREATE TABLE IF NOT EXISTS campaigns (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	workspace_id TEXT NOT NULL DEFAULT 'default',
 	name TEXT NOT NULL UNIQUE,
 	status TEXT NOT NULL DEFAULT 'draft',
 	sequence_file TEXT NOT NULL,
@@ -153,6 +155,7 @@ CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(domain);
 var postgresSchemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS accounts (
 		id BIGSERIAL PRIMARY KEY,
+		workspace_id TEXT NOT NULL DEFAULT 'default',
 		email TEXT NOT NULL UNIQUE,
 		daily_limit INTEGER NOT NULL DEFAULT 50,
 		last_send_at TIMESTAMPTZ,
@@ -172,6 +175,7 @@ var postgresSchemaStatements = []string{
 	)`,
 	`CREATE TABLE IF NOT EXISTS campaigns (
 		id BIGSERIAL PRIMARY KEY,
+		workspace_id TEXT NOT NULL DEFAULT 'default',
 		name TEXT NOT NULL UNIQUE,
 		status TEXT NOT NULL DEFAULT 'draft',
 		sequence_file TEXT NOT NULL,
@@ -278,6 +282,7 @@ var postgresSchemaStatements = []string{
 }
 
 var postgresMigrationStatements = []string{
+	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default'`,
 	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS gws_config_dir TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'gws'`,
 	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS smtp_host TEXT NOT NULL DEFAULT ''`,
@@ -290,6 +295,7 @@ var postgresMigrationStatements = []string{
 	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS imap_username TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS imap_password_ref TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS imap_tls_mode TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default'`,
 	`ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS display_body TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS display_html TEXT NOT NULL DEFAULT ''`,
 }
@@ -370,6 +376,7 @@ func bootstrapPostgresSchema(db *sql.DB) error {
 // runSQLiteMigrations applies incremental schema changes to existing databases.
 func runSQLiteMigrations(db *sql.DB) error {
 	migrations := []string{
+		"ALTER TABLE accounts ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'",
 		"ALTER TABLE accounts ADD COLUMN gws_config_dir TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'gws'",
 		"ALTER TABLE accounts ADD COLUMN smtp_host TEXT NOT NULL DEFAULT ''",
@@ -382,6 +389,7 @@ func runSQLiteMigrations(db *sql.DB) error {
 		"ALTER TABLE accounts ADD COLUMN imap_username TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE accounts ADD COLUMN imap_password_ref TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE accounts ADD COLUMN imap_tls_mode TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE campaigns ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'",
 		"ALTER TABLE email_messages ADD COLUMN display_body TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE email_messages ADD COLUMN display_html TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE campaigns ADD COLUMN sequence_content TEXT NOT NULL DEFAULT ''",

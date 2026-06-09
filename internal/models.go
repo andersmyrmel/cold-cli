@@ -9,6 +9,7 @@ const (
 
 type Account struct {
 	ID              int64      `json:"id"`
+	WorkspaceID     string     `json:"workspace_id"`
 	Email           string     `json:"email"`
 	DailyLimit      int        `json:"daily_limit"`
 	LastSendAt      *time.Time `json:"last_send_at,omitempty"`
@@ -29,6 +30,7 @@ type Account struct {
 
 type Campaign struct {
 	ID                int64     `json:"id"`
+	WorkspaceID       string    `json:"workspace_id"`
 	Name              string    `json:"name"`
 	Status            string    `json:"status"`
 	SequenceFile      string    `json:"sequence_file"`

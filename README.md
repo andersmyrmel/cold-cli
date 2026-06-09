@@ -148,21 +148,22 @@ Scheduling behavior:
 cold-cli init                              # set up ~/.cold-cli/, config, and the active DB backend
 cold-cli doctor [domain...]                # check MX, SPF, DKIM, DMARC, domain age
 
-cold-cli account add <email>               # add Google Workspace/Gmail account with gws OAuth
-cold-cli account add <email> --no-login    # add Google account without OAuth (already authed)
-cold-cli account add-smtp <email>          # add generic SMTP/IMAP account
-cold-cli account add-smtp <email> --smtp-host smtp.example.com --smtp-password-ref env:MAIL_PASSWORD --imap-host imap.example.com
+cold-cli --workspace storeinspect account add <email>  # add Google Workspace/Gmail account with gws OAuth
+cold-cli --workspace storeinspect account add <email> --no-login  # add Google account without OAuth (already authed)
+cold-cli --workspace storeinspect account add-smtp <email>  # add generic SMTP/IMAP account
+cold-cli --workspace storeinspect account add-smtp <email> --smtp-host smtp.example.com --smtp-password-ref env:MAIL_PASSWORD --imap-host imap.example.com
 cold-cli account update-smtp <email>       # update SMTP/IMAP host, port, user, secret refs, TLS, or daily limit
 cold-cli account verify <email>            # verify SMTP/IMAP connectivity and auth
-cold-cli account list                      # list accounts
+cold-cli --workspace storeinspect account list  # list accounts in one workspace
+cold-cli account list --all-workspaces     # audit all accounts across workspaces
 cold-cli account update <email>            # update settings (--daily-limit)
 cold-cli account pause <email>             # deactivate, cancel pending sends
 cold-cli account resume <email>            # reactivate a paused account
 cold-cli account remove <email>            # deactivate (re-add later with account add)
 
 cold-cli campaign init [directory]         # scaffold example sequence.yml + leads.csv
-cold-cli campaign create --name --sequence --leads --accounts [--start-date YYYY-MM-DD] [--send-days "1,2,3,4,5"]
-cold-cli campaign create --name --sequence-inline '...' --leads-inline '...' --accounts  # no files needed
+cold-cli --workspace storeinspect campaign create --name --sequence --leads --accounts [--start-date YYYY-MM-DD] [--send-days "1,2,3,4,5"]
+cold-cli --workspace storeinspect campaign create --name --sequence-inline '...' --leads-inline '...' --accounts  # no files needed
 cold-cli campaign clone <source> --name <new> --leads <csv>
 cold-cli campaign add-leads <name|id> --leads <csv>    # or --leads-inline '...'
 cold-cli campaign remove-lead <name|id> <email>        # remove one lead from a campaign
@@ -175,7 +176,7 @@ cold-cli campaign send-now <name|id>       # set all pending sends to now
 cold-cli campaign pause <name|id>          # stop sending
 cold-cli campaign resume <name|id>         # resume
 cold-cli campaign status <name|id>         # details + reply rate + next/last send
-cold-cli campaign list                     # list all campaigns (with send window + days)
+cold-cli --workspace storeinspect campaign list  # list workspace campaigns (with send window + days)
 cold-cli campaign update <name|id>         # update sequence, send window/days, timezone, gaps
 cold-cli campaign update <name|id> --send-days "0,1,2,3,4,5,6"  # reschedule pending sends only
 cold-cli campaign delete <name|id>         # delete campaign and all data
@@ -204,6 +205,31 @@ cold-cli lead blacklist <email|domain>     # blacklist + cancel pending sends
 ```
 
 All commands support `--json` for programmatic use.
+
+### Workspaces
+
+`cold-cli` is the source of truth for account and campaign ownership. Accounts
+and campaigns carry a `workspace_id`; commands use `--workspace <id>`, then
+`COLD_CLI_WORKSPACE_ID`, then `default`.
+
+Use explicit workspaces for hosted or multi-brand setups:
+
+```bash
+cold-cli --workspace storeinspect account add-smtp maya@trystoreinspect.com \
+  --smtp-host smtp.example.com \
+  --smtp-password-ref env:MAYA_MAIL_PASSWORD \
+  --imap-host imap.example.com
+
+cold-cli --workspace storeinspect campaign create \
+  --name storeinspect-june \
+  --sequence sequence.yml \
+  --leads leads.csv \
+  --accounts maya@trystoreinspect.com
+```
+
+Campaign creation only accepts active accounts from the same workspace. Do not
+infer ownership from sender domains except as a one-time suggestion before
+writing the explicit `workspace_id`.
 
 ## Discord Reply Notifications
 
@@ -281,7 +307,7 @@ Three-strategy fallback:
 Google Workspace/Gmail accounts use `gws` OAuth and Gmail API send/inbox operations:
 
 ```bash
-cold-cli account add sender@company.com
+cold-cli --workspace storeinspect account add sender@company.com
 ```
 
 Generic SMTP/IMAP accounts store server settings and secret references. SMTP sends mail; IMAP polls for replies, unsubscribes, and bounces. Raw passwords are not stored. Use `env:NAME` references and provide the environment variable wherever `cold-cli tick` runs:

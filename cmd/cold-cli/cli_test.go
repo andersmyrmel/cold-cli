@@ -398,6 +398,39 @@ func TestCLI_AccountList_JSON(t *testing.T) {
 	}
 }
 
+func TestCLI_WorkspaceScopesAccountList(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "--workspace", "storeinspect", "account", "add", "--skip-auth", "maya@trystoreinspect.com", "--json")
+	if code != 0 {
+		t.Fatalf("workspace account add failed (exit %d): %s", code, out)
+	}
+	var added map[string]any
+	if err := json.Unmarshal([]byte(out), &added); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if added["workspace_id"] != "storeinspect" {
+		t.Fatalf("expected workspace_id storeinspect, got %v", added["workspace_id"])
+	}
+
+	runCLI(t, bin, env, "--workspace", "productlair", "account", "add", "--skip-auth", "anders@productlair.com")
+
+	out, code = runCLI(t, bin, env, "--workspace", "storeinspect", "account", "list")
+	if code != 0 {
+		t.Fatalf("workspace account list failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "maya@trystoreinspect.com") {
+		t.Fatalf("expected StoreInspect account in list: %s", out)
+	}
+	if strings.Contains(out, "anders@productlair.com") {
+		t.Fatalf("did not expect ProductLair account in StoreInspect list: %s", out)
+	}
+	if !strings.Contains(out, "WORKSPACE") || !strings.Contains(out, "storeinspect") {
+		t.Fatalf("expected workspace column in account list: %s", out)
+	}
+}
+
 // --- campaign tests ---
 
 func setupCampaignTestFiles(t *testing.T) (seqFile, leadsFile string) {
@@ -560,6 +593,44 @@ func TestCLI_CampaignCreate_BadAccount(t *testing.T) {
 	}
 	if !strings.Contains(out, "not found") {
 		t.Errorf("expected 'not found' error: %s", out)
+	}
+}
+
+func TestCLI_CampaignCreateUsesWorkspaceEnv(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "--workspace", "storeinspect", "account", "add", "--skip-auth", "maya@trystoreinspect.com")
+	runCLI(t, bin, env, "--workspace", "productlair", "account", "add", "--skip-auth", "anders@productlair.com")
+
+	workspaceEnv := append(env, "COLD_CLI_WORKSPACE_ID=storeinspect")
+	out, code := runCLI(t, bin, workspaceEnv, "campaign", "create",
+		"--name", "wrong-workspace",
+		"--sequence", seqFile,
+		"--leads", leadsFile,
+		"--accounts", "anders@productlair.com")
+	if code == 0 {
+		t.Fatalf("expected cross-workspace campaign create to fail: %s", out)
+	}
+	if !strings.Contains(out, "workspace storeinspect") {
+		t.Fatalf("expected workspace error, got: %s", out)
+	}
+
+	out, code = runCLI(t, bin, workspaceEnv, "campaign", "create",
+		"--name", "storeinspect-campaign",
+		"--sequence", seqFile,
+		"--leads", leadsFile,
+		"--accounts", "maya@trystoreinspect.com",
+		"--json")
+	if code != 0 {
+		t.Fatalf("campaign create in workspace failed (exit %d): %s", code, out)
+	}
+	var created map[string]any
+	if err := json.Unmarshal([]byte(out), &created); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if created["workspace_id"] != "storeinspect" {
+		t.Fatalf("expected campaign workspace_id storeinspect, got %v", created["workspace_id"])
 	}
 }
 

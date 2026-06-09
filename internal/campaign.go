@@ -14,12 +14,19 @@ var timeNow = time.Now
 // ResolveCampaignName accepts a campaign name or numeric ID and returns the campaign name.
 // This lets users reference campaigns by either their name or the ID shown in "campaign list".
 func ResolveCampaignName(db *sql.DB, nameOrID string) (string, error) {
+	return ResolveCampaignNameInWorkspace(db, DefaultWorkspaceID, nameOrID)
+}
+
+// ResolveCampaignNameInWorkspace accepts a campaign name or numeric ID and returns the campaign name
+// for one workspace.
+func ResolveCampaignNameInWorkspace(db *sql.DB, workspaceID, nameOrID string) (string, error) {
+	workspaceID = NormalizeWorkspaceID(workspaceID)
 	// Try as numeric ID first
 	if id, err := strconv.ParseInt(nameOrID, 10, 64); err == nil {
 		var name string
-		err := queryRowDB(db, "SELECT name FROM campaigns WHERE id = ?", id).Scan(&name)
+		err := queryRowDB(db, "SELECT name FROM campaigns WHERE workspace_id = ? AND id = ?", workspaceID, id).Scan(&name)
 		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("campaign with ID %d not found", id)
+			return "", fmt.Errorf("campaign with ID %d not found in workspace %s", id, workspaceID)
 		}
 		if err != nil {
 			return "", fmt.Errorf("looking up campaign by ID: %w", err)
@@ -28,9 +35,9 @@ func ResolveCampaignName(db *sql.DB, nameOrID string) (string, error) {
 	}
 	// Otherwise treat as name — verify it exists
 	var name string
-	err := queryRowDB(db, "SELECT name FROM campaigns WHERE name = ?", nameOrID).Scan(&name)
+	err := queryRowDB(db, "SELECT name FROM campaigns WHERE workspace_id = ? AND name = ?", workspaceID, nameOrID).Scan(&name)
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("campaign %q not found", nameOrID)
+		return "", fmt.Errorf("campaign %q not found in workspace %s", nameOrID, workspaceID)
 	}
 	if err != nil {
 		return "", fmt.Errorf("looking up campaign: %w", err)
@@ -40,6 +47,7 @@ func ResolveCampaignName(db *sql.DB, nameOrID string) (string, error) {
 
 // CreateCampaignOpts holds options for CreateCampaign.
 type CreateCampaignOpts struct {
+	WorkspaceID     string
 	Name            string
 	SequenceFile    string
 	SequenceInline  string // inline YAML content (alternative to SequenceFile)
@@ -56,6 +64,7 @@ type CreateCampaignOpts struct {
 // CreateCampaignResult is returned by CreateCampaign.
 type CreateCampaignResult struct {
 	ID             int64    `json:"id"`
+	WorkspaceID    string   `json:"workspace_id"`
 	Name           string   `json:"name"`
 	Status         string   `json:"status"`
 	Leads          int      `json:"leads"`
@@ -66,6 +75,7 @@ type CreateCampaignResult struct {
 
 // CreateDraftCampaignOpts holds options for CreateDraftCampaign.
 type CreateDraftCampaignOpts struct {
+	WorkspaceID     string
 	Name            string
 	AccountEmails   []string
 	SendWindowStart string
@@ -76,6 +86,7 @@ type CreateDraftCampaignOpts struct {
 
 // CreateDraftCampaign inserts a draft campaign shell without sequence steps or leads.
 func CreateDraftCampaign(db *sql.DB, opts CreateDraftCampaignOpts) (*CreateCampaignResult, error) {
+	workspaceID := NormalizeWorkspaceID(opts.WorkspaceID)
 	name := strings.TrimSpace(opts.Name)
 	if name == "" {
 		return nil, fmt.Errorf("campaign name is required")
@@ -118,21 +129,9 @@ func CreateDraftCampaign(db *sql.DB, opts CreateDraftCampaignOpts) (*CreateCampa
 		return nil, fmt.Errorf("invalid timezone %q: %w", timezone, err)
 	}
 
-	var accountIDs []int64
-	for _, email := range opts.AccountEmails {
-		email = strings.TrimSpace(email)
-		if email == "" {
-			continue
-		}
-		var id int64
-		err := queryRowDB(db, "SELECT id FROM accounts WHERE email = ? AND status = 'active'", email).Scan(&id)
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("account %s not found or not active", email)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("looking up account %s: %w", email, err)
-		}
-		accountIDs = append(accountIDs, id)
+	accountIDs, err := resolveWorkspaceAccountIDs(db, workspaceID, opts.AccountEmails)
+	if err != nil {
+		return nil, err
 	}
 	if len(accountIDs) == 0 {
 		return nil, fmt.Errorf("at least one active account is required")
@@ -145,10 +144,10 @@ func CreateDraftCampaign(db *sql.DB, opts CreateDraftCampaignOpts) (*CreateCampa
 		var out draftResult
 
 		err := tx.QueryRow(`
-			INSERT INTO campaigns (name, status, sequence_file, sequence_content, send_window_start, send_window_end,
+			INSERT INTO campaigns (workspace_id, name, status, sequence_file, sequence_content, send_window_start, send_window_end,
 				send_days, timezone, min_gap_seconds, max_gap_seconds)
-			VALUES (?, 'draft', ?, '', ?, ?, ?, ?, ?, ?) RETURNING id`,
-			name, "(draft)",
+			VALUES (?, ?, 'draft', ?, '', ?, ?, ?, ?, ?, ?) RETURNING id`,
+			workspaceID, name, "(draft)",
 			sendWindowStart, sendWindowEnd,
 			sendDays, timezone,
 			cfg.MinGapSeconds, cfg.MaxGapSeconds,
@@ -174,6 +173,7 @@ func CreateDraftCampaign(db *sql.DB, opts CreateDraftCampaignOpts) (*CreateCampa
 
 	return &CreateCampaignResult{
 		ID:             res.campaignID,
+		WorkspaceID:    workspaceID,
 		Name:           name,
 		Status:         "draft",
 		Leads:          0,
@@ -182,8 +182,38 @@ func CreateDraftCampaign(db *sql.DB, opts CreateDraftCampaignOpts) (*CreateCampa
 	}, nil
 }
 
+func resolveWorkspaceAccountIDs(db *sql.DB, workspaceID string, accountEmails []string) ([]int64, error) {
+	workspaceID = NormalizeWorkspaceID(workspaceID)
+
+	var accountIDs []int64
+	for _, email := range accountEmails {
+		email = strings.TrimSpace(email)
+		if email == "" {
+			continue
+		}
+
+		var id int64
+		err := queryRowDB(
+			db,
+			"SELECT id FROM accounts WHERE workspace_id = ? AND email = ? AND status = 'active'",
+			workspaceID,
+			email,
+		).Scan(&id)
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("account %s not found or not active in workspace %s", email, workspaceID)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("looking up account %s in workspace %s: %w", email, workspaceID, err)
+		}
+		accountIDs = append(accountIDs, id)
+	}
+
+	return accountIDs, nil
+}
+
 // CreateCampaign parses sequence+CSV, validates, computes schedule, and inserts everything.
 func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult, error) {
+	workspaceID := NormalizeWorkspaceID(opts.WorkspaceID)
 	var seq *Sequence
 	var seqContent []byte
 	var err error
@@ -220,18 +250,9 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 		return nil, err
 	}
 
-	var accountIDs []int64
-	for _, email := range opts.AccountEmails {
-		email = strings.TrimSpace(email)
-		var id int64
-		err := queryRowDB(db, "SELECT id FROM accounts WHERE email = ? AND status = 'active'", email).Scan(&id)
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("account %s not found or not active", email)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("looking up account %s: %w", email, err)
-		}
-		accountIDs = append(accountIDs, id)
+	accountIDs, err := resolveWorkspaceAccountIDs(db, workspaceID, opts.AccountEmails)
+	if err != nil {
+		return nil, err
 	}
 
 	cfg, err := LoadConfig()
@@ -299,10 +320,10 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 		var out createResult
 
 		err := tx.QueryRow(`
-			INSERT INTO campaigns (name, status, sequence_file, sequence_content, start_date, send_window_start, send_window_end,
+			INSERT INTO campaigns (workspace_id, name, status, sequence_file, sequence_content, start_date, send_window_start, send_window_end,
 				send_days, timezone, min_gap_seconds, max_gap_seconds)
-			VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-			opts.Name, seqFile, string(seqContent),
+			VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+			workspaceID, opts.Name, seqFile, string(seqContent),
 			opts.StartDate,
 			sendWindowStart, sendWindowEnd,
 			sendDaysStr, timezone,
@@ -416,6 +437,7 @@ func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult,
 
 	return &CreateCampaignResult{
 		ID:             res.campaignID,
+		WorkspaceID:    workspaceID,
 		Name:           opts.Name,
 		Status:         "draft",
 		Leads:          res.leadCount,
@@ -857,24 +879,34 @@ func GetCampaignStatus(db *sql.DB, name string) (*CampaignStatusInfo, error) {
 
 // CampaignListRow is a row from ListCampaigns.
 type CampaignListRow struct {
-	ID         int64  `json:"id"`
-	Name       string `json:"name"`
-	Status     string `json:"status"`
-	Leads      int    `json:"leads"`
-	Sends      int    `json:"sends"`
-	SendWindow string `json:"send_window"`
-	SendDays   string `json:"send_days"`
+	ID          int64  `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	Leads       int    `json:"leads"`
+	Sends       int    `json:"sends"`
+	SendWindow  string `json:"send_window"`
+	SendDays    string `json:"send_days"`
 }
 
-// ListCampaigns returns all campaigns with lead and send counts.
+// ListCampaigns returns campaigns in the default workspace with lead and send counts.
 func ListCampaigns(db *sql.DB) ([]CampaignListRow, error) {
+	return ListCampaignsForWorkspace(db, DefaultWorkspaceID)
+}
+
+// ListCampaignsForWorkspace returns campaigns in one workspace with lead and send counts.
+func ListCampaignsForWorkspace(db *sql.DB, workspaceID string) ([]CampaignListRow, error) {
+	workspaceID = NormalizeWorkspaceID(workspaceID)
 	rows, err := queryDB(db, `
-		SELECT c.id, c.name, c.status,
+		SELECT c.id, c.workspace_id, c.name, c.status,
 			(SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = c.id) as leads,
 			(SELECT COUNT(*) FROM scheduled_sends WHERE campaign_id = c.id) as sends,
 			c.send_window_start, c.send_window_end, c.send_days
 		FROM campaigns c
-		ORDER BY c.id DESC`)
+		WHERE c.workspace_id = ?
+		ORDER BY c.id DESC`,
+		workspaceID,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("listing campaigns: %w", err)
 	}
@@ -884,7 +916,7 @@ func ListCampaigns(db *sql.DB) ([]CampaignListRow, error) {
 	for rows.Next() {
 		var c CampaignListRow
 		var windowStart, windowEnd, sendDays string
-		rows.Scan(&c.ID, &c.Name, &c.Status, &c.Leads, &c.Sends, &windowStart, &windowEnd, &sendDays)
+		rows.Scan(&c.ID, &c.WorkspaceID, &c.Name, &c.Status, &c.Leads, &c.Sends, &windowStart, &windowEnd, &sendDays)
 		c.SendWindow = windowStart + "-" + windowEnd
 		c.SendDays = FormatSendDays(sendDays)
 		campaigns = append(campaigns, c)
@@ -958,6 +990,7 @@ func DeleteCampaign(db *sql.DB, name string) (int64, error) {
 
 // CloneCampaignOpts holds options for CloneCampaign.
 type CloneCampaignOpts struct {
+	WorkspaceID string
 	SourceName  string
 	NewName     string
 	LeadsFile   string
@@ -967,6 +1000,7 @@ type CloneCampaignOpts struct {
 
 // CloneCampaign creates a new campaign by copying settings from an existing one with new leads.
 func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, error) {
+	workspaceID := NormalizeWorkspaceID(opts.WorkspaceID)
 	// Load source campaign
 	var src struct {
 		ID           int64
@@ -983,11 +1017,11 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 	}
 	err := queryRowDB(db, `SELECT id, sequence_file, sequence_content, stop_on_reply, stop_on_domain_reply,
 		send_window_start, send_window_end, send_days, timezone, min_gap_seconds, max_gap_seconds
-		FROM campaigns WHERE name = ?`, opts.SourceName).
+		FROM campaigns WHERE workspace_id = ? AND name = ?`, workspaceID, opts.SourceName).
 		Scan(&src.ID, &src.SeqFile, &src.SeqContent, &src.StopOnReply, &src.StopOnDomain,
 			&src.WindowStart, &src.WindowEnd, &src.SendDays, &src.Timezone, &src.MinGap, &src.MaxGap)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("source campaign %q not found", opts.SourceName)
+		return nil, fmt.Errorf("source campaign %q not found in workspace %s", opts.SourceName, workspaceID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("loading source campaign: %w", err)
@@ -1027,13 +1061,9 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 	// Resolve accounts
 	var accountIDs []int64
 	if len(opts.Accounts) > 0 {
-		for _, email := range opts.Accounts {
-			email = strings.TrimSpace(email)
-			var id int64
-			if err := queryRowDB(db, "SELECT id FROM accounts WHERE email = ? AND status = 'active'", email).Scan(&id); err != nil {
-				return nil, fmt.Errorf("account %s not found or not active", email)
-			}
-			accountIDs = append(accountIDs, id)
+		accountIDs, err = resolveWorkspaceAccountIDs(db, workspaceID, opts.Accounts)
+		if err != nil {
+			return nil, err
 		}
 	} else {
 		// Reuse source campaign's accounts
@@ -1076,10 +1106,10 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 		var out cloneResult
 
 		err := tx.QueryRow(`
-			INSERT INTO campaigns (name, status, sequence_file, sequence_content, start_date, stop_on_reply, stop_on_domain_reply,
+			INSERT INTO campaigns (workspace_id, name, status, sequence_file, sequence_content, start_date, stop_on_reply, stop_on_domain_reply,
 				send_window_start, send_window_end, send_days, timezone, min_gap_seconds, max_gap_seconds)
-			VALUES (?, 'draft', ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-			opts.NewName, src.SeqFile, src.SeqContent, src.StopOnReply, src.StopOnDomain,
+			VALUES (?, ?, 'draft', ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+			workspaceID, opts.NewName, src.SeqFile, src.SeqContent, src.StopOnReply, src.StopOnDomain,
 			src.WindowStart, src.WindowEnd, src.SendDays, src.Timezone, src.MinGap, src.MaxGap,
 		).Scan(&out.campaignID)
 		if err != nil {
@@ -1115,6 +1145,7 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 
 	return &CreateCampaignResult{
 		ID:             result.campaignID,
+		WorkspaceID:    workspaceID,
 		Name:           opts.NewName,
 		Status:         "draft",
 		Leads:          result.leadsAdded,

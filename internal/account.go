@@ -15,6 +15,7 @@ import (
 // AddAccountResult is returned by AddAccount.
 type AddAccountResult struct {
 	ID           int64  `json:"id"`
+	WorkspaceID  string `json:"workspace_id"`
 	Email        string `json:"email"`
 	DailyLimit   int    `json:"daily_limit"`
 	Status       string `json:"status"`
@@ -24,6 +25,7 @@ type AddAccountResult struct {
 
 // AddSMTPIMAPAccountOpts holds settings for a generic SMTP/IMAP account.
 type AddSMTPIMAPAccountOpts struct {
+	WorkspaceID     string
 	Email           string
 	DailyLimit      int
 	SMTPHost        string
@@ -41,6 +43,7 @@ type AddSMTPIMAPAccountOpts struct {
 // AddSMTPIMAPAccountResult is returned by AddSMTPIMAPAccount.
 type AddSMTPIMAPAccountResult struct {
 	ID           int64  `json:"id"`
+	WorkspaceID  string `json:"workspace_id"`
 	Email        string `json:"email"`
 	DailyLimit   int    `json:"daily_limit"`
 	Status       string `json:"status"`
@@ -73,6 +76,13 @@ type UpdateSMTPIMAPAccountOpts struct {
 // AddAccount inserts a new sending account into the database.
 // If the account was previously removed, it is reactivated with the new settings.
 func AddAccount(db *sql.DB, email string, dailyLimit int, configDir string) (*AddAccountResult, error) {
+	return AddAccountInWorkspace(db, DefaultWorkspaceID, email, dailyLimit, configDir)
+}
+
+// AddAccountInWorkspace inserts a new sending account into a workspace.
+// If the account was previously removed, it is reactivated with the new settings.
+func AddAccountInWorkspace(db *sql.DB, workspaceID, email string, dailyLimit int, configDir string) (*AddAccountResult, error) {
+	workspaceID = NormalizeWorkspaceID(workspaceID)
 	// Check for existing removed account
 	var existingID int64
 	var existingStatus string
@@ -84,6 +94,7 @@ func AddAccount(db *sql.DB, email string, dailyLimit int, configDir string) (*Ad
 				db,
 				`UPDATE accounts
 				 SET status = 'active',
+				     workspace_id = ?,
 				     daily_limit = ?,
 				     provider = ?,
 				     gws_config_dir = ?,
@@ -98,12 +109,13 @@ func AddAccount(db *sql.DB, email string, dailyLimit int, configDir string) (*Ad
 				     imap_password_ref = '',
 				     imap_tls_mode = ''
 				 WHERE id = ?`,
-				dailyLimit, AccountProviderGWS, configDir, existingID)
+				workspaceID, dailyLimit, AccountProviderGWS, configDir, existingID)
 			if err != nil {
 				return nil, fmt.Errorf("reactivating account: %w", err)
 			}
 			return &AddAccountResult{
 				ID:           existingID,
+				WorkspaceID:  workspaceID,
 				Email:        email,
 				DailyLimit:   dailyLimit,
 				Status:       "active",
@@ -117,14 +129,15 @@ func AddAccount(db *sql.DB, email string, dailyLimit int, configDir string) (*Ad
 	var id int64
 	err = queryRowDB(
 		db,
-		"INSERT INTO accounts (email, daily_limit, provider, gws_config_dir) VALUES (?, ?, ?, ?) RETURNING id",
-		email, dailyLimit, AccountProviderGWS, configDir,
+		"INSERT INTO accounts (workspace_id, email, daily_limit, provider, gws_config_dir) VALUES (?, ?, ?, ?, ?) RETURNING id",
+		workspaceID, email, dailyLimit, AccountProviderGWS, configDir,
 	).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("adding account: %w", err)
 	}
 	return &AddAccountResult{
 		ID:           id,
+		WorkspaceID:  workspaceID,
 		Email:        email,
 		DailyLimit:   dailyLimit,
 		Status:       "active",
@@ -150,6 +163,7 @@ func AddSMTPIMAPAccount(db *sql.DB, opts AddSMTPIMAPAccountOpts) (*AddSMTPIMAPAc
 				db,
 				`UPDATE accounts
 				 SET status = 'active',
+				     workspace_id = ?,
 				     daily_limit = ?,
 				     provider = ?,
 				     gws_config_dir = '',
@@ -164,6 +178,7 @@ func AddSMTPIMAPAccount(db *sql.DB, opts AddSMTPIMAPAccountOpts) (*AddSMTPIMAPAc
 				     imap_password_ref = ?,
 				     imap_tls_mode = ?
 				 WHERE id = ?`,
+				normalized.WorkspaceID,
 				normalized.DailyLimit,
 				AccountProviderSMTPIMAP,
 				normalized.SMTPHost,
@@ -193,6 +208,7 @@ func AddSMTPIMAPAccount(db *sql.DB, opts AddSMTPIMAPAccountOpts) (*AddSMTPIMAPAc
 	err = queryRowDB(
 		db,
 		`INSERT INTO accounts (
+			workspace_id,
 			email,
 			daily_limit,
 			provider,
@@ -207,8 +223,9 @@ func AddSMTPIMAPAccount(db *sql.DB, opts AddSMTPIMAPAccountOpts) (*AddSMTPIMAPAc
 			imap_username,
 			imap_password_ref,
 			imap_tls_mode
-		) VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING id`,
+		normalized.WorkspaceID,
 		normalized.Email,
 		normalized.DailyLimit,
 		AccountProviderSMTPIMAP,
@@ -231,6 +248,7 @@ func AddSMTPIMAPAccount(db *sql.DB, opts AddSMTPIMAPAccountOpts) (*AddSMTPIMAPAc
 }
 
 func normalizeSMTPIMAPAccountOpts(opts AddSMTPIMAPAccountOpts) (AddSMTPIMAPAccountOpts, error) {
+	opts.WorkspaceID = NormalizeWorkspaceID(opts.WorkspaceID)
 	opts.Email = strings.TrimSpace(opts.Email)
 	opts.SMTPHost = strings.TrimSpace(opts.SMTPHost)
 	opts.SMTPUsername = strings.TrimSpace(opts.SMTPUsername)
@@ -297,6 +315,7 @@ func normalizeSMTPIMAPAccountOpts(opts AddSMTPIMAPAccountOpts) (AddSMTPIMAPAccou
 func smtpIMAPAccountResult(id int64, opts AddSMTPIMAPAccountOpts) *AddSMTPIMAPAccountResult {
 	return &AddSMTPIMAPAccountResult{
 		ID:           id,
+		WorkspaceID:  opts.WorkspaceID,
 		Email:        opts.Email,
 		DailyLimit:   opts.DailyLimit,
 		Status:       "active",
@@ -315,6 +334,7 @@ func smtpIMAPAccountResult(id int64, opts AddSMTPIMAPAccountOpts) *AddSMTPIMAPAc
 func smtpIMAPAccountResultFromAccount(account Account) *AddSMTPIMAPAccountResult {
 	return &AddSMTPIMAPAccountResult{
 		ID:           account.ID,
+		WorkspaceID:  account.WorkspaceID,
 		Email:        account.Email,
 		DailyLimit:   account.DailyLimit,
 		Status:       account.Status,
@@ -374,6 +394,7 @@ func validatePort(label string, port int) error {
 
 func accountSelectColumns() string {
 	return `id,
+		workspace_id,
 		email,
 		daily_limit,
 		status,
@@ -397,6 +418,7 @@ func scanAccount(row interface {
 	var account Account
 	if err := row.Scan(
 		&account.ID,
+		&account.WorkspaceID,
 		&account.Email,
 		&account.DailyLimit,
 		&account.Status,
@@ -445,6 +467,7 @@ func UpdateSMTPIMAPAccount(db *sql.DB, email string, opts UpdateSMTPIMAPAccountO
 	}
 
 	merged := AddSMTPIMAPAccountOpts{
+		WorkspaceID:     account.WorkspaceID,
 		Email:           account.Email,
 		DailyLimit:      account.DailyLimit,
 		SMTPHost:        account.SMTPHost,
@@ -928,25 +951,47 @@ func CheckDomain(domain string) (*DomainDiagnostic, error) {
 
 // ListAccountsRow is a row from ListAccounts.
 type ListAccountsRow struct {
-	ID         int64  `json:"id"`
-	Email      string `json:"email"`
-	DailyLimit int    `json:"daily_limit"`
-	Status     string `json:"status"`
-	Provider   string `json:"provider"`
+	ID          int64  `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	Email       string `json:"email"`
+	DailyLimit  int    `json:"daily_limit"`
+	Status      string `json:"status"`
+	Provider    string `json:"provider"`
 }
 
-// ListAccounts returns all accounts ordered by ID.
+// ListAccounts returns accounts in the default workspace ordered by ID.
 func ListAccounts(db *sql.DB) ([]ListAccountsRow, error) {
-	rows, err := queryDB(db, "SELECT id, email, daily_limit, status, provider FROM accounts ORDER BY id")
+	return ListAccountsForWorkspace(db, DefaultWorkspaceID)
+}
+
+// ListAccountsForWorkspace returns accounts in one workspace ordered by ID.
+func ListAccountsForWorkspace(db *sql.DB, workspaceID string) ([]ListAccountsRow, error) {
+	workspaceID = NormalizeWorkspaceID(workspaceID)
+	rows, err := queryDB(db, "SELECT id, workspace_id, email, daily_limit, status, provider FROM accounts WHERE workspace_id = ? ORDER BY id", workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("querying accounts: %w", err)
 	}
 	defer rows.Close()
 
+	return scanListAccountRows(rows)
+}
+
+// ListAllAccounts returns all accounts ordered by workspace then ID.
+func ListAllAccounts(db *sql.DB) ([]ListAccountsRow, error) {
+	rows, err := queryDB(db, "SELECT id, workspace_id, email, daily_limit, status, provider FROM accounts ORDER BY workspace_id, id")
+	if err != nil {
+		return nil, fmt.Errorf("querying accounts: %w", err)
+	}
+	defer rows.Close()
+
+	return scanListAccountRows(rows)
+}
+
+func scanListAccountRows(rows *sql.Rows) ([]ListAccountsRow, error) {
 	var accounts []ListAccountsRow
 	for rows.Next() {
 		var a ListAccountsRow
-		if err := rows.Scan(&a.ID, &a.Email, &a.DailyLimit, &a.Status, &a.Provider); err != nil {
+		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.Email, &a.DailyLimit, &a.Status, &a.Provider); err != nil {
 			return nil, fmt.Errorf("scanning account: %w", err)
 		}
 		accounts = append(accounts, a)

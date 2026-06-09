@@ -268,6 +268,47 @@ func TestListAccountsIncludesProvider(t *testing.T) {
 	}
 }
 
+func TestAccountWorkspaceOwnership(t *testing.T) {
+	db := testDB(t)
+
+	gwsAccount, err := AddAccountInWorkspace(db, "storeinspect", "maya@trystoreinspect.com", 8, "/tmp/gws")
+	if err != nil {
+		t.Fatalf("AddAccountInWorkspace error: %v", err)
+	}
+	if gwsAccount.WorkspaceID != "storeinspect" {
+		t.Fatalf("expected workspace storeinspect, got %q", gwsAccount.WorkspaceID)
+	}
+
+	smtpAccount, err := AddSMTPIMAPAccount(db, AddSMTPIMAPAccountOpts{
+		WorkspaceID:     "golf-cart-search",
+		Email:           "anders@mail.golfcartsearch.com",
+		DailyLimit:      25,
+		SMTPHost:        "smtp.example.com",
+		SMTPPasswordRef: "env:GOLF_PASSWORD",
+		SMTPTLSMode:     "ssl",
+		IMAPHost:        "imap.example.com",
+		IMAPPasswordRef: "env:GOLF_PASSWORD",
+		IMAPTLSMode:     "ssl",
+	})
+	if err != nil {
+		t.Fatalf("AddSMTPIMAPAccount error: %v", err)
+	}
+	if smtpAccount.WorkspaceID != "golf-cart-search" {
+		t.Fatalf("expected workspace golf-cart-search, got %q", smtpAccount.WorkspaceID)
+	}
+
+	storeinspectAccounts, err := ListAccountsForWorkspace(db, "storeinspect")
+	if err != nil {
+		t.Fatalf("ListAccountsForWorkspace error: %v", err)
+	}
+	if len(storeinspectAccounts) != 1 || storeinspectAccounts[0].Email != "maya@trystoreinspect.com" {
+		t.Fatalf("expected only StoreInspect account, got %#v", storeinspectAccounts)
+	}
+	if storeinspectAccounts[0].WorkspaceID != "storeinspect" {
+		t.Fatalf("expected listed account workspace storeinspect, got %q", storeinspectAccounts[0].WorkspaceID)
+	}
+}
+
 func TestAddSMTPIMAPAccount(t *testing.T) {
 	db := testDB(t)
 

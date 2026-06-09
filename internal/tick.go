@@ -397,6 +397,7 @@ func loadActiveAccounts(db *sql.DB) ([]Account, error) {
 		db,
 		`SELECT
 			id,
+			workspace_id,
 			email,
 			daily_limit,
 			status,
@@ -425,6 +426,7 @@ func loadActiveAccounts(db *sql.DB) ([]Account, error) {
 		var a Account
 		if err := rows.Scan(
 			&a.ID,
+			&a.WorkspaceID,
 			&a.Email,
 			&a.DailyLimit,
 			&a.Status,

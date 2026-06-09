@@ -54,6 +54,7 @@ cold-cli/
 ```
 accounts
 ├─ id
+├─ workspace_id
 ├─ email
 ├─ daily_limit
 ├─ last_send_at
@@ -64,7 +65,7 @@ accounts
 └─ imap_host, imap_port, imap_username, imap_password_ref, imap_tls_mode
 
 campaigns
-├─ id, name, status, sequence_file, sequence_content
+├─ id, workspace_id, name, status, sequence_file, sequence_content
 ├─ sequence_content (YAML stored at creation time)
 ├─ stop_on_reply, stop_on_domain_reply
 ├─ send_window_start/end, send_days, timezone
@@ -337,15 +338,17 @@ Auto-detects domains from registered accounts if no domain specified.
 cold-cli init
 cold-cli doctor [domain...]
 
-cold-cli account add <email>
-cold-cli account add-smtp <email> --smtp-host ... --smtp-password-ref env:NAME --imap-host ...
+cold-cli --workspace <id> account add <email>
+cold-cli --workspace <id> account add-smtp <email> --smtp-host ... --smtp-password-ref env:NAME --imap-host ...
 cold-cli account update-smtp <email> [--smtp-host ...] [--imap-host ...] [--daily-limit N]
 cold-cli account verify <email>
-cold-cli account list/pause/resume/remove/update
+cold-cli --workspace <id> account list
+cold-cli account list --all-workspaces
+cold-cli account pause/resume/remove/update <email>
 
 cold-cli campaign init [directory]
-cold-cli campaign create --name --sequence --leads --accounts [--start-date YYYY-MM-DD] [--send-days "1,2,3,4,5"]
-cold-cli campaign create --name --sequence-inline '...' --leads-inline '...' --accounts
+cold-cli --workspace <id> campaign create --name --sequence --leads --accounts [--start-date YYYY-MM-DD] [--send-days "1,2,3,4,5"]
+cold-cli --workspace <id> campaign create --name --sequence-inline '...' --leads-inline '...' --accounts
 cold-cli campaign clone <source> --name <new> --leads <csv>  # or --leads-inline
 cold-cli campaign add-leads <name|id> --leads <csv>          # or --leads-inline
 cold-cli campaign remove-lead <name|id> <email>
@@ -363,6 +366,14 @@ cold-cli log [campaign] [--limit N]
 cold-cli lead list [--domain X] [--status X] [--limit N]
 cold-cli lead pause/resume/blacklist <email|domain>
 ```
+
+Workspace resolution for account/campaign commands is `--workspace`, then
+`COLD_CLI_WORKSPACE_ID`, then `default`. Existing self-hosted installs keep
+working because migrations backfill `accounts.workspace_id` and
+`campaigns.workspace_id` to `default`. Campaign creation validates that all
+selected sending accounts are active in the campaign workspace; `tick` remains
+global and processes scheduled sends by concrete account/campaign IDs. Ownership
+lives directly on `accounts` and `campaigns`, not in a separate web-app mapping.
 
 All commands support `--json` for agent consumption. No interactive prompts, everything via flags.
 
