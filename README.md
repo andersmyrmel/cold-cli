@@ -232,6 +232,17 @@ Campaign creation only accepts active accounts from the same workspace. Do not
 infer ownership from sender domains except as a one-time suggestion before
 writing the explicit `workspace_id`.
 
+For hosted dashboards or multi-tenant control planes, always pass the intended
+workspace explicitly:
+
+```bash
+cold-cli --workspace workspace-a campaign list
+```
+
+If a campaign is accidentally created in workspace `default`, it can still send
+through the assigned account, but workspace-filtered dashboards will not show it
+under the intended tenant.
+
 ## Discord Reply Notifications
 
 `tick` can post new reply and unsubscribe alerts to a Discord channel through an

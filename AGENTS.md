@@ -47,7 +47,7 @@ These are settled — do not revisit without explicit instruction:
 8. **Status semantics** — `skipped` = auto-cancelled (reply/bounce/domain-reply). `cancelled` = user action (pause/blacklist). These are distinct.
 9. **Tick locking** — SQLite mode uses flock/fcntl on `~/.cold-cli/tick.lock`; Postgres mode uses an advisory lock on a dedicated connection. Keep the semantics aligned.
 10. **Validation at creation** — template placeholders validated against lead CSV at campaign creation with alias resolution and Levenshtein "Did you mean?" suggestions. Unresolved vars stripped at send time as a safety net.
-11. **Workspace ownership** — `cold-cli` is the source of truth for account/campaign ownership. Accounts and campaigns carry `workspace_id`, defaulting to `default` for backward compatibility; there is no separate app-side account mapping to maintain. Use `--workspace <id>` or `COLD_CLI_WORKSPACE_ID` when adding inboxes or campaigns for hosted/multi-brand setups; do not rely on email-domain inference as the access boundary.
+11. **Workspace ownership** — `cold-cli` is the source of truth for account/campaign ownership. Accounts and campaigns carry `workspace_id`, defaulting to `default` for backward compatibility; there is no separate app-side account mapping to maintain. Use `--workspace <id>` or `COLD_CLI_WORKSPACE_ID` when adding inboxes or campaigns for hosted/multi-brand setups; do not rely on email-domain inference as the access boundary. For hosted dashboards or multi-tenant control planes, always pass the intended workspace explicitly so campaigns do not accidentally land in `default`.
 
 ## Testing
 
