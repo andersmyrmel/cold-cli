@@ -293,7 +293,7 @@ func TestCompleteFinishedCampaigns_OnlyCompletesTerminalActiveCampaigns(t *testi
 	}{
 		{name: "all-terminal", status: "active", sendStat: []string{"sent", "skipped", "cancelled"}, want: "completed"},
 		{name: "has-pending", status: "active", sendStat: []string{"sent", "pending"}, want: "active"},
-		{name: "has-failed", status: "active", sendStat: []string{"sent", "failed"}, want: "active"},
+		{name: "has-failed", status: "active", sendStat: []string{"sent", "failed"}, want: "completed_with_failures"},
 		{name: "empty-active", status: "active", want: "active"},
 		{name: "draft-terminal", status: "draft", sendStat: []string{"sent"}, want: "draft"},
 	}

@@ -5,6 +5,8 @@ import "time"
 const (
 	AccountProviderGWS      = "gws"
 	AccountProviderSMTPIMAP = "smtp_imap"
+
+	CampaignStatusCompletedWithFailures = "completed_with_failures"
 )
 
 type Account struct {

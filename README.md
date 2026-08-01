@@ -181,7 +181,7 @@ cold-cli --workspace workspace-a campaign list  # list workspace campaigns (with
 cold-cli campaign update <name|id>         # update sequence, send window/days, timezone, gaps
 cold-cli campaign update <name|id> --send-days "0,1,2,3,4,5,6"  # reschedule pending sends only
 cold-cli campaign delete <name|id>         # delete campaign and all data
-cold-cli campaign retry <name|id>          # reset failed sends back to pending
+cold-cli campaign retry <name|id>          # reset failed sends and reactivate completed-with-failures campaigns
 cold-cli campaign retry <name|id> --step N # retry only failed sends for step N
 
 cold-cli tick                              # process replies, bounces, send due emails

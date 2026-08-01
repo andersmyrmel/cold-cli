@@ -795,7 +795,7 @@ func TestRetryCampaign_FilterByStep(t *testing.T) {
 
 func TestRetryCampaign_NoFailed(t *testing.T) {
 	db := testDB(t)
-	db.Exec(`INSERT INTO campaigns (name, status, sequence_file) VALUES ('no-fails', 'active', 'seq.yml')`)
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file) VALUES ('no-fails', 'completed_with_failures', 'seq.yml')`)
 
 	result, err := RetryCampaign(db, "no-fails", nil)
 	if err != nil {
@@ -803,6 +803,39 @@ func TestRetryCampaign_NoFailed(t *testing.T) {
 	}
 	if result.Retried != 0 {
 		t.Errorf("expected 0 retried, got %d", result.Retried)
+	}
+
+	var status string
+	if err := db.QueryRow("SELECT status FROM campaigns WHERE name = 'no-fails'").Scan(&status); err != nil {
+		t.Fatalf("query campaign status: %v", err)
+	}
+	if status != CampaignStatusCompletedWithFailures {
+		t.Errorf("expected campaign to remain %q, got %q", CampaignStatusCompletedWithFailures, status)
+	}
+}
+
+func TestRetryCampaign_ReactivatesCompletedWithFailures(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
+	db.Exec(`INSERT INTO campaigns (name, status, sequence_file) VALUES ('retry-finished', 'completed_with_failures', 'seq.yml')`)
+	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('a@b.com', 'A', 'B', 'b.com')")
+	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
+		VALUES (1, 1, 1, 1, ?, 'failed')`, time.Now().UTC().Format(time.RFC3339))
+
+	result, err := RetryCampaign(db, "retry-finished", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Retried != 1 {
+		t.Fatalf("expected 1 retried send, got %d", result.Retried)
+	}
+
+	var status string
+	if err := db.QueryRow("SELECT status FROM campaigns WHERE name = 'retry-finished'").Scan(&status); err != nil {
+		t.Fatalf("loading campaign status: %v", err)
+	}
+	if status != "active" {
+		t.Errorf("expected campaign to reactivate, got %q", status)
 	}
 }
 

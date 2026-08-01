@@ -626,7 +626,15 @@ func refreshPendingSend(db *sql.DB, send dueSend) (dueSend, time.Time, bool, err
 func completeFinishedCampaigns(db *sql.DB) error {
 	_, err := execDB(db, `
 		UPDATE campaigns
-		SET status = 'completed'
+		SET status = CASE
+			WHEN EXISTS (
+				SELECT 1
+				FROM scheduled_sends failed_send
+				WHERE failed_send.campaign_id = campaigns.id
+					AND failed_send.status = 'failed'
+			) THEN 'completed_with_failures'
+			ELSE 'completed'
+		END
 		WHERE status = 'active'
 			AND id IN (
 				SELECT c.id
@@ -635,7 +643,7 @@ func completeFinishedCampaigns(db *sql.DB) error {
 				WHERE c.status = 'active'
 				GROUP BY c.id
 				HAVING COUNT(ss.id) > 0
-					AND SUM(CASE WHEN ss.status NOT IN ('sent', 'skipped', 'cancelled') THEN 1 ELSE 0 END) = 0
+					AND SUM(CASE WHEN ss.status NOT IN ('sent', 'skipped', 'cancelled', 'failed') THEN 1 ELSE 0 END) = 0
 			)`)
 	if err != nil {
 		return fmt.Errorf("completing finished campaigns: %w", err)

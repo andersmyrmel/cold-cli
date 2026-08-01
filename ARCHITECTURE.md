@@ -65,7 +65,7 @@ accounts
 └─ imap_host, imap_port, imap_username, imap_password_ref, imap_tls_mode
 
 campaigns
-├─ id, workspace_id, name, status, sequence_file, sequence_content
+├─ id, workspace_id, name, status (draft/active/paused/completed/completed_with_failures), sequence_file, sequence_content
 ├─ sequence_content (YAML stored at creation time)
 ├─ stop_on_reply, stop_on_domain_reply
 ├─ send_window_start/end, send_days, timezone

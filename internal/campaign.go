@@ -1635,6 +1635,17 @@ func RetryCampaign(db *sql.DB, name string, step *int) (*RetryCampaignResult, er
 		return nil, fmt.Errorf("retrying sends: %w", err)
 	}
 
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("counting retried sends: %w", err)
+	}
+	if affected > 0 {
+		if _, err := tx.Exec(`UPDATE campaigns SET status = 'active'
+			WHERE id = ? AND status = ?`, campaignID, CampaignStatusCompletedWithFailures); err != nil {
+			return nil, fmt.Errorf("reactivating campaign: %w", err)
+		}
+	}
+
 	accountIDs, err := loadCampaignAccountIDsTx(tx, campaignID)
 	if err != nil {
 		return nil, fmt.Errorf("loading campaign accounts: %w", err)
@@ -1647,7 +1658,6 @@ func RetryCampaign(db *sql.DB, name string, step *int) (*RetryCampaignResult, er
 		return nil, fmt.Errorf("committing: %w", err)
 	}
 
-	affected, _ := res.RowsAffected()
 	return &RetryCampaignResult{
 		Campaign: name,
 		Retried:  int(affected),
