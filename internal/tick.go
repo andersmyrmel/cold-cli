@@ -24,21 +24,22 @@ type TickResult struct {
 
 // TickConfig holds configuration for a tick invocation.
 type TickConfig struct {
-	DB                 *sql.DB
-	GWS                GWSClient
-	DryRun             bool
-	SendNow            bool           // ignore send_at timestamps, send all pending
-	Now                time.Time      // injectable for testing
-	NoSleep            bool           // skip inter-send sleep (for testing)
-	Timezone           *time.Location // for daily limit day boundary; defaults to UTC
-	UnsubscribeHeader  bool           // add List-Unsubscribe header (off by default for cold email)
-	UnsubscribeSubject string         // subject for List-Unsubscribe mailto header
-	SecretResolver     SecretResolver // optional resolver for SMTP/IMAP password refs
-	SMTPSender         SMTPEmailSender
-	IMAP               IMAPMessageLister
-	DiscordNotifier    DiscordNotifier
-	DiscordNotifyLimit int
-	DiscordProviders   []string
+	DB                           *sql.DB
+	GWS                          GWSClient
+	DryRun                       bool
+	SendNow                      bool           // ignore send_at timestamps, send all pending
+	Now                          time.Time      // injectable for testing
+	NoSleep                      bool           // skip inter-send sleep (for testing)
+	Timezone                     *time.Location // for daily limit day boundary; defaults to UTC
+	UnsubscribeHeader            bool           // add List-Unsubscribe header (off by default for cold email)
+	UnsubscribeSubject           string         // subject for List-Unsubscribe mailto header
+	SecretResolver               SecretResolver // optional resolver for SMTP/IMAP password refs
+	SMTPSender                   SMTPEmailSender
+	IMAP                         IMAPMessageLister
+	DiscordNotifier              DiscordNotifier
+	DiscordNotifyLimit           int
+	DiscordProviders             []string
+	DiscordOperationalWorkspaces []string
 }
 
 // Tick runs one tick cycle: poll replies, poll bounces, send due emails.
@@ -55,8 +56,11 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		tz = time.UTC
 	}
 
-	if err := completeFinishedCampaigns(cfg.DB); err != nil {
+	if err := completeFinishedCampaignsAt(cfg.DB, now); err != nil {
 		return nil, err
+	}
+	if !cfg.DryRun {
+		result.DiscordNotificationsSent += processTickDiscordOperationalNotifications(cfg, now)
 	}
 
 	// Load active accounts
@@ -143,15 +147,16 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			if err != nil {
 				slog.Warn("discord notification error", "error", err)
 			}
-			result.DiscordNotificationsSent = notified
+			result.DiscordNotificationsSent += notified
 		}
 
 		// Update last_poll_at so next tick only checks new messages.
 		SetLastPollAt(cfg.DB, now)
 
-		if err := completeFinishedCampaigns(cfg.DB); err != nil {
+		if err := completeFinishedCampaignsAt(cfg.DB, now); err != nil {
 			return nil, err
 		}
+		result.DiscordNotificationsSent += processTickDiscordOperationalNotifications(cfg, now)
 	}
 
 	// 3. Preload daily send counts per account (timezone-aware day boundary)
@@ -385,8 +390,11 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		}
 	}
 
-	if err := completeFinishedCampaigns(cfg.DB); err != nil {
+	if err := completeFinishedCampaignsAt(cfg.DB, now); err != nil {
 		return nil, err
+	}
+	if !cfg.DryRun {
+		result.DiscordNotificationsSent += processTickDiscordOperationalNotifications(cfg, now)
 	}
 
 	return result, nil
@@ -624,6 +632,10 @@ func refreshPendingSend(db *sql.DB, send dueSend) (dueSend, time.Time, bool, err
 }
 
 func completeFinishedCampaigns(db *sql.DB) error {
+	return completeFinishedCampaignsAt(db, time.Now())
+}
+
+func completeFinishedCampaignsAt(db *sql.DB, now time.Time) error {
 	_, err := execDB(db, `
 		UPDATE campaigns
 		SET status = CASE
@@ -634,7 +646,9 @@ func completeFinishedCampaigns(db *sql.DB) error {
 					AND failed_send.status = 'failed'
 			) THEN 'completed_with_failures'
 			ELSE 'completed'
-		END
+		END,
+		completed_at = ?,
+		completion_notified_at = NULL
 		WHERE status = 'active'
 			AND id IN (
 				SELECT c.id
@@ -644,11 +658,27 @@ func completeFinishedCampaigns(db *sql.DB) error {
 				GROUP BY c.id
 				HAVING COUNT(ss.id) > 0
 					AND SUM(CASE WHEN ss.status NOT IN ('sent', 'skipped', 'cancelled', 'failed') THEN 1 ELSE 0 END) = 0
-			)`)
+			)`, now.UTC().Format(time.RFC3339))
 	if err != nil {
 		return fmt.Errorf("completing finished campaigns: %w", err)
 	}
 	return nil
+}
+
+func processTickDiscordOperationalNotifications(cfg TickConfig, now time.Time) int {
+	if cfg.DiscordNotifier == nil || len(cleanDiscordOperationalWorkspaces(cfg.DiscordOperationalWorkspaces)) == 0 {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	notified, err := ProcessDiscordOperationalNotifications(ctx, cfg.DB, cfg.DiscordNotifier, DiscordOperationalNotifyOptions{
+		Workspaces: cfg.DiscordOperationalWorkspaces,
+		Now:        now,
+	})
+	if err != nil {
+		slog.Warn("discord operational notification error", "error", err)
+	}
+	return notified
 }
 
 func isInSendWindow(db *sql.DB, campaignID, leadID int64, now time.Time) bool {

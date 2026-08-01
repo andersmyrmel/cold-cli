@@ -16,9 +16,14 @@ import (
 const (
 	discordNotifyLastEventIDKey = "discord_notify_last_event_id"
 	discordNotifyDefaultLimit   = 20
+	discordIdleReminderInterval = 24 * time.Hour
+
+	DiscordEventCampaignCompleted             = "campaign_completed"
+	DiscordEventCampaignCompletedWithFailures = "campaign_completed_with_failures"
+	DiscordEventSenderIdle                    = "sender_idle"
 )
 
-// DiscordNotifier sends a single cold-cli inbound event to Discord.
+// DiscordNotifier sends a single cold-cli event to Discord.
 type DiscordNotifier interface {
 	NotifyDiscord(context.Context, DiscordNotificationEvent) error
 }
@@ -29,19 +34,43 @@ type DiscordNotifyOptions struct {
 	Providers []string
 }
 
+// DiscordOperationalNotifyOptions configures campaign completion and sender-idle alerts.
+// Operational alerts are disabled when Workspaces is empty.
+type DiscordOperationalNotifyOptions struct {
+	Workspaces           []string
+	Now                  time.Time
+	IdleReminderInterval time.Duration
+}
+
 // DiscordNotificationEvent is the compact event shape used for Discord alerts.
 type DiscordNotificationEvent struct {
-	EventID      int64
-	EventType    string
-	Timestamp    string
-	CampaignName string
-	LeadEmail    string
-	LeadCompany  string
-	AccountEmail string
-	FromEmail    string
-	Subject      string
-	Snippet      string
-	MessageID    string
+	EventID           int64
+	EventType         string
+	Timestamp         string
+	WorkspaceID       string
+	CampaignID        int64
+	CampaignName      string
+	CampaignStatus    string
+	LeadEmail         string
+	LeadCompany       string
+	AccountEmail      string
+	AccountEmails     []string
+	IdleAccountEmails []string
+	FromEmail         string
+	Subject           string
+	Snippet           string
+	MessageID         string
+	LeadsContacted    int
+	SentCount         int
+	ReplyCount        int
+	UnsubscribeCount  int
+	BounceCount       int
+	FailedCount       int
+	SkippedCount      int
+	CancelledCount    int
+	PendingCount      int
+	IdleSince         string
+	Reminder          bool
 }
 
 // DiscordWebhookNotifier posts cold-cli notifications to a Discord webhook URL.
@@ -117,6 +146,13 @@ func (n DiscordWebhookNotifier) NotifyDiscord(ctx context.Context, event Discord
 }
 
 func BuildDiscordWebhookPayload(event DiscordNotificationEvent) discordWebhookPayload {
+	switch event.EventType {
+	case DiscordEventCampaignCompleted, DiscordEventCampaignCompletedWithFailures:
+		return buildDiscordCampaignPayload(event)
+	case DiscordEventSenderIdle:
+		return buildDiscordSenderIdlePayload(event)
+	}
+
 	title := "New cold email reply"
 	color := 0x22c55e
 	if event.EventType == EmailMessageTypeUnsubscribe || event.EventType == "unsubscribe" {
@@ -147,6 +183,89 @@ func BuildDiscordWebhookPayload(event DiscordNotificationEvent) discordWebhookPa
 			Fields:      fields,
 		}},
 	}
+}
+
+func buildDiscordCampaignPayload(event DiscordNotificationEvent) discordWebhookPayload {
+	workspace := discordWorkspaceLabel(event.WorkspaceID)
+	title := workspace + " campaign finished"
+	color := 0x22c55e
+	if event.EventType == DiscordEventCampaignCompletedWithFailures || event.CampaignStatus == CampaignStatusCompletedWithFailures {
+		title = workspace + " campaign finished with failures"
+		color = 0xef4444
+	}
+
+	description := "All scheduled sends reached a terminal state."
+	if len(event.IdleAccountEmails) > 0 {
+		description = fmt.Sprintf("%d active inbox(es) now have no pending sends. Prepare or activate the next campaign.", len(event.IdleAccountEmails))
+	} else if len(event.AccountEmails) > 0 {
+		description += " Its inboxes still have pending sends in another active campaign."
+	}
+
+	fields := []discordEmbedField{
+		{Name: "Workspace", Value: discordFieldValue(event.WorkspaceID), Inline: true},
+		{Name: "Campaign", Value: discordFieldValue(event.CampaignName), Inline: true},
+		{Name: "Result", Value: discordFieldValue(event.CampaignStatus), Inline: true},
+		{Name: "Delivery", Value: discordFieldValue(fmt.Sprintf("%d leads contacted · %d emails sent", event.LeadsContacted, event.SentCount)), Inline: false},
+		{Name: "Responses", Value: discordFieldValue(fmt.Sprintf("%d replies · %d unsubscribes · %d bounces", event.ReplyCount, event.UnsubscribeCount, event.BounceCount)), Inline: false},
+		{Name: "Other outcomes", Value: discordFieldValue(fmt.Sprintf("%d failed · %d skipped · %d cancelled", event.FailedCount, event.SkippedCount, event.CancelledCount)), Inline: false},
+		{Name: "Inboxes", Value: discordFieldValue(strings.Join(event.AccountEmails, "\n")), Inline: false},
+	}
+	if len(event.IdleAccountEmails) > 0 {
+		fields = append(fields, discordEmbedField{Name: "Now idle", Value: discordFieldValue(strings.Join(event.IdleAccountEmails, "\n")), Inline: false})
+	}
+
+	return discordWebhookPayload{
+		AllowedMentions: discordAllowedMentions{Parse: []string{}},
+		Embeds: []discordEmbed{{
+			Title:       title,
+			Description: description,
+			Color:       color,
+			Timestamp:   event.Timestamp,
+			Fields:      fields,
+		}},
+	}
+}
+
+func buildDiscordSenderIdlePayload(event DiscordNotificationEvent) discordWebhookPayload {
+	workspace := discordWorkspaceLabel(event.WorkspaceID)
+	title := workspace + " sender is idle"
+	if event.Reminder {
+		title = workspace + " sender is still idle"
+	}
+	description := "This active sender has no pending sends in any active campaign. Prepare or activate its next campaign."
+	fields := []discordEmbedField{
+		{Name: "Workspace", Value: discordFieldValue(event.WorkspaceID), Inline: true},
+		{Name: "Inbox", Value: discordFieldValue(event.AccountEmail), Inline: true},
+		{Name: "Pending sends", Value: strconv.Itoa(event.PendingCount), Inline: true},
+	}
+	if event.CampaignName != "" {
+		fields = append(fields, discordEmbedField{Name: "Most recent campaign", Value: discordFieldValue(event.CampaignName), Inline: false})
+	}
+	if event.IdleSince != "" {
+		fields = append(fields, discordEmbedField{Name: "Idle since", Value: discordFieldValue(event.IdleSince), Inline: false})
+	}
+
+	return discordWebhookPayload{
+		AllowedMentions: discordAllowedMentions{Parse: []string{}},
+		Embeds: []discordEmbed{{
+			Title:       title,
+			Description: description,
+			Color:       0xf59e0b,
+			Timestamp:   event.Timestamp,
+			Fields:      fields,
+		}},
+	}
+}
+
+func discordWorkspaceLabel(workspace string) string {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return "Cold email"
+	}
+	if strings.EqualFold(workspace, "storeinspect") {
+		return "StoreInspect"
+	}
+	return workspace
 }
 
 // EnsureDiscordNotifyCursor initializes the Discord cursor to the current event
@@ -197,6 +316,399 @@ func ProcessDiscordNotifications(ctx context.Context, db *sql.DB, notifier Disco
 	}
 
 	return notified, nil
+}
+
+// ProcessDiscordOperationalNotifications sends durable, workspace-scoped
+// campaign completion and sender-idle alerts. Completion alerts include any
+// campaign inboxes that became idle, and suppress a duplicate immediate idle
+// alert for those inboxes. Idle reminders repeat at most once per interval.
+func ProcessDiscordOperationalNotifications(ctx context.Context, db *sql.DB, notifier DiscordNotifier, opts DiscordOperationalNotifyOptions) (int, error) {
+	if notifier == nil {
+		return 0, nil
+	}
+
+	workspaces := cleanDiscordOperationalWorkspaces(opts.Workspaces)
+	if len(workspaces) == 0 {
+		return 0, nil
+	}
+
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	now = now.UTC()
+	reminderInterval := opts.IdleReminderInterval
+	if reminderInterval <= 0 {
+		reminderInterval = discordIdleReminderInterval
+	}
+
+	completed, err := processDiscordCampaignCompletions(ctx, db, notifier, workspaces, now)
+	if err != nil {
+		return completed, err
+	}
+	idle, err := processDiscordIdleAccounts(ctx, db, notifier, workspaces, now, reminderInterval)
+	return completed + idle, err
+}
+
+type discordCampaignCompletion struct {
+	ID          int64
+	WorkspaceID string
+	Name        string
+	Status      string
+	CompletedAt string
+}
+
+type discordCampaignStats struct {
+	LeadsContacted int
+	Sent           int
+	Replies        int
+	Unsubscribes   int
+	Bounces        int
+	Failed         int
+	Skipped        int
+	Cancelled      int
+}
+
+type discordAccountRef struct {
+	ID    int64
+	Email string
+}
+
+func processDiscordCampaignCompletions(ctx context.Context, db *sql.DB, notifier DiscordNotifier, workspaces []string, now time.Time) (int, error) {
+	campaigns, err := listUnnotifiedCampaignCompletions(db, workspaces)
+	if err != nil {
+		return 0, err
+	}
+
+	notified := 0
+	for _, campaign := range campaigns {
+		stats, err := loadDiscordCampaignStats(db, campaign.ID)
+		if err != nil {
+			return notified, err
+		}
+		accounts, err := loadDiscordCampaignAccounts(db, campaign.ID)
+		if err != nil {
+			return notified, err
+		}
+		idleAccounts, err := loadIdleDiscordCampaignAccounts(db, campaign.ID, campaign.WorkspaceID)
+		if err != nil {
+			return notified, err
+		}
+
+		eventType := DiscordEventCampaignCompleted
+		if campaign.Status == CampaignStatusCompletedWithFailures {
+			eventType = DiscordEventCampaignCompletedWithFailures
+		}
+		event := DiscordNotificationEvent{
+			EventType:         eventType,
+			Timestamp:         campaign.CompletedAt,
+			WorkspaceID:       campaign.WorkspaceID,
+			CampaignID:        campaign.ID,
+			CampaignName:      campaign.Name,
+			CampaignStatus:    campaign.Status,
+			AccountEmails:     discordAccountEmails(accounts),
+			IdleAccountEmails: discordAccountEmails(idleAccounts),
+			LeadsContacted:    stats.LeadsContacted,
+			SentCount:         stats.Sent,
+			ReplyCount:        stats.Replies,
+			UnsubscribeCount:  stats.Unsubscribes,
+			BounceCount:       stats.Bounces,
+			FailedCount:       stats.Failed,
+			SkippedCount:      stats.Skipped,
+			CancelledCount:    stats.Cancelled,
+		}
+		if err := notifier.NotifyDiscord(ctx, event); err != nil {
+			return notified, err
+		}
+		if err := markDiscordCampaignCompletionNotified(db, campaign, idleAccounts, now); err != nil {
+			return notified, err
+		}
+		notified++
+	}
+	return notified, nil
+}
+
+func listUnnotifiedCampaignCompletions(db *sql.DB, workspaces []string) ([]discordCampaignCompletion, error) {
+	query := `
+		SELECT id, workspace_id, name, status, completed_at
+		FROM campaigns
+		WHERE status IN ('completed', 'completed_with_failures')
+			AND completed_at IS NOT NULL
+			AND completion_notified_at IS NULL`
+	args := []any{}
+	query, args = appendDiscordWorkspaceFilter(query, args, "workspace_id", workspaces)
+	query += " ORDER BY completed_at ASC, id ASC"
+
+	rows, err := queryDB(db, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying unnotified campaign completions: %w", err)
+	}
+	defer rows.Close()
+
+	var campaigns []discordCampaignCompletion
+	for rows.Next() {
+		var campaign discordCampaignCompletion
+		if err := rows.Scan(&campaign.ID, &campaign.WorkspaceID, &campaign.Name, &campaign.Status, &campaign.CompletedAt); err != nil {
+			return nil, fmt.Errorf("scanning campaign completion: %w", err)
+		}
+		campaigns = append(campaigns, campaign)
+	}
+	return campaigns, rows.Err()
+}
+
+func loadDiscordCampaignStats(db *sql.DB, campaignID int64) (discordCampaignStats, error) {
+	var stats discordCampaignStats
+	if err := queryRowDB(db, `
+		SELECT
+			COUNT(DISTINCT CASE WHEN status = 'sent' THEN lead_id END),
+			COALESCE(SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END), 0)
+		FROM scheduled_sends
+		WHERE campaign_id = ?`, campaignID).Scan(
+		&stats.LeadsContacted,
+		&stats.Sent,
+		&stats.Failed,
+		&stats.Skipped,
+		&stats.Cancelled,
+	); err != nil {
+		return stats, fmt.Errorf("loading campaign delivery stats: %w", err)
+	}
+	if err := queryRowDB(db, `
+		SELECT
+			COUNT(DISTINCT CASE WHEN type = 'reply' THEN lead_id END),
+			COUNT(DISTINCT CASE WHEN type = 'unsubscribe' THEN lead_id END),
+			COUNT(DISTINCT CASE WHEN type = 'bounce' THEN lead_id END)
+		FROM events
+		WHERE campaign_id = ?`, campaignID).Scan(
+		&stats.Replies,
+		&stats.Unsubscribes,
+		&stats.Bounces,
+	); err != nil {
+		return stats, fmt.Errorf("loading campaign response stats: %w", err)
+	}
+	return stats, nil
+}
+
+func loadDiscordCampaignAccounts(db *sql.DB, campaignID int64) ([]discordAccountRef, error) {
+	rows, err := queryDB(db, `
+		SELECT a.id, a.email
+		FROM campaign_accounts ca
+		JOIN accounts a ON a.id = ca.account_id
+		WHERE ca.campaign_id = ?
+		ORDER BY a.email`, campaignID)
+	if err != nil {
+		return nil, fmt.Errorf("loading campaign inboxes: %w", err)
+	}
+	defer rows.Close()
+	return scanDiscordAccountRefs(rows)
+}
+
+func loadIdleDiscordCampaignAccounts(db *sql.DB, campaignID int64, workspaceID string) ([]discordAccountRef, error) {
+	rows, err := queryDB(db, `
+		SELECT a.id, a.email
+		FROM campaign_accounts ca
+		JOIN accounts a ON a.id = ca.account_id
+		WHERE ca.campaign_id = ?
+			AND a.workspace_id = ?
+			AND a.status = 'active'
+			AND NOT EXISTS (
+				SELECT 1
+				FROM scheduled_sends ss
+				JOIN campaigns active_campaign ON active_campaign.id = ss.campaign_id
+				WHERE ss.account_id = a.id
+					AND ss.status = 'pending'
+					AND active_campaign.status = 'active'
+			)
+		ORDER BY a.email`, campaignID, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("loading newly idle campaign inboxes: %w", err)
+	}
+	defer rows.Close()
+	return scanDiscordAccountRefs(rows)
+}
+
+func scanDiscordAccountRefs(rows *sql.Rows) ([]discordAccountRef, error) {
+	var accounts []discordAccountRef
+	for rows.Next() {
+		var account discordAccountRef
+		if err := rows.Scan(&account.ID, &account.Email); err != nil {
+			return nil, fmt.Errorf("scanning discord inbox: %w", err)
+		}
+		accounts = append(accounts, account)
+	}
+	return accounts, rows.Err()
+}
+
+func markDiscordCampaignCompletionNotified(db *sql.DB, campaign discordCampaignCompletion, idleAccounts []discordAccountRef, now time.Time) error {
+	timestamp := now.UTC().Format(time.RFC3339)
+	tx, err := beginTx(db)
+	if err != nil {
+		return fmt.Errorf("starting campaign notification transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`UPDATE campaigns SET completion_notified_at = ?
+		WHERE id = ? AND completed_at IS NOT NULL AND completion_notified_at IS NULL`, timestamp, campaign.ID); err != nil {
+		return fmt.Errorf("marking campaign completion notified: %w", err)
+	}
+	for _, account := range idleAccounts {
+		if _, err := tx.Exec(`UPDATE accounts
+			SET idle_since = COALESCE(idle_since, ?), idle_notified_at = ?
+			WHERE id = ?`, campaign.CompletedAt, timestamp, account.ID); err != nil {
+			return fmt.Errorf("marking completed campaign inbox idle: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing campaign notification state: %w", err)
+	}
+	return nil
+}
+
+func processDiscordIdleAccounts(ctx context.Context, db *sql.DB, notifier DiscordNotifier, workspaces []string, now time.Time, reminderInterval time.Duration) (int, error) {
+	if err := syncDiscordIdleAccountState(db, workspaces, now); err != nil {
+		return 0, err
+	}
+
+	query := `
+		SELECT a.id, a.workspace_id, a.email, a.idle_since, a.idle_notified_at,
+			COALESCE((
+				SELECT c.name
+				FROM campaign_accounts ca
+				JOIN campaigns c ON c.id = ca.campaign_id
+				WHERE ca.account_id = a.id
+				ORDER BY COALESCE(c.completed_at, c.created_at) DESC, c.id DESC
+				LIMIT 1
+			), '')
+		FROM accounts a
+		WHERE a.status = 'active'
+			AND a.idle_since IS NOT NULL
+			AND (a.idle_notified_at IS NULL OR a.idle_notified_at <= ?)
+			AND NOT EXISTS (
+				SELECT 1
+				FROM scheduled_sends ss
+				JOIN campaigns c ON c.id = ss.campaign_id
+				WHERE ss.account_id = a.id
+					AND ss.status = 'pending'
+					AND c.status = 'active'
+			)`
+	args := []any{now.Add(-reminderInterval).UTC().Format(time.RFC3339)}
+	query, args = appendDiscordWorkspaceFilter(query, args, "a.workspace_id", workspaces)
+	query += " ORDER BY a.workspace_id, a.email"
+
+	rows, err := queryDB(db, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("querying idle discord inboxes: %w", err)
+	}
+	type idleAccount struct {
+		ID             int64
+		WorkspaceID    string
+		Email          string
+		IdleSince      string
+		LastNotifiedAt sql.NullString
+		CampaignName   string
+	}
+	var accounts []idleAccount
+	for rows.Next() {
+		var account idleAccount
+		if err := rows.Scan(&account.ID, &account.WorkspaceID, &account.Email, &account.IdleSince, &account.LastNotifiedAt, &account.CampaignName); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scanning idle discord inbox: %w", err)
+		}
+		accounts = append(accounts, account)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+
+	notified := 0
+	for _, account := range accounts {
+		event := DiscordNotificationEvent{
+			EventType:    DiscordEventSenderIdle,
+			Timestamp:    now.UTC().Format(time.RFC3339),
+			WorkspaceID:  account.WorkspaceID,
+			CampaignName: account.CampaignName,
+			AccountEmail: account.Email,
+			PendingCount: 0,
+			IdleSince:    account.IdleSince,
+			Reminder:     account.LastNotifiedAt.Valid,
+		}
+		if err := notifier.NotifyDiscord(ctx, event); err != nil {
+			return notified, err
+		}
+		if _, err := execDB(db, `UPDATE accounts SET idle_notified_at = ?
+			WHERE id = ? AND idle_since IS NOT NULL`, now.UTC().Format(time.RFC3339), account.ID); err != nil {
+			return notified, fmt.Errorf("marking idle inbox notified: %w", err)
+		}
+		notified++
+	}
+	return notified, nil
+}
+
+func syncDiscordIdleAccountState(db *sql.DB, workspaces []string, now time.Time) error {
+	hasPending := `EXISTS (
+		SELECT 1
+		FROM scheduled_sends ss
+		JOIN campaigns c ON c.id = ss.campaign_id
+		WHERE ss.account_id = accounts.id
+			AND ss.status = 'pending'
+			AND c.status = 'active'
+	)`
+
+	clearQuery := `UPDATE accounts SET idle_since = NULL, idle_notified_at = NULL
+		WHERE status = 'active' AND ` + hasPending
+	clearArgs := []any{}
+	clearQuery, clearArgs = appendDiscordWorkspaceFilter(clearQuery, clearArgs, "workspace_id", workspaces)
+	if _, err := execDB(db, clearQuery, clearArgs...); err != nil {
+		return fmt.Errorf("clearing resumed inbox idle state: %w", err)
+	}
+
+	idleQuery := `UPDATE accounts SET idle_since = COALESCE(idle_since, ?)
+		WHERE status = 'active' AND NOT ` + hasPending
+	idleArgs := []any{now.UTC().Format(time.RFC3339)}
+	idleQuery, idleArgs = appendDiscordWorkspaceFilter(idleQuery, idleArgs, "workspace_id", workspaces)
+	if _, err := execDB(db, idleQuery, idleArgs...); err != nil {
+		return fmt.Errorf("recording inbox idle state: %w", err)
+	}
+	return nil
+}
+
+func cleanDiscordOperationalWorkspaces(workspaces []string) []string {
+	var cleaned []string
+	seen := map[string]bool{}
+	for _, workspace := range workspaces {
+		workspace = strings.TrimSpace(workspace)
+		if workspace == "" || seen[workspace] {
+			continue
+		}
+		seen[workspace] = true
+		cleaned = append(cleaned, workspace)
+	}
+	return cleaned
+}
+
+func appendDiscordWorkspaceFilter(query string, args []any, column string, workspaces []string) (string, []any) {
+	for _, workspace := range workspaces {
+		if workspace == "*" || strings.EqualFold(workspace, "all") {
+			return query, args
+		}
+	}
+	placeholders := make([]string, 0, len(workspaces))
+	for _, workspace := range workspaces {
+		placeholders = append(placeholders, "?")
+		args = append(args, workspace)
+	}
+	query += " AND " + column + " IN (" + strings.Join(placeholders, ",") + ")"
+	return query, args
+}
+
+func discordAccountEmails(accounts []discordAccountRef) []string {
+	emails := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		emails = append(emails, account.Email)
+	}
+	return emails
 }
 
 func listDiscordNotificationEvents(db *sql.DB, afterEventID int64, limit int, providers []string) ([]DiscordNotificationEvent, error) {

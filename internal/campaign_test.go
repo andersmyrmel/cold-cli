@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -817,7 +818,10 @@ func TestRetryCampaign_NoFailed(t *testing.T) {
 func TestRetryCampaign_ReactivatesCompletedWithFailures(t *testing.T) {
 	db := testDB(t)
 	db.Exec("INSERT INTO accounts (email, daily_limit) VALUES ('sender@x.com', 50)")
-	db.Exec(`INSERT INTO campaigns (name, status, sequence_file) VALUES ('retry-finished', 'completed_with_failures', 'seq.yml')`)
+	db.Exec(`INSERT INTO campaigns
+		(name, status, sequence_file, completed_at, completion_notified_at)
+		VALUES ('retry-finished', 'completed_with_failures', 'seq.yml', ?, ?)`,
+		time.Now().Add(-time.Hour).UTC().Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339))
 	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('a@b.com', 'A', 'B', 'b.com')")
 	db.Exec(`INSERT INTO scheduled_sends (campaign_id, lead_id, account_id, step_number, send_at, status)
 		VALUES (1, 1, 1, 1, ?, 'failed')`, time.Now().UTC().Format(time.RFC3339))
@@ -836,6 +840,13 @@ func TestRetryCampaign_ReactivatesCompletedWithFailures(t *testing.T) {
 	}
 	if status != "active" {
 		t.Errorf("expected campaign to reactivate, got %q", status)
+	}
+	var completedAt, notifiedAt sql.NullString
+	if err := db.QueryRow("SELECT completed_at, completion_notified_at FROM campaigns WHERE name = 'retry-finished'").Scan(&completedAt, &notifiedAt); err != nil {
+		t.Fatalf("loading completion notification state: %v", err)
+	}
+	if completedAt.Valid || notifiedAt.Valid {
+		t.Fatalf("expected retry to clear completion notification state, got completed_at=%v notified_at=%v", completedAt, notifiedAt)
 	}
 }
 
@@ -1534,7 +1545,7 @@ func TestCreateCampaign_WithStartDate(t *testing.T) {
 
 	result, err := CreateCampaign(db, CreateCampaignOpts{
 		Name: "start-date", SequenceFile: seqFile, LeadsFile: leadsFile,
-		AccountEmails: []string{"sender@x.com"}, StartDate: "2026-06-15",
+		AccountEmails: []string{"sender@x.com"}, StartDate: "2099-06-15",
 	})
 	if err != nil {
 		t.Fatalf("CreateCampaign error: %v", err)
@@ -1546,14 +1557,14 @@ func TestCreateCampaign_WithStartDate(t *testing.T) {
 	// Verify send_at is on the specified date
 	var sendAt string
 	db.QueryRow("SELECT send_at FROM scheduled_sends WHERE campaign_id = ?", result.ID).Scan(&sendAt)
-	if !strings.Contains(sendAt, "2026-06-15") {
-		t.Errorf("expected send_at on 2026-06-15, got %q", sendAt)
+	if !strings.Contains(sendAt, "2099-06-15") {
+		t.Errorf("expected send_at on 2099-06-15, got %q", sendAt)
 	}
 
 	var storedStartDate string
 	db.QueryRow("SELECT start_date FROM campaigns WHERE id = ?", result.ID).Scan(&storedStartDate)
-	if storedStartDate != "2026-06-15" {
-		t.Errorf("expected stored start_date 2026-06-15, got %q", storedStartDate)
+	if storedStartDate != "2099-06-15" {
+		t.Errorf("expected stored start_date 2099-06-15, got %q", storedStartDate)
 	}
 }
 
@@ -1577,7 +1588,7 @@ func TestCreateCampaign_SendDaysOverride(t *testing.T) {
 		SequenceFile:  seqFile,
 		LeadsFile:     leadsFile,
 		AccountEmails: []string{"sender@x.com"},
-		StartDate:     "2026-06-13",
+		StartDate:     "2099-06-13",
 		SendDays:      "0,1,2,3,4,5,6",
 	})
 	if err != nil {
@@ -1592,8 +1603,8 @@ func TestCreateCampaign_SendDaysOverride(t *testing.T) {
 
 	var sendAt string
 	db.QueryRow("SELECT send_at FROM scheduled_sends WHERE campaign_id = ?", result.ID).Scan(&sendAt)
-	if !strings.Contains(sendAt, "2026-06-13") {
-		t.Errorf("expected send_at on Saturday 2026-06-13 from the override, got %q", sendAt)
+	if !strings.Contains(sendAt, "2099-06-13") {
+		t.Errorf("expected send_at on Saturday 2099-06-13 from the override, got %q", sendAt)
 	}
 }
 

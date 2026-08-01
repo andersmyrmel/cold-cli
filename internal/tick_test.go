@@ -250,14 +250,23 @@ func TestTick_PersistsOutboundEmailMessageSnapshot(t *testing.T) {
 func TestTick_CompletesCampaignAfterFinalSend(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
 	now := time.Now().UTC()
+	if _, err := db.Exec("UPDATE accounts SET workspace_id = 'storeinspect' WHERE id = ?", accountIDs[0]); err != nil {
+		t.Fatalf("updating account workspace: %v", err)
+	}
+	if _, err := db.Exec("UPDATE campaigns SET workspace_id = 'storeinspect' WHERE id = ?", campaignID); err != nil {
+		t.Fatalf("updating campaign workspace: %v", err)
+	}
 
 	insertPendingSend(t, db, campaignID, leadIDs[0], accountIDs[0], 1, now.Add(-1*time.Hour))
+	notifier := &fakeDiscordNotifier{}
 
 	result, err := Tick(TickConfig{
-		DB:      db,
-		GWS:     &MockGWS{},
-		Now:     now,
-		NoSleep: true,
+		DB:                           db,
+		GWS:                          &MockGWS{},
+		Now:                          now,
+		NoSleep:                      true,
+		DiscordNotifier:              notifier,
+		DiscordOperationalWorkspaces: []string{"storeinspect"},
 	})
 	if err != nil {
 		t.Fatalf("tick error: %v", err)
@@ -272,6 +281,12 @@ func TestTick_CompletesCampaignAfterFinalSend(t *testing.T) {
 	}
 	if status != "completed" {
 		t.Errorf("expected campaign status completed, got %q", status)
+	}
+	if result.DiscordNotificationsSent != 1 || len(notifier.Events) != 1 {
+		t.Fatalf("expected one campaign completion notification, got result=%d events=%#v", result.DiscordNotificationsSent, notifier.Events)
+	}
+	if notifier.Events[0].EventType != DiscordEventCampaignCompleted {
+		t.Fatalf("expected campaign completion event, got %#v", notifier.Events[0])
 	}
 }
 

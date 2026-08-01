@@ -102,6 +102,25 @@ func configuredDiscordProvidersFromEnv() []string {
 	return providers
 }
 
+func configuredDiscordOperationalWorkspacesFromEnv() []string {
+	raw := strings.TrimSpace(os.Getenv("COLD_CLI_DISCORD_WORKSPACES"))
+	if raw == "" {
+		return nil
+	}
+	if strings.EqualFold(raw, "all") || raw == "*" {
+		return []string{"*"}
+	}
+	parts := strings.Split(raw, ",")
+	workspaces := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			workspaces = append(workspaces, part)
+		}
+	}
+	return workspaces
+}
+
 func envFlagEnabled(key string, defaultValue bool) bool {
 	value, ok := os.LookupEnv(key)
 	if !ok {
@@ -1705,15 +1724,16 @@ var tickCmd = &cobra.Command{
 		}
 
 		result, err := internal.Tick(internal.TickConfig{
-			DB:                 db,
-			GWS:                gwsCLI,
-			DryRun:             dryRun,
-			SendNow:            sendNow,
-			Timezone:           tz,
-			UnsubscribeHeader:  unsubHeader,
-			UnsubscribeSubject: unsubSubject,
-			DiscordNotifier:    configuredDiscordNotifierFromEnv(),
-			DiscordProviders:   configuredDiscordProvidersFromEnv(),
+			DB:                           db,
+			GWS:                          gwsCLI,
+			DryRun:                       dryRun,
+			SendNow:                      sendNow,
+			Timezone:                     tz,
+			UnsubscribeHeader:            unsubHeader,
+			UnsubscribeSubject:           unsubSubject,
+			DiscordNotifier:              configuredDiscordNotifierFromEnv(),
+			DiscordProviders:             configuredDiscordProvidersFromEnv(),
+			DiscordOperationalWorkspaces: configuredDiscordOperationalWorkspacesFromEnv(),
 		})
 		if err != nil {
 			return err

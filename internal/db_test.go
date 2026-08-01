@@ -145,6 +145,38 @@ func TestOpenDB_AccountProviderColumns(t *testing.T) {
 	}
 }
 
+func TestOpenDB_OperationalNotificationColumns(t *testing.T) {
+	db := testDB(t)
+
+	for table, expected := range map[string][]string{
+		"accounts":  {"idle_since", "idle_notified_at"},
+		"campaigns": {"completed_at", "completion_notified_at"},
+	} {
+		cols := map[string]bool{}
+		rows, err := db.Query("PRAGMA table_info(" + table + ")")
+		if err != nil {
+			t.Fatalf("getting %s table info: %v", table, err)
+		}
+		for rows.Next() {
+			var cid int
+			var name, typ string
+			var notnull, pk int
+			var dflt *string
+			if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+				rows.Close()
+				t.Fatalf("scanning %s column: %v", table, err)
+			}
+			cols[name] = true
+		}
+		rows.Close()
+		for _, col := range expected {
+			if !cols[col] {
+				t.Errorf("%s missing column %q", table, col)
+			}
+		}
+	}
+}
+
 func TestOpenDB_AccountUniqueEmail(t *testing.T) {
 	db := testDB(t)
 

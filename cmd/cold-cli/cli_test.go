@@ -515,7 +515,7 @@ steps:
 		"--sequence", seqFile,
 		"--leads", leadsFile,
 		"--accounts", "sender@x.com",
-		"--start-date", "2026-06-13",
+		"--start-date", "2099-06-13",
 		"--send-days", "0,1,2,3,4,5,6")
 	if code != 0 {
 		t.Fatalf("campaign create with send-days override failed (exit %d): %s", code, out)
@@ -525,7 +525,7 @@ steps:
 	if code != 0 {
 		t.Fatalf("campaign preview failed (exit %d): %s", code, out)
 	}
-	if !strings.Contains(out, "2026-06-13") {
+	if !strings.Contains(out, "2099-06-13") {
 		t.Errorf("expected preview to keep the Saturday start date, got: %s", out)
 	}
 }

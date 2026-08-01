@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS accounts (
 	imap_port INTEGER NOT NULL DEFAULT 0,
 	imap_username TEXT NOT NULL DEFAULT '',
 	imap_password_ref TEXT NOT NULL DEFAULT '',
-	imap_tls_mode TEXT NOT NULL DEFAULT ''
+	imap_tls_mode TEXT NOT NULL DEFAULT '',
+	idle_since DATETIME,
+	idle_notified_at DATETIME
 );
 
 CREATE TABLE IF NOT EXISTS campaigns (
@@ -52,7 +54,9 @@ CREATE TABLE IF NOT EXISTS campaigns (
 	timezone TEXT NOT NULL DEFAULT 'America/New_York',
 	min_gap_seconds INTEGER NOT NULL DEFAULT 90,
 	max_gap_seconds INTEGER NOT NULL DEFAULT 140,
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	completed_at DATETIME,
+	completion_notified_at DATETIME
 );
 
 CREATE TABLE IF NOT EXISTS campaign_accounts (
@@ -171,7 +175,9 @@ var postgresSchemaStatements = []string{
 		imap_port INTEGER NOT NULL DEFAULT 0,
 		imap_username TEXT NOT NULL DEFAULT '',
 		imap_password_ref TEXT NOT NULL DEFAULT '',
-		imap_tls_mode TEXT NOT NULL DEFAULT ''
+		imap_tls_mode TEXT NOT NULL DEFAULT '',
+		idle_since TIMESTAMPTZ,
+		idle_notified_at TIMESTAMPTZ
 	)`,
 	`CREATE TABLE IF NOT EXISTS campaigns (
 		id BIGSERIAL PRIMARY KEY,
@@ -189,7 +195,9 @@ var postgresSchemaStatements = []string{
 		timezone TEXT NOT NULL DEFAULT 'America/New_York',
 		min_gap_seconds INTEGER NOT NULL DEFAULT 90,
 		max_gap_seconds INTEGER NOT NULL DEFAULT 140,
-		created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+		created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		completed_at TIMESTAMPTZ,
+		completion_notified_at TIMESTAMPTZ
 	)`,
 	`CREATE TABLE IF NOT EXISTS campaign_accounts (
 		campaign_id BIGINT NOT NULL REFERENCES campaigns(id),
@@ -296,6 +304,10 @@ var postgresMigrationStatements = []string{
 	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS imap_password_ref TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS imap_tls_mode TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default'`,
+	`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`,
+	`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS completion_notified_at TIMESTAMPTZ`,
+	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS idle_since TIMESTAMPTZ`,
+	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS idle_notified_at TIMESTAMPTZ`,
 	`ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS display_body TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS display_html TEXT NOT NULL DEFAULT ''`,
 }
@@ -390,6 +402,10 @@ func runSQLiteMigrations(db *sql.DB) error {
 		"ALTER TABLE accounts ADD COLUMN imap_password_ref TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE accounts ADD COLUMN imap_tls_mode TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE campaigns ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'",
+		"ALTER TABLE campaigns ADD COLUMN completed_at DATETIME",
+		"ALTER TABLE campaigns ADD COLUMN completion_notified_at DATETIME",
+		"ALTER TABLE accounts ADD COLUMN idle_since DATETIME",
+		"ALTER TABLE accounts ADD COLUMN idle_notified_at DATETIME",
 		"ALTER TABLE email_messages ADD COLUMN display_body TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE email_messages ADD COLUMN display_html TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE campaigns ADD COLUMN sequence_content TEXT NOT NULL DEFAULT ''",

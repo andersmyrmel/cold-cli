@@ -253,6 +253,7 @@ phone notification surface.
 export DISCORD_WEBHOOK_URL='https://discord.com/api/webhooks/...'
 export DISCORD_WEBHOOK_USERNAME='cold-cli Replies'
 export DISCORD_WEBHOOK_AVATAR_URL='https://example.com/brand/logo.png'
+export COLD_CLI_DISCORD_WORKSPACES='storeinspect'
 cold-cli tick
 ```
 
@@ -261,9 +262,13 @@ Notes:
 - The webhook URL is a secret. Store it in your local/production env file, not in git.
 - Set `COLD_CLI_DISCORD_NOTIFY=0` to temporarily disable notifications while keeping the webhook configured.
 - By default, Discord only alerts on SMTP/IMAP account replies because Gmail/GWS accounts already have Gmail notifications. Set `COLD_CLI_DISCORD_PROVIDERS=all` to notify for every provider, or a comma-separated list such as `smtp_imap,gws`.
+- Set `COLD_CLI_DISCORD_WORKSPACES` to a comma-separated workspace list to enable operational alerts for those workspaces. `all` or `*` enables them globally. Leaving it unset disables only campaign-finished and sender-idle alerts; reply alerts are unaffected.
 - Set `DISCORD_WEBHOOK_USERNAME` and `DISCORD_WEBHOOK_AVATAR_URL` to override the Discord webhook's default display name and icon.
 - The first enabled run initializes the notification cursor before polling inboxes, so old historical replies are not dumped into Discord. Replies discovered during that same tick still notify.
 - Alerts include campaign, inbox, lead, sender, subject, and a short snippet. Full message bodies are not sent.
+- Campaign-finished alerts are emitted once when an active campaign reaches `completed` or `completed_with_failures`. They include delivery/response counts and identify campaign inboxes that now have no pending sends across any active campaign.
+- An active sender with no pending sends gets an immediate idle alert. The alert state clears when new pending work appears; while the sender remains idle, one reminder is sent every 24 hours.
+- Existing historical completed campaigns are not announced when this feature is first deployed. Existing active senders that are already idle are announced so the operational gap is visible.
 - Discord mentions are disabled in webhook payloads so prospect text cannot trigger `@everyone` or role pings.
 
 ## How It Works

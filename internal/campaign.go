@@ -1640,7 +1640,8 @@ func RetryCampaign(db *sql.DB, name string, step *int) (*RetryCampaignResult, er
 		return nil, fmt.Errorf("counting retried sends: %w", err)
 	}
 	if affected > 0 {
-		if _, err := tx.Exec(`UPDATE campaigns SET status = 'active'
+		if _, err := tx.Exec(`UPDATE campaigns
+			SET status = 'active', completed_at = NULL, completion_notified_at = NULL
 			WHERE id = ? AND status = ?`, campaignID, CampaignStatusCompletedWithFailures); err != nil {
 			return nil, fmt.Errorf("reactivating campaign: %w", err)
 		}
