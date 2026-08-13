@@ -195,7 +195,7 @@ func loadGWSAuditThreadIDs(db *sql.DB, workspaceID string, accountID int64) ([]s
 	return threadIDs, rows.Err()
 }
 
-const imapAuditAnchorBatchSize = 100
+const imapAuditAnchorBatchSize = 5
 
 func loadIMAPAuditAnchors(db *sql.DB, workspaceID string, accountID int64) ([]string, error) {
 	rows, err := queryDB(db, `SELECT DISTINCT e.message_id
