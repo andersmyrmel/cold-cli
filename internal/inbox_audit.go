@@ -82,6 +82,10 @@ func AuditInboxHistory(cfg AuditInboxHistoryConfig) (*InboxAuditResult, error) {
 		}
 		accountResult.Scanned = len(messages)
 		result.Scanned += len(messages)
+		sort.SliceStable(messages, func(i, j int) bool {
+			return inboundEmailOccurredAt(messages[i]).Before(inboundEmailOccurredAt(messages[j]))
+		})
+		discoveredTargets := map[string]auditThreadTarget{}
 		for _, msg := range messages {
 			target, ok, matchErr := findAuditThreadTarget(cfg.DB, account, msg)
 			if matchErr != nil {
@@ -89,8 +93,12 @@ func AuditInboxHistory(cfg AuditInboxHistoryConfig) (*InboxAuditResult, error) {
 				continue
 			}
 			if !ok {
+				target, ok = findDiscoveredAuditThreadTarget(discoveredTargets, msg)
+			}
+			if !ok {
 				continue
 			}
+			rememberDiscoveredAuditTarget(discoveredTargets, target, msg)
 			accountResult.Matched++
 			result.Matched++
 			if auditMessageAlreadyStored(cfg.DB, target.CampaignID, target.LeadID, msg) {
@@ -107,6 +115,23 @@ func AuditInboxHistory(cfg AuditInboxHistoryConfig) (*InboxAuditResult, error) {
 	return result, errors.Join(errs...)
 }
 
+func findDiscoveredAuditThreadTarget(discovered map[string]auditThreadTarget, msg GWSMessage) (auditThreadTarget, bool) {
+	for _, candidate := range providerMessageIDCandidates(msg) {
+		if target, ok := discovered[canonicalMessageID(candidate)]; ok {
+			return target, true
+		}
+	}
+	return auditThreadTarget{}, false
+}
+
+func rememberDiscoveredAuditTarget(discovered map[string]auditThreadTarget, target auditThreadTarget, msg GWSMessage) {
+	for _, candidate := range providerMessageIDCandidates(msg) {
+		if key := canonicalMessageID(candidate); key != "" {
+			discovered[key] = target
+		}
+	}
+}
+
 func listHistoricalProviderMessages(cfg AuditInboxHistoryConfig, account Account) ([]GWSMessage, error) {
 	switch account.Provider {
 	case AccountProviderGWS:
@@ -120,13 +145,105 @@ func listHistoricalProviderMessages(cfg AuditInboxHistoryConfig, account Account
 		if lister == nil {
 			lister = NewIMAPTransport(cfg.SecretResolver)
 		}
-		if historical, ok := lister.(IMAPHistoryMessageLister); ok {
-			return historical.ListAllMessages(account, cfg.Since)
+		threadLister, ok := lister.(IMAPThreadMessageLister)
+		if !ok {
+			return nil, fmt.Errorf("IMAP transport does not support historical thread search")
 		}
-		return lister.ListMessages(account, cfg.Since, true)
+		anchors, err := loadIMAPAuditAnchors(cfg.DB, cfg.WorkspaceID, account.ID)
+		if err != nil {
+			return nil, err
+		}
+		return listIMAPAuditThreadMessages(threadLister, account, cfg.Since, anchors)
 	default:
 		return nil, fmt.Errorf("unsupported provider %q", account.Provider)
 	}
+}
+
+const imapAuditAnchorBatchSize = 20
+
+func loadIMAPAuditAnchors(db *sql.DB, workspaceID string, accountID int64) ([]string, error) {
+	rows, err := queryDB(db, `SELECT DISTINCT e.message_id
+		FROM events e JOIN campaigns c ON c.id = e.campaign_id
+		WHERE c.workspace_id = ? AND e.account_id = ?
+		AND e.type IN ('sent', 'manual_reply') AND e.message_id <> ''
+		ORDER BY e.message_id`, NormalizeWorkspaceID(workspaceID), accountID)
+	if err != nil {
+		return nil, fmt.Errorf("loading campaign message anchors: %w", err)
+	}
+	defer rows.Close()
+	var anchors []string
+	for rows.Next() {
+		var anchor string
+		if err := rows.Scan(&anchor); err != nil {
+			return nil, err
+		}
+		if looksLikeMessageID(normalizeMessageID(anchor)) {
+			anchors = append(anchors, normalizeMessageID(anchor))
+		}
+	}
+	return anchors, rows.Err()
+}
+
+func listIMAPAuditThreadMessages(lister IMAPThreadMessageLister, account Account, since time.Time, initialAnchors []string) ([]GWSMessage, error) {
+	knownAnchors := map[string]struct{}{}
+	var pending []string
+	for _, anchor := range initialAnchors {
+		key := canonicalMessageID(anchor)
+		if key == "" {
+			continue
+		}
+		if _, exists := knownAnchors[key]; exists {
+			continue
+		}
+		knownAnchors[key] = struct{}{}
+		pending = append(pending, anchor)
+	}
+	var all []GWSMessage
+	seenMessages := map[string]struct{}{}
+	for round := 0; round < 4 && len(pending) > 0; round++ {
+		current := pending
+		pending = nil
+		for start := 0; start < len(current); start += imapAuditAnchorBatchSize {
+			end := start + imapAuditAnchorBatchSize
+			if end > len(current) {
+				end = len(current)
+			}
+			messages, err := lister.ListThreadMessages(account, since, current[start:end])
+			if err != nil {
+				return nil, fmt.Errorf("searching campaign message anchors %d-%d: %w", start+1, end, err)
+			}
+			for _, msg := range messages {
+				messageKey := canonicalMessageID(msg.ID)
+				if messageKey != "" {
+					if _, exists := seenMessages[messageKey]; exists {
+						continue
+					}
+					seenMessages[messageKey] = struct{}{}
+				}
+				all = append(all, msg)
+				for _, candidate := range providerMessageIDCandidates(msg) {
+					key := canonicalMessageID(candidate)
+					if key == "" {
+						continue
+					}
+					if _, exists := knownAnchors[key]; !exists {
+						knownAnchors[key] = struct{}{}
+						pending = append(pending, candidate)
+					}
+				}
+			}
+		}
+	}
+	return dedupeMailboxMessages(all), nil
+}
+
+func providerMessageIDCandidates(msg GWSMessage) []string {
+	candidates := []string{msg.ID, msg.InReplyTo}
+	if msg.Headers != nil {
+		candidates = append(candidates, firstEmailHeader(msg.Headers, "Message-ID"))
+		candidates = append(candidates, messageIDs(firstEmailHeader(msg.Headers, "References"))...)
+	}
+	return candidates
 }
 
 type auditThreadTarget struct {

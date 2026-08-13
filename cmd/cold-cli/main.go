@@ -1963,11 +1963,11 @@ var inboxSyncCmd = &cobra.Command{
 
 var inboxAuditCmd = &cobra.Command{
 	Use:   "audit",
-	Short: "Read every provider mailbox and report untracked campaign messages",
+	Short: "Audit provider campaign threads for untracked messages",
 	Long: strings.TrimSpace(`
-Scan complete Gmail history and every selectable IMAP mailbox for messages
-connected to cold-cli campaign threads. This command is read-only: it reports
-provider messages that are missing from cold-cli without storing or sending.
+Read complete Gmail campaign threads and search every selectable IMAP mailbox
+using campaign RFC message IDs. This command is read-only: it reports provider
+messages that are missing from cold-cli without storing or sending.
 `),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sinceValue, _ := cmd.Flags().GetString("since")

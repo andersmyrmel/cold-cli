@@ -30,10 +30,6 @@ type IMAPThreadMessageLister interface {
 	ListThreadMessages(account Account, since time.Time, messageIDs []string) ([]GWSMessage, error)
 }
 
-type IMAPHistoryMessageLister interface {
-	ListAllMessages(account Account, since time.Time) ([]GWSMessage, error)
-}
-
 // IMAPSentAppender stores an SMTP-delivered message in the account's Sent
 // mailbox so webmail and other IMAP clients show the same conversation.
 type IMAPSentAppender interface {
@@ -160,12 +156,6 @@ func (t *IMAPTransport) ListMessages(account Account, since time.Time, includeSp
 // the account since the campaign began.
 func (t *IMAPTransport) ListThreadMessages(account Account, since time.Time, messageIDs []string) ([]GWSMessage, error) {
 	return t.listDiscoveredMailboxMessages(account, since, messageIDs)
-}
-
-// ListAllMessages enumerates every selectable mailbox except Drafts. This is
-// intended for explicit historical audits, not the frequent tick poll.
-func (t *IMAPTransport) ListAllMessages(account Account, since time.Time) ([]GWSMessage, error) {
-	return t.listDiscoveredMailboxMessages(account, since, nil)
 }
 
 func (t *IMAPTransport) listMessagesFromMailboxes(account Account, since time.Time, mailboxes []string, messageIDs []string) ([]GWSMessage, error) {
