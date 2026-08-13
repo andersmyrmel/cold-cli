@@ -48,6 +48,9 @@ func TestAuditInboxHistoryReportsUntrackedInboundAndOutboundWithoutWriting(t *te
 	if result.Missing != 2 || len(result.Messages) != 2 {
 		t.Fatalf("expected two missing messages, got %+v", result)
 	}
+	if len(gws.ListCalls) != 0 || len(gws.ThreadCalls) != 1 {
+		t.Fatalf("expected bounded Gmail thread reads, list=%+v threads=%+v", gws.ListCalls, gws.ThreadCalls)
+	}
 	if result.Messages[0].CampaignID != campaignID || result.Messages[0].LeadID != leadID || result.Messages[0].Direction != EmailMessageDirectionOutbound {
 		t.Fatalf("unexpected outbound audit result: %+v", result.Messages[0])
 	}

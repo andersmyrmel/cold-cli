@@ -138,8 +138,23 @@ func listHistoricalProviderMessages(cfg AuditInboxHistoryConfig, account Account
 		if cfg.GWS == nil {
 			return nil, fmt.Errorf("gws client is required")
 		}
-		query := fmt.Sprintf("after:%d", cfg.Since.Unix())
-		return cfg.GWS.ListMessages(account.Email, query, true)
+		threadIDs, err := loadGWSAuditThreadIDs(cfg.DB, cfg.WorkspaceID, account.ID)
+		if err != nil {
+			return nil, err
+		}
+		var all []GWSMessage
+		for _, threadID := range threadIDs {
+			messages, err := cfg.GWS.GetThreadMessages(account.Email, threadID)
+			if err != nil {
+				return nil, fmt.Errorf("fetching Gmail thread %s: %w", threadID, err)
+			}
+			for _, msg := range messages {
+				if !inboundEmailOccurredAt(msg).Before(cfg.Since) {
+					all = append(all, msg)
+				}
+			}
+		}
+		return dedupeMailboxMessages(all), nil
 	case AccountProviderSMTPIMAP:
 		lister := cfg.IMAP
 		if lister == nil {
@@ -157,6 +172,27 @@ func listHistoricalProviderMessages(cfg AuditInboxHistoryConfig, account Account
 	default:
 		return nil, fmt.Errorf("unsupported provider %q", account.Provider)
 	}
+}
+
+func loadGWSAuditThreadIDs(db *sql.DB, workspaceID string, accountID int64) ([]string, error) {
+	rows, err := queryDB(db, `SELECT DISTINCT e.thread_id
+		FROM events e JOIN campaigns c ON c.id = e.campaign_id
+		WHERE c.workspace_id = ? AND e.account_id = ?
+		AND e.type IN ('sent', 'manual_reply') AND e.thread_id <> ''
+		ORDER BY e.thread_id`, NormalizeWorkspaceID(workspaceID), accountID)
+	if err != nil {
+		return nil, fmt.Errorf("loading Gmail campaign threads: %w", err)
+	}
+	defer rows.Close()
+	var threadIDs []string
+	for rows.Next() {
+		var threadID string
+		if err := rows.Scan(&threadID); err != nil {
+			return nil, err
+		}
+		threadIDs = append(threadIDs, threadID)
+	}
+	return threadIDs, rows.Err()
 }
 
 const imapAuditAnchorBatchSize = 100
