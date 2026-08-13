@@ -31,10 +31,6 @@ type IMAPThreadMessageLister interface {
 	ListThreadMessages(account Account, since time.Time, messageIDs []string) ([]GWSMessage, error)
 }
 
-type IMAPAuditThreadMessageLister interface {
-	ListAuditThreadMessages(account Account, since time.Time, messageIDs []string) ([]GWSMessage, error)
-}
-
 // IMAPSentAppender stores an SMTP-delivered message in the account's Sent
 // mailbox so webmail and other IMAP clients show the same conversation.
 type IMAPSentAppender interface {
@@ -161,13 +157,7 @@ func (t *IMAPTransport) ListMessages(account Account, since time.Time, includeSp
 // headers so refreshing one conversation does not download every message in
 // the account since the campaign began.
 func (t *IMAPTransport) ListThreadMessages(account Account, since time.Time, messageIDs []string) ([]GWSMessage, error) {
-	return t.listDiscoveredMailboxMessages(account, since, messageIDs, true)
-}
-
-// ListAuditThreadMessages searches only References and In-Reply-To. Existing
-// stored roots do not need to be rediscovered by Message-ID during an audit.
-func (t *IMAPTransport) ListAuditThreadMessages(account Account, since time.Time, messageIDs []string) ([]GWSMessage, error) {
-	return t.listDiscoveredMailboxMessages(account, since, messageIDs, false)
+	return t.listDiscoveredMailboxMessages(account, since, messageIDs)
 }
 
 func (t *IMAPTransport) listMessagesFromMailboxes(account Account, since time.Time, mailboxes []string, messageIDs []string) ([]GWSMessage, error) {
@@ -203,7 +193,7 @@ func (t *IMAPTransport) listMessagesFromMailboxes(account Account, since time.Ti
 	return t.listMessagesWithClient(client, account, since, mailboxes, messageIDs, false)
 }
 
-func (t *IMAPTransport) listDiscoveredMailboxMessages(account Account, since time.Time, messageIDs []string, includeMessageID bool) ([]GWSMessage, error) {
+func (t *IMAPTransport) listDiscoveredMailboxMessages(account Account, since time.Time, messageIDs []string) ([]GWSMessage, error) {
 	if account.Provider != AccountProviderSMTPIMAP {
 		return nil, fmt.Errorf("account %s is provider %s, expected %s", account.Email, account.Provider, AccountProviderSMTPIMAP)
 	}
@@ -224,7 +214,7 @@ func (t *IMAPTransport) listDiscoveredMailboxMessages(account Account, since tim
 	if err != nil {
 		return nil, fmt.Errorf("listing IMAP mailboxes: %w", err)
 	}
-	return t.listMessagesWithClient(client, account, since, mailboxes, messageIDs, true, includeMessageID)
+	return t.listMessagesWithClient(client, account, since, mailboxes, messageIDs, true)
 }
 
 func (t *IMAPTransport) resolvePassword(account Account) (string, error) {
@@ -243,11 +233,10 @@ func (t *IMAPTransport) resolvePassword(account Account) (string, error) {
 	return password, nil
 }
 
-func (t *IMAPTransport) listMessagesWithClient(client imapClient, account Account, since time.Time, mailboxes []string, messageIDs []string, strict bool, includeMessageID ...bool) ([]GWSMessage, error) {
-	searchMessageID := len(includeMessageID) == 0 || includeMessageID[0]
+func (t *IMAPTransport) listMessagesWithClient(client imapClient, account Account, since time.Time, mailboxes []string, messageIDs []string, strict bool) ([]GWSMessage, error) {
 	var all []GWSMessage
 	for i, mailbox := range mailboxes {
-		messages, err := t.listMailboxMessages(client, account, mailbox, since, messageIDs, searchMessageID)
+		messages, err := t.listMailboxMessages(client, account, mailbox, since, messageIDs)
 		if err != nil {
 			if !strict && i > 0 {
 				continue
@@ -392,13 +381,12 @@ func (t *IMAPTransport) open(account Account, password string) (*imapclient.Clie
 	return client, nil
 }
 
-func (t *IMAPTransport) listMailboxMessages(client imapClient, account Account, mailbox string, since time.Time, messageIDs []string, includeMessageID ...bool) ([]GWSMessage, error) {
+func (t *IMAPTransport) listMailboxMessages(client imapClient, account Account, mailbox string, since time.Time, messageIDs []string) ([]GWSMessage, error) {
 	if _, err := client.Select(mailbox, true); err != nil {
 		return nil, fmt.Errorf("selecting IMAP mailbox %s: %w", mailbox, err)
 	}
 
-	searchMessageID := len(includeMessageID) == 0 || includeMessageID[0]
-	criteria := imapThreadSearchCriteriaWithMessageID(since, messageIDs, searchMessageID)
+	criteria := imapThreadSearchCriteria(since, messageIDs)
 
 	uids, err := client.UidSearch(criteria)
 	for attempt := 0; err != nil && attempt < t.SearchRateLimitRetries; attempt++ {
@@ -442,10 +430,6 @@ func (t *IMAPTransport) listMailboxMessages(client imapClient, account Account, 
 }
 
 func imapThreadSearchCriteria(since time.Time, messageIDs []string) *imap.SearchCriteria {
-	return imapThreadSearchCriteriaWithMessageID(since, messageIDs, true)
-}
-
-func imapThreadSearchCriteriaWithMessageID(since time.Time, messageIDs []string, includeMessageID bool) *imap.SearchCriteria {
 	criteria := imap.NewSearchCriteria()
 	criteria.Since = since.AddDate(0, 0, -1)
 	var terms []*imap.SearchCriteria
@@ -460,11 +444,7 @@ func imapThreadSearchCriteriaWithMessageID(since time.Time, messageIDs []string,
 			continue
 		}
 		seen[key] = struct{}{}
-		headerNames := []string{"References", "In-Reply-To"}
-		if includeMessageID {
-			headerNames = append([]string{"Message-ID"}, headerNames...)
-		}
-		for _, headerName := range headerNames {
+		for _, headerName := range []string{"Message-ID", "References", "In-Reply-To"} {
 			term := imap.NewSearchCriteria()
 			term.Header.Set(headerName, messageID)
 			terms = append(terms, term)

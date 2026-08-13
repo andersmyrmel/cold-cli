@@ -197,7 +197,7 @@ func loadGWSAuditThreadIDs(db *sql.DB, workspaceID string, accountID int64) ([]s
 	return threadIDs, rows.Err()
 }
 
-const imapAuditAnchorBatchSize = 10
+const imapAuditAnchorBatchSize = 5
 
 func loadIMAPAuditAnchors(db *sql.DB, workspaceID string, accountID int64) ([]string, error) {
 	rows, err := queryDB(db, `SELECT DISTINCT e.message_id
@@ -246,13 +246,7 @@ func listIMAPAuditThreadMessages(lister IMAPThreadMessageLister, account Account
 			if end > len(current) {
 				end = len(current)
 			}
-			var messages []GWSMessage
-			var err error
-			if auditLister, ok := lister.(IMAPAuditThreadMessageLister); ok {
-				messages, err = auditLister.ListAuditThreadMessages(account, since, current[start:end])
-			} else {
-				messages, err = lister.ListThreadMessages(account, since, current[start:end])
-			}
+			messages, err := lister.ListThreadMessages(account, since, current[start:end])
 			if err != nil {
 				return nil, fmt.Errorf("searching campaign message anchors %d-%d: %w", start+1, end, err)
 			}

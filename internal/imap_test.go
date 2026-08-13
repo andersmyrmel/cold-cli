@@ -240,38 +240,6 @@ func TestIMAPThreadSearchCriteriaMatchesThreadingHeaders(t *testing.T) {
 	}
 }
 
-func TestIMAPAuditSearchCriteriaOmitsMessageIDHeader(t *testing.T) {
-	criteria := imapThreadSearchCriteriaWithMessageID(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC), []string{
-		"<root@example.com>",
-	}, false)
-	headers := collectIMAPSearchHeaders(criteria)
-	if headers["message-id"] {
-		t.Fatalf("audit criteria should not search Message-ID: %+v", headers)
-	}
-	if !headers["references"] || !headers["in-reply-to"] {
-		t.Fatalf("audit criteria missing thread headers: %+v", headers)
-	}
-}
-
-func collectIMAPSearchHeaders(criteria *imap.SearchCriteria) map[string]bool {
-	headers := map[string]bool{}
-	var walk func(*imap.SearchCriteria)
-	walk = func(current *imap.SearchCriteria) {
-		if current == nil {
-			return
-		}
-		for name := range current.Header {
-			headers[strings.ToLower(name)] = true
-		}
-		for _, pair := range current.Or {
-			walk(pair[0])
-			walk(pair[1])
-		}
-	}
-	walk(criteria)
-	return headers
-}
-
 func TestIMAPSearchRateLimitWait(t *testing.T) {
 	wait, ok := imapSearchRateLimitWait(fmt.Errorf("search rate limit exceeded: please wait 54s before trying again"))
 	if !ok || wait != 55*time.Second {
