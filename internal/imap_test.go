@@ -84,6 +84,25 @@ func TestParseIMAPRawMessageDecodesMultipartBodies(t *testing.T) {
 	}
 }
 
+func TestParseIMAPRawMessageDecodesWindows1252(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"From: Lead <lead@example.net>",
+		"To: sender@example.com",
+		"Subject: Re: details",
+		"Message-ID: <windows@example.net>",
+		"Content-Type: text/plain; charset=Windows-1252",
+		"Content-Transfer-Encoding: 8bit",
+		"",
+		"",
+	}, "\r\n"))
+	raw = append(raw, []byte{'I', 0x92, 'm', ' ', 'i', 'n'}...)
+
+	msg := ParseIMAPRawMessage("sender@example.com", "INBOX", 43, raw, nil)
+	if msg.TextBody != "I’m in" {
+		t.Fatalf("unexpected decoded body: %q", msg.TextBody)
+	}
+}
+
 func TestParseIMAPRawMessageEnvelopeFallback(t *testing.T) {
 	envelopeDate := time.Date(2026, time.April, 30, 11, 33, 47, 0, time.UTC)
 	msg := ParseIMAPRawMessage("sender@example.com", "INBOX", 7, []byte("not a valid RFC message"), &imap.Envelope{

@@ -18,6 +18,7 @@ import (
 
 	imap "github.com/emersion/go-imap"
 	imapclient "github.com/emersion/go-imap/client"
+	"golang.org/x/net/html/charset"
 )
 
 // IMAPMessageLister lists mailbox messages for reply and bounce polling.
@@ -530,11 +531,16 @@ func extractIMAPMessageBodies(header textproto.MIMEHeader, body io.Reader) (stri
 		return "", ""
 	}
 	decoded := decodeIMAPTransferEncoding(body, header.Get("Content-Transfer-Encoding"))
+	if contentType != "" {
+		if charsetDecoded, err := charset.NewReader(decoded, contentType); err == nil {
+			decoded = charsetDecoded
+		}
+	}
 	content, err := io.ReadAll(decoded)
 	if err != nil {
 		return "", ""
 	}
-	value := strings.TrimSpace(string(content))
+	value := strings.TrimSpace(strings.ToValidUTF8(string(content), "�"))
 	switch mediaType {
 	case "text/plain":
 		return value, ""
