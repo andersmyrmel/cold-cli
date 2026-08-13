@@ -422,6 +422,8 @@ schedule is a nightly 30-day pass plus a weekly 120-day pass:
 32 3 * * 0 /usr/bin/nice -n 10 /usr/bin/ionice -c2 -n7 /home/coldcli/bin/cold-cli --env-file /home/coldcli/.cold-cli-env --workspace storeinspect inbox reconcile --since 120d --lock-wait 10m --notify-errors >> /home/coldcli/.cold-cli/reconcile.log 2>&1
 ```
 
+The exact production crontab is tracked in `ops/mova-coldcli.crontab`.
+
 Routine tick polling captures new inbound replies. The reconciliation schedule
 also imports messages sent manually through Gmail or IMAP webmail and messages
 moved out of INBOX. Messages deleted from the provider before reconciliation

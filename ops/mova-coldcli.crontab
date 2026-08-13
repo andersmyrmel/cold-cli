@@ -1,0 +1,3 @@
+5,15,25,35,45,55 * * * * /usr/bin/nice -n 10 /usr/bin/ionice -c2 -n7 /bin/bash -lc '/home/coldcli/bin/cold-cli --env-file /home/coldcli/.cold-cli-env tick' >> /home/coldcli/.cold-cli/cron.log 2>&1
+2 2 * * * /usr/bin/nice -n 10 /usr/bin/ionice -c2 -n7 /home/coldcli/bin/cold-cli --env-file /home/coldcli/.cold-cli-env --workspace storeinspect inbox reconcile --since 30d --lock-wait 10m --notify-errors >> /home/coldcli/.cold-cli/reconcile.log 2>&1
+32 3 * * 0 /usr/bin/nice -n 10 /usr/bin/ionice -c2 -n7 /home/coldcli/bin/cold-cli --env-file /home/coldcli/.cold-cli-env --workspace storeinspect inbox reconcile --since 120d --lock-wait 10m --notify-errors >> /home/coldcli/.cold-cli/reconcile.log 2>&1
