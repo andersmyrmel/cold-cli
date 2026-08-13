@@ -73,7 +73,19 @@ func AuditInboxHistory(cfg AuditInboxHistoryConfig) (*InboxAuditResult, error) {
 			continue
 		}
 		accountResult := InboxAuditAccountResult{AccountID: account.ID, AccountEmail: account.Email, Provider: account.Provider}
-		messages, listErr := listHistoricalProviderMessages(cfg, account)
+		var messages []GWSMessage
+		var listErr error
+		for attempt := 0; attempt < 4; attempt++ {
+			messages, listErr = listHistoricalProviderMessages(cfg, account)
+			if listErr == nil || account.Provider != AccountProviderSMTPIMAP {
+				break
+			}
+			wait, retry := imapAuditRetryWait(listErr)
+			if !retry || attempt == 3 {
+				break
+			}
+			time.Sleep(wait)
+		}
 		if listErr != nil {
 			accountResult.Error = listErr.Error()
 			result.Accounts = append(result.Accounts, accountResult)

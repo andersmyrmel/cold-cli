@@ -459,7 +459,7 @@ func (t *IMAPTransport) listMailboxMessages(client imapClient, account Account, 
 	return messages, nil
 }
 
-const imapAuditFetchBatchSize = 200
+const imapAuditFetchBatchSize = 50
 
 func (t *IMAPTransport) listMailboxMessageHeaders(client imapClient, account Account, mailbox string, since time.Time) ([]GWSMessage, error) {
 	if _, err := client.Select(mailbox, true); err != nil {
