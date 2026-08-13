@@ -628,10 +628,13 @@ func TestProcessBounces_IncludesSpamTrash(t *testing.T) {
 func TestProcessReplies_QueryLooksBackAndExcludesOwnSender(t *testing.T) {
 	db := setupReplyTestDB(t)
 	lastPoll := time.Date(2026, 6, 2, 10, 55, 0, 0, time.UTC)
-	SetLastPollAt(db, lastPoll)
+	account := Account{ID: 1, Email: "sender@x.com", Provider: AccountProviderGWS, DailyLimit: 50, Status: "active"}
+	if err := setReplyPollAt(db, account, lastPoll); err != nil {
+		t.Fatalf("setting reply poll cursor: %v", err)
+	}
 
 	mock := &MockGWS{}
-	accounts := []Account{{ID: 1, Email: "sender@x.com", DailyLimit: 50, Status: "active"}}
+	accounts := []Account{account}
 
 	if _, _, err := ProcessReplies(db, mock, accounts); err != nil {
 		t.Fatalf("ProcessReplies error: %v", err)
@@ -654,6 +657,49 @@ func TestProcessReplies_QueryLooksBackAndExcludesOwnSender(t *testing.T) {
 	}
 	if strings.Contains(query, "in:inbox") {
 		t.Fatalf("reply polling should not be inbox-only, got query %q", query)
+	}
+}
+
+type accountResultIMAPMock struct {
+	calls  []int64
+	errors map[int64]error
+}
+
+func (m *accountResultIMAPMock) ListMessages(account Account, _ time.Time, _ bool) ([]GWSMessage, error) {
+	m.calls = append(m.calls, account.ID)
+	return nil, m.errors[account.ID]
+}
+
+func TestProcessIMAPRepliesKeepsFailedAccountCursorAndContinues(t *testing.T) {
+	db := setupReplyTestDB(t)
+	if _, err := db.Exec(`INSERT INTO accounts (email, provider, status)
+		VALUES ('second@example.com', ?, 'active')`, AccountProviderSMTPIMAP); err != nil {
+		t.Fatalf("insert second account: %v", err)
+	}
+	accounts := []Account{
+		{ID: 1, Email: "sender@x.com", Provider: AccountProviderSMTPIMAP, Status: "active"},
+		{ID: 2, Email: "second@example.com", Provider: AccountProviderSMTPIMAP, Status: "active"},
+	}
+	old := time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
+	for _, account := range accounts {
+		if err := setReplyPollAt(db, account, old); err != nil {
+			t.Fatalf("setting cursor for account %d: %v", account.ID, err)
+		}
+	}
+
+	mock := &accountResultIMAPMock{errors: map[int64]error{1: fmt.Errorf("temporary IMAP failure")}}
+	_, _, err := ProcessIMAPReplies(db, mock, accounts)
+	if err == nil || !strings.Contains(err.Error(), "temporary IMAP failure") {
+		t.Fatalf("expected aggregate IMAP error, got %v", err)
+	}
+	if fmt.Sprint(mock.calls) != "[1 2]" {
+		t.Fatalf("expected both accounts to be polled, got %v", mock.calls)
+	}
+	if got := getReplyPollAt(db, accounts[0]); !got.Equal(old) {
+		t.Fatalf("failed account cursor advanced from %s to %s", old, got)
+	}
+	if got := getReplyPollAt(db, accounts[1]); !got.After(old) {
+		t.Fatalf("successful account cursor did not advance: %s", got)
 	}
 }
 

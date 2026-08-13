@@ -1961,6 +1961,46 @@ var inboxSyncCmd = &cobra.Command{
 	},
 }
 
+var inboxAuditCmd = &cobra.Command{
+	Use:   "audit",
+	Short: "Read every provider mailbox and report untracked campaign messages",
+	Long: strings.TrimSpace(`
+Scan complete Gmail history and every selectable IMAP mailbox for messages
+connected to cold-cli campaign threads. This command is read-only: it reports
+provider messages that are missing from cold-cli without storing or sending.
+`),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sinceValue, _ := cmd.Flags().GetString("since")
+		since, err := time.Parse(time.RFC3339, strings.TrimSpace(sinceValue))
+		if err != nil {
+			return fmt.Errorf("--since must be RFC3339: %w", err)
+		}
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		result, auditErr := internal.AuditInboxHistory(internal.AuditInboxHistoryConfig{
+			DB: store.DB, WorkspaceID: currentWorkspaceID(), Since: since,
+			SecretResolver: internal.EnvSecretResolver{}, GWS: configuredGWSClient(store),
+		})
+		if jsonOutput {
+			if err := printJSON(result); err != nil {
+				return err
+			}
+		} else {
+			fmt.Printf("Audited %d provider messages across %d accounts since %s: %d campaign-thread matches, %d untracked\n",
+				result.Scanned, len(result.Accounts), result.Since.Format(time.RFC3339), result.Matched, result.Missing)
+			for _, message := range result.Messages {
+				fmt.Printf("%s %s campaign=%d lead=%d account=%s at=%s subject=%q message_id=%s\n",
+					message.Direction, message.Type, message.CampaignID, message.LeadID, message.AccountEmail,
+					message.OccurredAt.Format(time.RFC3339), message.Subject, message.MessageID)
+			}
+		}
+		return auditErr
+	},
+}
+
 var inboxShowCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Refresh and print one complete stored thread",
@@ -2411,9 +2451,10 @@ func init() {
 		command.Flags().String("thread", "", "specific provider thread ID (default: latest stored thread)")
 	}
 	inboxSyncCmd.Flags().Bool("dry-run", false, "fetch and report missing messages without storing them")
+	inboxAuditCmd.Flags().String("since", time.Now().UTC().AddDate(0, 0, -120).Format(time.RFC3339), "earliest provider message date (RFC3339)")
 	inboxShowCmd.Flags().Int("limit", 100, "maximum stored messages to print")
 	inboxShowCmd.Flags().Bool("stored-only", false, "print stored snapshots without refreshing the provider")
-	inboxCmd.AddCommand(inboxBackfillCmd, inboxReplyCmd, inboxSyncCmd, inboxShowCmd)
+	inboxCmd.AddCommand(inboxBackfillCmd, inboxReplyCmd, inboxSyncCmd, inboxShowCmd, inboxAuditCmd)
 
 	statsCmd.Flags().Bool("leads", false, "show per-lead breakdown")
 	statsCmd.Flags().Bool("variants", false, "show per-variant A/B test results")

@@ -1,12 +1,52 @@
 package internal
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
 
 	imap "github.com/emersion/go-imap"
 )
+
+type fakeMailboxIMAPClient struct {
+	mailboxes []*imap.MailboxInfo
+	messages  map[string][]byte
+	selected  string
+}
+
+func (f *fakeMailboxIMAPClient) List(_, _ string, ch chan *imap.MailboxInfo) error {
+	defer close(ch)
+	for _, mailbox := range f.mailboxes {
+		ch <- mailbox
+	}
+	return nil
+}
+
+func (f *fakeMailboxIMAPClient) Select(name string, _ bool) (*imap.MailboxStatus, error) {
+	f.selected = name
+	return &imap.MailboxStatus{Name: name}, nil
+}
+
+func (f *fakeMailboxIMAPClient) UidSearch(*imap.SearchCriteria) ([]uint32, error) {
+	if _, ok := f.messages[f.selected]; ok {
+		return []uint32{1}, nil
+	}
+	return nil, nil
+}
+
+func (f *fakeMailboxIMAPClient) UidFetch(_ *imap.SeqSet, _ []imap.FetchItem, ch chan *imap.Message) error {
+	defer close(ch)
+	raw, ok := f.messages[f.selected]
+	if !ok {
+		return nil
+	}
+	section := &imap.BodySectionName{}
+	ch <- &imap.Message{Uid: 1, Body: map[*imap.BodySectionName]imap.Literal{section: bytes.NewReader(raw)}}
+	return nil
+}
+
+func (f *fakeMailboxIMAPClient) Logout() error { return nil }
 
 func TestParseIMAPRawMessage(t *testing.T) {
 	raw := []byte(strings.Join([]string{
@@ -196,5 +236,37 @@ func TestIMAPThreadSearchCriteriaMatchesThreadingHeaders(t *testing.T) {
 	}
 	if len(criteria.Or) != 1 {
 		t.Fatalf("expected one nested OR tree, got %+v", criteria.Or)
+	}
+}
+
+func TestListThreadMessagesSearchesArchiveAndSkipsDrafts(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"Message-ID: <manual@example.com>",
+		"From: sender@example.com",
+		"To: lead@example.net",
+		"References: <root@example.com>",
+		"Date: Thu, 13 Aug 2026 09:00:00 +0000",
+		"", "Manual follow-up",
+	}, "\r\n"))
+	fake := &fakeMailboxIMAPClient{
+		mailboxes: []*imap.MailboxInfo{
+			{Name: "INBOX"},
+			{Name: "Archive"},
+			{Name: "Drafts", Attributes: []string{"\\Drafts"}},
+			{Name: "Containers", Attributes: []string{"\\Noselect"}},
+		},
+		messages: map[string][]byte{"Archive": raw, "Drafts": raw},
+	}
+	transport := NewIMAPTransport(staticSecretResolver{"env:MAIL_PASSWORD": "secret"})
+	transport.openIMAPClient = func(Account, string) (imapClient, error) { return fake, nil }
+	messages, err := transport.ListThreadMessages(Account{
+		Email: "sender@example.com", Provider: AccountProviderSMTPIMAP,
+		IMAPPasswordRef: "env:MAIL_PASSWORD",
+	}, time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC), []string{"<root@example.com>"})
+	if err != nil {
+		t.Fatalf("ListThreadMessages error: %v", err)
+	}
+	if len(messages) != 1 || messages[0].ID != "<manual@example.com>" {
+		t.Fatalf("expected archived message, got %+v", messages)
 	}
 }

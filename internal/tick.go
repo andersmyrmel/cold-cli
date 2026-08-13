@@ -73,13 +73,6 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 		return result, nil
 	}
 
-	// Early exit: skip everything if no active campaigns
-	var activeCampaigns int
-	queryRowDB(cfg.DB, "SELECT COUNT(*) FROM campaigns WHERE status = 'active'").Scan(&activeCampaigns)
-	if activeCampaigns == 0 {
-		return result, nil
-	}
-
 	gwsAccounts := accountsByProvider(accounts, AccountProviderGWS)
 	smtpIMAPAccounts := accountsByProvider(accounts, AccountProviderSMTPIMAP)
 

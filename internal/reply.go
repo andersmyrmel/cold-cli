@@ -2,6 +2,7 @@ package internal
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -29,6 +30,33 @@ func SetLastPollAt(db *sql.DB, t time.Time) {
 		t.UTC().Format(time.RFC3339), t.UTC().Format(time.RFC3339)); err != nil {
 		slog.Warn("failed to update last_poll_at", "error", err)
 	}
+}
+
+func replyPollCursorKey(account Account) string {
+	provider := strings.TrimSpace(account.Provider)
+	if provider == "" {
+		provider = AccountProviderGWS
+	}
+	return fmt.Sprintf("reply_poll_at:%s:%d", provider, account.ID)
+}
+
+func getReplyPollAt(db *sql.DB, account Account) time.Time {
+	var value string
+	if err := queryRowDB(db, "SELECT value FROM kv WHERE key = ?", replyPollCursorKey(account)).Scan(&value); err == nil {
+		if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+			return parsed
+		}
+	}
+	// Preserve the legacy shared cursor during rollout. Once this account polls
+	// successfully it receives its own independent cursor.
+	return GetLastPollAt(db)
+}
+
+func setReplyPollAt(db *sql.DB, account Account, at time.Time) error {
+	value := at.UTC().Format(time.RFC3339)
+	_, err := execDB(db, `INSERT INTO kv (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = ?`, replyPollCursorKey(account), value, value)
+	return err
 }
 
 // IsUnsubscribeRequest checks if a message appears to be an unsubscribe request
@@ -71,13 +99,10 @@ func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (replies int,
 }
 
 func processGWSReplyMessages(db *sql.DB, gws GWSClient, accounts []Account) (replyPollResult, error) {
-	lastPoll := GetLastPollAt(db)
-	pollSince := lastPoll.Add(-replyPollOverlap)
-
-	return processReplyMessages(db, accounts, func(account Account) ([]GWSMessage, error) {
+	return processReplyAccounts(db, accounts, func(account Account, since time.Time) ([]GWSMessage, error) {
 		// Search all mail addressed to this account, not just INBOX. Manual
 		// replies/archive actions can remove INBOX before the next tick.
-		query := fmt.Sprintf("to:%s -from:%s after:%d", account.Email, account.Email, pollSince.Unix())
+		query := fmt.Sprintf("to:%s -from:%s after:%d", account.Email, account.Email, since.Unix())
 		return gws.ListMessages(account.Email, query)
 	})
 }
@@ -92,11 +117,33 @@ func ProcessIMAPReplies(db *sql.DB, imap IMAPMessageLister, accounts []Account) 
 }
 
 func processIMAPReplyMessages(db *sql.DB, imap IMAPMessageLister, accounts []Account) (replyPollResult, error) {
-	lastPoll := GetLastPollAt(db)
-
-	return processReplyMessages(db, accounts, func(account Account) ([]GWSMessage, error) {
-		return imap.ListMessages(account, lastPoll, false)
+	return processReplyAccounts(db, accounts, func(account Account, since time.Time) ([]GWSMessage, error) {
+		return imap.ListMessages(account, since, false)
 	})
+}
+
+func processReplyAccounts(db *sql.DB, accounts []Account, listMessages func(Account, time.Time) ([]GWSMessage, error)) (replyPollResult, error) {
+	var total replyPollResult
+	var errs []error
+	pollStartedAt := time.Now().UTC()
+	for _, account := range accounts {
+		pollSince := getReplyPollAt(db, account).Add(-replyPollOverlap)
+		result, err := processReplyMessages(db, []Account{account}, func(current Account) ([]GWSMessage, error) {
+			return listMessages(current, pollSince)
+		})
+		total.Replies += result.Replies
+		total.Unsubscribes += result.Unsubscribes
+		total.Bounces += result.Bounces
+		total.AutoReplies += result.AutoReplies
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := setReplyPollAt(db, account, pollStartedAt); err != nil {
+			errs = append(errs, fmt.Errorf("updating reply cursor for %s: %w", account.Email, err))
+		}
+	}
+	return total, errors.Join(errs...)
 }
 
 type replyPollResult struct {

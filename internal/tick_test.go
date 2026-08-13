@@ -1071,6 +1071,28 @@ func TestTick_InactiveCampaignIgnored(t *testing.T) {
 	}
 }
 
+func TestTickStillPollsRepliesWhenNoCampaignIsActive(t *testing.T) {
+	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
+	now := time.Now().UTC()
+	if _, err := db.Exec("UPDATE campaigns SET status = 'paused' WHERE id = ?", campaignID); err != nil {
+		t.Fatalf("pausing campaign: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (?, ?, ?, 'sent', 1, '<sent-paused@example.com>', 'thread-paused')`, campaignID, leadIDs[0], accountIDs[0]); err != nil {
+		t.Fatalf("inserting sent event: %v", err)
+	}
+	mock := &MockGWS{InboxMessages: []GWSMessage{{
+		ID: "reply-paused", ThreadID: "thread-paused", InReplyTo: "<sent-paused@example.com>", From: "john@acme.com",
+	}}}
+	result, err := Tick(TickConfig{DB: db, GWS: mock, Now: now, NoSleep: true})
+	if err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+	if result.RepliesDetected != 1 {
+		t.Fatalf("expected reply polling for paused campaigns, got %+v", result)
+	}
+}
+
 func TestTick_SendWindowEnforcement(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
 

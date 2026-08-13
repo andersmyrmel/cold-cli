@@ -30,6 +30,10 @@ type IMAPThreadMessageLister interface {
 	ListThreadMessages(account Account, since time.Time, messageIDs []string) ([]GWSMessage, error)
 }
 
+type IMAPHistoryMessageLister interface {
+	ListAllMessages(account Account, since time.Time) ([]GWSMessage, error)
+}
+
 // IMAPSentAppender stores an SMTP-delivered message in the account's Sent
 // mailbox so webmail and other IMAP clients show the same conversation.
 type IMAPSentAppender interface {
@@ -55,6 +59,7 @@ type IMAPTransport struct {
 }
 
 type imapClient interface {
+	List(ref, name string, ch chan *imap.MailboxInfo) error
 	Select(name string, readOnly bool) (*imap.MailboxStatus, error)
 	UidSearch(criteria *imap.SearchCriteria) ([]uint32, error)
 	UidFetch(seqset *imap.SeqSet, items []imap.FetchItem, ch chan *imap.Message) error
@@ -154,12 +159,13 @@ func (t *IMAPTransport) ListMessages(account Account, since time.Time, includeSp
 // headers so refreshing one conversation does not download every message in
 // the account since the campaign began.
 func (t *IMAPTransport) ListThreadMessages(account Account, since time.Time, messageIDs []string) ([]GWSMessage, error) {
-	mailboxes := []string{"INBOX"}
-	mailboxes = append(mailboxes, t.SentMailboxes...)
-	if len(t.SentMailboxes) == 0 {
-		mailboxes = append(mailboxes, "Sent")
-	}
-	return t.listMessagesFromMailboxes(account, since, uniqueMailboxNames(mailboxes), messageIDs)
+	return t.listDiscoveredMailboxMessages(account, since, messageIDs)
+}
+
+// ListAllMessages enumerates every selectable mailbox except Drafts. This is
+// intended for explicit historical audits, not the frequent tick poll.
+func (t *IMAPTransport) ListAllMessages(account Account, since time.Time) ([]GWSMessage, error) {
+	return t.listDiscoveredMailboxMessages(account, since, nil)
 }
 
 func (t *IMAPTransport) listMessagesFromMailboxes(account Account, since time.Time, mailboxes []string, messageIDs []string) ([]GWSMessage, error) {
@@ -192,11 +198,55 @@ func (t *IMAPTransport) listMessagesFromMailboxes(account Account, since time.Ti
 	}
 	defer client.Logout()
 
+	return t.listMessagesWithClient(client, account, since, mailboxes, messageIDs, false)
+}
+
+func (t *IMAPTransport) listDiscoveredMailboxMessages(account Account, since time.Time, messageIDs []string) ([]GWSMessage, error) {
+	if account.Provider != AccountProviderSMTPIMAP {
+		return nil, fmt.Errorf("account %s is provider %s, expected %s", account.Email, account.Provider, AccountProviderSMTPIMAP)
+	}
+	password, err := t.resolvePassword(account)
+	if err != nil {
+		return nil, err
+	}
+	open := t.openIMAPClient
+	if open == nil {
+		open = func(account Account, password string) (imapClient, error) { return t.open(account, password) }
+	}
+	client, err := open(account, password)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Logout()
+	mailboxes, err := listSelectableIMAPMailboxes(client)
+	if err != nil {
+		return nil, fmt.Errorf("listing IMAP mailboxes: %w", err)
+	}
+	return t.listMessagesWithClient(client, account, since, mailboxes, messageIDs, true)
+}
+
+func (t *IMAPTransport) resolvePassword(account Account) (string, error) {
+	resolver := t.Resolver
+	if resolver == nil {
+		resolver = EnvSecretResolver{}
+	}
+	imapRef := strings.TrimSpace(account.IMAPPasswordRef)
+	if imapRef == "" {
+		imapRef = account.SMTPPasswordRef
+	}
+	password, err := resolver.ResolveSecret(imapRef)
+	if err != nil {
+		return "", fmt.Errorf("resolving IMAP password for %s: %w", account.Email, err)
+	}
+	return password, nil
+}
+
+func (t *IMAPTransport) listMessagesWithClient(client imapClient, account Account, since time.Time, mailboxes []string, messageIDs []string, strict bool) ([]GWSMessage, error) {
 	var all []GWSMessage
 	for i, mailbox := range mailboxes {
 		messages, err := t.listMailboxMessages(client, account, mailbox, since, messageIDs)
 		if err != nil {
-			if i > 0 {
+			if !strict && i > 0 {
 				continue
 			}
 			return nil, err
@@ -204,6 +254,36 @@ func (t *IMAPTransport) listMessagesFromMailboxes(account Account, since time.Ti
 		all = append(all, messages...)
 	}
 	return dedupeMailboxMessages(all), nil
+}
+
+func listSelectableIMAPMailboxes(client imapClient) ([]string, error) {
+	mailboxCh := make(chan *imap.MailboxInfo, 32)
+	errCh := make(chan error, 1)
+	go func() { errCh <- client.List("", "*", mailboxCh) }()
+	var mailboxes []string
+	for mailbox := range mailboxCh {
+		if mailbox == nil || strings.TrimSpace(mailbox.Name) == "" || hasIMAPMailboxAttribute(mailbox.Attributes, "\\Noselect") || hasIMAPMailboxAttribute(mailbox.Attributes, "\\Drafts") {
+			continue
+		}
+		mailboxes = append(mailboxes, mailbox.Name)
+	}
+	if err := <-errCh; err != nil {
+		return nil, err
+	}
+	mailboxes = uniqueMailboxNames(mailboxes)
+	if len(mailboxes) == 0 {
+		return nil, fmt.Errorf("server returned no selectable mailboxes")
+	}
+	return mailboxes, nil
+}
+
+func hasIMAPMailboxAttribute(attributes []string, wanted string) bool {
+	for _, attribute := range attributes {
+		if strings.EqualFold(strings.TrimSpace(attribute), wanted) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *IMAPTransport) VerifyAccount(account Account) error {
