@@ -160,6 +160,9 @@ func listHistoricalProviderMessages(cfg AuditInboxHistoryConfig, account Account
 		if lister == nil {
 			lister = NewIMAPTransport(cfg.SecretResolver)
 		}
+		if auditLister, ok := lister.(IMAPAuditMessageLister); ok {
+			return auditLister.ListAuditMessageHeaders(account, cfg.Since)
+		}
 		threadLister, ok := lister.(IMAPThreadMessageLister)
 		if !ok {
 			return nil, fmt.Errorf("IMAP transport does not support historical thread search")

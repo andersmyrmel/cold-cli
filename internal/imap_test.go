@@ -36,14 +36,19 @@ func (f *fakeMailboxIMAPClient) UidSearch(*imap.SearchCriteria) ([]uint32, error
 	return nil, nil
 }
 
-func (f *fakeMailboxIMAPClient) UidFetch(_ *imap.SeqSet, _ []imap.FetchItem, ch chan *imap.Message) error {
+func (f *fakeMailboxIMAPClient) UidFetch(_ *imap.SeqSet, items []imap.FetchItem, ch chan *imap.Message) error {
 	defer close(ch)
 	raw, ok := f.messages[f.selected]
 	if !ok {
 		return nil
 	}
-	section := &imap.BodySectionName{}
-	ch <- &imap.Message{Uid: 1, Body: map[*imap.BodySectionName]imap.Literal{section: bytes.NewReader(raw)}}
+	requested, err := imap.ParseBodySectionName(items[len(items)-1])
+	if err != nil {
+		return err
+	}
+	section := *requested
+	section.Peek = false
+	ch <- &imap.Message{Uid: 1, Body: map[*imap.BodySectionName]imap.Literal{&section: bytes.NewReader(raw)}}
 	return nil
 }
 
@@ -279,5 +284,33 @@ func TestListThreadMessagesSearchesArchiveAndSkipsDrafts(t *testing.T) {
 	}
 	if len(messages) != 1 || messages[0].ID != "<manual@example.com>" {
 		t.Fatalf("expected archived message, got %+v", messages)
+	}
+}
+
+func TestListAuditMessageHeadersScansArchiveWithoutBodies(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"Message-ID: <reply@example.net>",
+		"From: lead@example.net",
+		"To: sender@example.com",
+		"In-Reply-To: <root@example.com>",
+		"References: <root@example.com>",
+		"Subject: Re: Question",
+		"Date: Thu, 13 Aug 2026 09:00:00 +0000",
+		"", "This body should not be required for header matching.",
+	}, "\r\n"))
+	fake := &fakeMailboxIMAPClient{
+		mailboxes: []*imap.MailboxInfo{{Name: "INBOX"}, {Name: "Archive"}, {Name: "Drafts", Attributes: []string{"\\Drafts"}}},
+		messages:  map[string][]byte{"Archive": raw, "Drafts": raw},
+	}
+	transport := NewIMAPTransport(staticSecretResolver{"env:MAIL_PASSWORD": "secret"})
+	transport.openIMAPClient = func(Account, string) (imapClient, error) { return fake, nil }
+	messages, err := transport.ListAuditMessageHeaders(Account{
+		Email: "sender@example.com", Provider: AccountProviderSMTPIMAP, IMAPPasswordRef: "env:MAIL_PASSWORD",
+	}, time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("ListAuditMessageHeaders error: %v", err)
+	}
+	if len(messages) != 1 || messages[0].ID != "<reply@example.net>" || messages[0].InReplyTo != "<root@example.com>" {
+		t.Fatalf("unexpected audit headers: %+v", messages)
 	}
 }

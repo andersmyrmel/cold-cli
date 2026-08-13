@@ -31,6 +31,10 @@ type IMAPThreadMessageLister interface {
 	ListThreadMessages(account Account, since time.Time, messageIDs []string) ([]GWSMessage, error)
 }
 
+type IMAPAuditMessageLister interface {
+	ListAuditMessageHeaders(account Account, since time.Time) ([]GWSMessage, error)
+}
+
 // IMAPSentAppender stores an SMTP-delivered message in the account's Sent
 // mailbox so webmail and other IMAP clients show the same conversation.
 type IMAPSentAppender interface {
@@ -157,6 +161,41 @@ func (t *IMAPTransport) ListMessages(account Account, since time.Time, includeSp
 // the account since the campaign began.
 func (t *IMAPTransport) ListThreadMessages(account Account, since time.Time, messageIDs []string) ([]GWSMessage, error) {
 	return t.listDiscoveredMailboxMessages(account, since, messageIDs)
+}
+
+// ListAuditMessageHeaders reads only RFC headers from every selectable
+// mailbox. Matching locally avoids incomplete server-side HEADER searches and
+// keeps historical audits much lighter than downloading every message body.
+func (t *IMAPTransport) ListAuditMessageHeaders(account Account, since time.Time) ([]GWSMessage, error) {
+	if account.Provider != AccountProviderSMTPIMAP {
+		return nil, fmt.Errorf("account %s is provider %s, expected %s", account.Email, account.Provider, AccountProviderSMTPIMAP)
+	}
+	password, err := t.resolvePassword(account)
+	if err != nil {
+		return nil, err
+	}
+	open := t.openIMAPClient
+	if open == nil {
+		open = func(account Account, password string) (imapClient, error) { return t.open(account, password) }
+	}
+	client, err := open(account, password)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Logout()
+	mailboxes, err := listSelectableIMAPMailboxes(client)
+	if err != nil {
+		return nil, fmt.Errorf("listing IMAP mailboxes: %w", err)
+	}
+	var all []GWSMessage
+	for _, mailbox := range mailboxes {
+		messages, err := t.listMailboxMessageHeaders(client, account, mailbox, since)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, messages...)
+	}
+	return dedupeMailboxMessages(all), nil
 }
 
 func (t *IMAPTransport) listMessagesFromMailboxes(account Account, since time.Time, mailboxes []string, messageIDs []string) ([]GWSMessage, error) {
@@ -416,6 +455,54 @@ func (t *IMAPTransport) listMailboxMessages(client imapClient, account Account, 
 	}
 	if err := <-errCh; err != nil {
 		return nil, fmt.Errorf("fetching IMAP messages from %s: %w", mailbox, err)
+	}
+	return messages, nil
+}
+
+const imapAuditFetchBatchSize = 200
+
+func (t *IMAPTransport) listMailboxMessageHeaders(client imapClient, account Account, mailbox string, since time.Time) ([]GWSMessage, error) {
+	if _, err := client.Select(mailbox, true); err != nil {
+		return nil, fmt.Errorf("selecting IMAP mailbox %s: %w", mailbox, err)
+	}
+	criteria := imap.NewSearchCriteria()
+	criteria.Since = since.AddDate(0, 0, -1)
+	uids, err := client.UidSearch(criteria)
+	if err != nil {
+		return nil, fmt.Errorf("searching IMAP mailbox %s: %w", mailbox, err)
+	}
+	headerSection := &imap.BodySectionName{
+		BodyPartName: imap.BodyPartName{
+			Specifier: imap.HeaderSpecifier,
+			Fields: []string{
+				"Message-ID", "References", "In-Reply-To", "From", "To", "Cc",
+				"Reply-To", "Subject", "Date", "Auto-Submitted", "X-Autoreply",
+				"X-Autorespond", "Precedence", "Content-Type", "X-Failed-Recipients",
+			},
+		},
+		Peek: true,
+	}
+	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, headerSection.FetchItem()}
+	var messages []GWSMessage
+	for start := 0; start < len(uids); start += imapAuditFetchBatchSize {
+		end := start + imapAuditFetchBatchSize
+		if end > len(uids) {
+			end = len(uids)
+		}
+		seqset := new(imap.SeqSet)
+		seqset.AddNum(uids[start:end]...)
+		ch := make(chan *imap.Message, end-start)
+		errCh := make(chan error, 1)
+		go func() { errCh <- client.UidFetch(seqset, items, ch) }()
+		for msg := range ch {
+			parsed, parseErr := t.parseMessage(account, mailbox, msg, headerSection)
+			if parseErr == nil {
+				messages = append(messages, parsed)
+			}
+		}
+		if err := <-errCh; err != nil {
+			return nil, fmt.Errorf("fetching IMAP headers from %s: %w", mailbox, err)
+		}
 	}
 	return messages, nil
 }
