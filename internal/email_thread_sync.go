@@ -33,6 +33,7 @@ type SyncEmailThreadResult struct {
 	Fetched       int    `json:"fetched"`
 	Matched       int    `json:"matched"`
 	Added         int    `json:"added"`
+	Updated       int    `json:"updated"`
 	InboundAdded  int    `json:"inbound_added"`
 	OutboundAdded int    `json:"outbound_added"`
 	Stored        int    `json:"stored"`
@@ -131,11 +132,18 @@ func SyncEmailThread(cfg SyncEmailThreadConfig) (*SyncEmailThreadResult, error) 
 		if shouldSkipProviderThreadMessage(msg, target.Account.Email, time.Now().UTC()) {
 			continue
 		}
-		exists, err := emailMessageSnapshotExistsForGWSMessage(cfg.DB, target.CampaignID, target.LeadID, msg)
+		existing, err := findEmailMessageSnapshotForProviderMessage(cfg.DB, target.CampaignID, target.LeadID, msg)
 		if err != nil {
 			return nil, fmt.Errorf("checking stored thread message %s: %w", msg.ID, err)
 		}
-		if exists {
+		if existing != nil {
+			updated, err := refreshStoredEmailMessage(cfg.DB, *existing, baseEvent, target.ThreadID, msg, cfg.DryRun)
+			if err != nil {
+				return nil, fmt.Errorf("updating refreshed thread message %s: %w", msg.ID, err)
+			}
+			if updated {
+				result.Updated++
+			}
 			continue
 		}
 
@@ -184,6 +192,86 @@ func SyncEmailThread(cfg SyncEmailThreadConfig) (*SyncEmailThreadResult, error) 
 		result.Stored += result.Added
 	}
 	return result, nil
+}
+
+func findEmailMessageSnapshotForProviderMessage(db *sql.DB, campaignID, leadID int64, msg GWSMessage) (*EmailMessage, error) {
+	candidates := []string{msg.ID}
+	if msg.Headers != nil {
+		candidates = append(candidates, firstEmailHeader(msg.Headers, "Message-ID"))
+	}
+	seen := map[string]struct{}{}
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		stored, err := scanEmailMessage(queryRowDB(db, `
+			SELECT id, campaign_id, lead_id, account_id, direction, type, step_number,
+				scheduled_send_id, event_id, message_id, thread_id, in_reply_to,
+				from_email, to_emails, subject, text_body, display_body, display_html,
+				html_body, snippet, raw_headers, occurred_at, created_at
+			FROM email_messages
+			WHERE campaign_id = ? AND lead_id = ? AND message_id = ?
+			ORDER BY id ASC LIMIT 1`, campaignID, leadID, candidate))
+		if err == nil {
+			return &stored, nil
+		}
+		if err != sql.ErrNoRows {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+
+func refreshStoredEmailMessage(db *sql.DB, current EmailMessage, baseEvent emailMessageBackfillEvent, threadID string, providerMessage GWSMessage, dryRun bool) (bool, error) {
+	fresh := emailMessageFromThreadMessage(baseEvent, providerMessage, current.Direction, current.Type)
+	fresh.ID = current.ID
+	fresh.MessageID = current.MessageID
+	fresh.ThreadID = threadID
+	fresh.InReplyTo = firstNonEmpty(fresh.InReplyTo, current.InReplyTo)
+	fresh.FromEmail = firstNonEmpty(fresh.FromEmail, current.FromEmail)
+	fresh.ToEmails = firstNonEmpty(fresh.ToEmails, current.ToEmails)
+	fresh.Subject = firstNonEmpty(fresh.Subject, current.Subject)
+	fresh.TextBody = firstNonEmpty(fresh.TextBody, current.TextBody)
+	fresh.HTMLBody = firstNonEmpty(fresh.HTMLBody, current.HTMLBody)
+	fresh.Snippet = firstNonEmpty(fresh.Snippet, current.Snippet)
+	if fresh.RawHeaders == "" || fresh.RawHeaders == "{}" {
+		fresh.RawHeaders = current.RawHeaders
+	}
+	if fresh.OccurredAt.IsZero() {
+		fresh.OccurredAt = current.OccurredAt
+	}
+	fresh.DisplayBody = emailDisplayBody(fresh)
+	fresh.DisplayHTML = emailDisplayHTML(fresh)
+
+	changed := fresh.ThreadID != current.ThreadID ||
+		fresh.InReplyTo != current.InReplyTo ||
+		fresh.FromEmail != current.FromEmail ||
+		fresh.ToEmails != current.ToEmails ||
+		fresh.Subject != current.Subject ||
+		fresh.TextBody != current.TextBody ||
+		fresh.DisplayBody != current.DisplayBody ||
+		fresh.DisplayHTML != current.DisplayHTML ||
+		fresh.HTMLBody != current.HTMLBody ||
+		fresh.Snippet != current.Snippet ||
+		fresh.RawHeaders != current.RawHeaders ||
+		!fresh.OccurredAt.Equal(current.OccurredAt)
+	if !changed || dryRun {
+		return changed, nil
+	}
+	_, err := execDB(db, `UPDATE email_messages SET
+		thread_id = ?, in_reply_to = ?, from_email = ?, to_emails = ?, subject = ?,
+		text_body = ?, display_body = ?, display_html = ?, html_body = ?, snippet = ?,
+		raw_headers = ?, occurred_at = ?
+		WHERE id = ?`,
+		fresh.ThreadID, fresh.InReplyTo, fresh.FromEmail, fresh.ToEmails, fresh.Subject,
+		fresh.TextBody, fresh.DisplayBody, fresh.DisplayHTML, fresh.HTMLBody, fresh.Snippet,
+		fresh.RawHeaders, fresh.OccurredAt.UTC(), current.ID)
+	return true, err
 }
 
 func resolveEmailThreadSyncTarget(db *sql.DB, workspaceID string, campaignID, leadID int64, requestedThreadID string) (emailThreadSyncTarget, error) {

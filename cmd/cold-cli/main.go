@@ -1954,8 +1954,8 @@ var inboxSyncCmd = &cobra.Command{
 		if dryRun {
 			prefix = "[dry-run] Would refresh"
 		}
-		fmt.Printf("%s %s thread %s: fetched %d, matched %d, added %d (%d inbound, %d outbound), %d stored\n",
-			prefix, result.Provider, result.ThreadID, result.Fetched, result.Matched, result.Added,
+		fmt.Printf("%s %s thread %s: fetched %d, matched %d, added %d, updated %d (%d inbound, %d outbound), %d stored\n",
+			prefix, result.Provider, result.ThreadID, result.Fetched, result.Matched, result.Added, result.Updated,
 			result.InboundAdded, result.OutboundAdded, result.Stored)
 		return nil
 	},

@@ -182,6 +182,42 @@ func TestSyncEmailThreadSMTPImportsSentAndFiltersUnrelatedMessages(t *testing.T)
 	}
 }
 
+func TestSyncEmailThreadUpdatesExistingRawMIMEBody(t *testing.T) {
+	_, imap, store, campaignID, leadID := seedStoredReplyThread(t, AccountProviderSMTPIMAP)
+	if _, err := store.DB.Exec(`UPDATE email_messages
+		SET text_body = '--boundary raw MIME', display_body = '--boundary raw MIME', snippet = '--boundary raw MIME'
+		WHERE campaign_id = ? AND lead_id = ? AND message_id = '<reply@example.net>'`, campaignID, leadID); err != nil {
+		t.Fatalf("seed raw body: %v", err)
+	}
+	imap.Messages = []GWSMessage{{
+		ID: "<reply@example.net>", ThreadID: "<root@example.com>",
+		From: "lead@example.net", To: "sender@example.com", Subject: "Re: Question",
+		TextBody: "Decoded reply", Snippet: "Decoded reply", InReplyTo: "<root@example.com>",
+		Date:    time.Date(2026, time.January, 3, 12, 0, 0, 0, time.UTC),
+		Headers: map[string]string{"Message-ID": "<reply@example.net>", "References": "<root@example.com>"},
+	}}
+
+	result, err := SyncEmailThread(SyncEmailThreadConfig{
+		DB: store.DB, WorkspaceID: "storeinspect", CampaignID: campaignID, LeadID: leadID, IMAP: imap,
+	})
+	if err != nil {
+		t.Fatalf("sync thread: %v", err)
+	}
+	if result.Added != 0 || result.Updated != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	messages, err := ListEmailThreadMessages(store.DB, ListEmailThreadMessagesOpts{
+		CampaignID: campaignID, LeadID: leadID, ThreadID: "thread-1",
+	})
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if messages[1].TextBody != "Decoded reply" || messages[1].DisplayBody != "Decoded reply" {
+		t.Fatalf("expected decoded body, got text=%q display=%q", messages[1].TextBody, messages[1].DisplayBody)
+	}
+}
+
 func TestSendInboxReplyRefreshFailureBlocksDelivery(t *testing.T) {
 	gws, _, store, campaignID, leadID := seedStoredReplyThread(t, AccountProviderGWS)
 	gws.ThreadError = errors.New("gmail unavailable")
