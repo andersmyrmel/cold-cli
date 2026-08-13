@@ -208,6 +208,7 @@ func applyAuditMessage(db *sql.DB, account Account, target auditThreadTarget, ms
 		return false, nil
 	}
 	if !sameEmailAddress(msg.From, account.Email) {
+		msg.ThreadID = target.ThreadID
 		before := 0
 		if err := queryRowDB(db, `SELECT COUNT(*) FROM events WHERE campaign_id = ? AND lead_id = ? AND message_id = ?`, target.CampaignID, target.LeadID, msg.ID).Scan(&before); err != nil {
 			return false, err
