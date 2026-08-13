@@ -158,9 +158,7 @@ func listHistoricalProviderMessages(cfg AuditInboxHistoryConfig, account Account
 	case AccountProviderSMTPIMAP:
 		lister := cfg.IMAP
 		if lister == nil {
-			transport := NewIMAPTransport(cfg.SecretResolver)
-			transport.SearchRateLimitRetries = 2
-			lister = transport
+			lister = NewIMAPTransport(cfg.SecretResolver)
 		}
 		threadLister, ok := lister.(IMAPThreadMessageLister)
 		if !ok {
@@ -246,7 +244,19 @@ func listIMAPAuditThreadMessages(lister IMAPThreadMessageLister, account Account
 			if end > len(current) {
 				end = len(current)
 			}
-			messages, err := lister.ListThreadMessages(account, since, current[start:end])
+			var messages []GWSMessage
+			var err error
+			for attempt := 0; attempt < 4; attempt++ {
+				messages, err = lister.ListThreadMessages(account, since, current[start:end])
+				if err == nil {
+					break
+				}
+				wait, retry := imapAuditRetryWait(err)
+				if !retry || attempt == 3 {
+					break
+				}
+				time.Sleep(wait)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("searching campaign message anchors %d-%d: %w", start+1, end, err)
 			}
@@ -273,6 +283,22 @@ func listIMAPAuditThreadMessages(lister IMAPThreadMessageLister, account Account
 		}
 	}
 	return dedupeMailboxMessages(all), nil
+}
+
+func imapAuditRetryWait(err error) (time.Duration, bool) {
+	if wait, ok := imapSearchRateLimitWait(err); ok {
+		return wait, true
+	}
+	if err == nil {
+		return 0, false
+	}
+	message := strings.ToLower(err.Error())
+	for _, transient := range []string{"i/o timeout", "connection closed", "backend server temporarily unavailable"} {
+		if strings.Contains(message, transient) {
+			return 3 * time.Second, true
+		}
+	}
+	return 0, false
 }
 
 func providerMessageIDCandidates(msg GWSMessage) []string {

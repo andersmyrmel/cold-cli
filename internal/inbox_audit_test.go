@@ -87,3 +87,15 @@ func TestAuditInboxHistorySearchesIMAPFromCampaignAnchors(t *testing.T) {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }
+
+func TestIMAPAuditRetryWait(t *testing.T) {
+	if wait, ok := imapAuditRetryWait(fmt.Errorf("search rate limit exceeded: please wait 12s")); !ok || wait != 13*time.Second {
+		t.Fatalf("unexpected rate retry: %s, %t", wait, ok)
+	}
+	if wait, ok := imapAuditRetryWait(fmt.Errorf("imap: connection closed")); !ok || wait != 3*time.Second {
+		t.Fatalf("unexpected connection retry: %s, %t", wait, ok)
+	}
+	if _, ok := imapAuditRetryWait(fmt.Errorf("authentication failed")); ok {
+		t.Fatal("authentication errors must not be retried")
+	}
+}

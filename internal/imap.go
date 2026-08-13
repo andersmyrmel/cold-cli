@@ -47,13 +47,12 @@ type IMAPTransport struct {
 	Resolver SecretResolver
 	Timeout  time.Duration
 
-	Mailboxes              []string
-	SpamTrashBoxes         []string
-	SentMailboxes          []string
-	MaxBodyBytes           int64
-	SearchRateLimitRetries int
-	openIMAPClient         func(account Account, password string) (imapClient, error)
-	appendMessage          func(account Account, password, mailbox string, flags []string, date time.Time, msg []byte) error
+	Mailboxes      []string
+	SpamTrashBoxes []string
+	SentMailboxes  []string
+	MaxBodyBytes   int64
+	openIMAPClient func(account Account, password string) (imapClient, error)
+	appendMessage  func(account Account, password, mailbox string, flags []string, date time.Time, msg []byte) error
 }
 
 type imapClient interface {
@@ -389,14 +388,6 @@ func (t *IMAPTransport) listMailboxMessages(client imapClient, account Account, 
 	criteria := imapThreadSearchCriteria(since, messageIDs)
 
 	uids, err := client.UidSearch(criteria)
-	for attempt := 0; err != nil && attempt < t.SearchRateLimitRetries; attempt++ {
-		wait, ok := imapSearchRateLimitWait(err)
-		if !ok {
-			break
-		}
-		time.Sleep(wait)
-		uids, err = client.UidSearch(criteria)
-	}
 	if err != nil {
 		return nil, fmt.Errorf("searching IMAP mailbox %s: %w", mailbox, err)
 	}
