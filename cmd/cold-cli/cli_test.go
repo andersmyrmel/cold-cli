@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andersmyrmel/cold-cli/internal"
 )
@@ -222,6 +223,45 @@ func TestCLI_InboxReplyPreviewsByDefaultAndRequiresRecipientConfirmation(t *test
 		if !strings.Contains(out, expected) {
 			t.Fatalf("thread show missing %q:\n%s", expected, out)
 		}
+	}
+}
+
+func TestCLI_InboxFollowupsAndReconcileAreDiscoverable(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	out, code := runCLI(t, bin, env, "inbox", "--help")
+	if code != 0 {
+		t.Fatalf("inbox help failed (exit %d): %s", code, out)
+	}
+	for _, expected := range []string{"followups", "reconcile"} {
+		if !strings.Contains(out, expected) {
+			t.Fatalf("inbox help missing %q:\n%s", expected, out)
+		}
+	}
+
+	out, code = runCLI(t, bin, env, "inbox", "followups", "--help")
+	if code != 0 {
+		t.Fatalf("followups help failed (exit %d): %s", code, out)
+	}
+	for _, expected := range []string{"--reconcile", "--min-age", "--max-followups", "never drafts or sends"} {
+		if !strings.Contains(out, expected) {
+			t.Fatalf("followups help missing %q:\n%s", expected, out)
+		}
+	}
+}
+
+func TestParseFollowupAgeSupportsDaysAndHours(t *testing.T) {
+	for input, expected := range map[string]time.Duration{
+		"7d":   7 * 24 * time.Hour,
+		"168h": 7 * 24 * time.Hour,
+		"0d":   0,
+	} {
+		got, err := parseFollowupAge(input)
+		if err != nil || got != expected {
+			t.Fatalf("parseFollowupAge(%q) = %s, %v; want %s", input, got, err, expected)
+		}
+	}
+	if _, err := parseFollowupAge("-1d"); err == nil {
+		t.Fatal("expected negative follow-up age to fail")
 	}
 }
 

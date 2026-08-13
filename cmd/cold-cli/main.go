@@ -1972,15 +1972,22 @@ messages that are missing from cold-cli without storing or sending.
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sinceValue, _ := cmd.Flags().GetString("since")
 		apply, _ := cmd.Flags().GetBool("apply")
-		since, err := time.Parse(time.RFC3339, strings.TrimSpace(sinceValue))
+		since, err := parseBackfillSince(sinceValue)
 		if err != nil {
-			return fmt.Errorf("--since must be RFC3339: %w", err)
+			return err
 		}
 		store, err := openStore()
 		if err != nil {
 			return err
 		}
 		defer store.Close()
+		if apply {
+			lock, err := store.AcquireTickLock(context.Background())
+			if err != nil {
+				return fmt.Errorf("provider reconciliation requires the tick lock: %w", err)
+			}
+			defer lock.Close()
+		}
 		result, auditErr := internal.AuditInboxHistory(internal.AuditInboxHistoryConfig{
 			DB: store.DB, WorkspaceID: currentWorkspaceID(), Since: since,
 			SecretResolver: internal.EnvSecretResolver{}, GWS: configuredGWSClient(store), Apply: apply,
@@ -1999,6 +2006,170 @@ messages that are missing from cold-cli without storing or sending.
 			}
 		}
 		return auditErr
+	},
+}
+
+var inboxReconcileCmd = &cobra.Command{
+	Use:   "reconcile",
+	Short: "Import provider-confirmed campaign messages and verify clean state",
+	Long: strings.TrimSpace(`
+Import campaign-thread messages sent or received outside cold-cli, then repeat
+the provider audit in read-only mode. No email is sent. The command exits
+non-zero if any account fails or any provider message remains untracked.
+`),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sinceValue, _ := cmd.Flags().GetString("since")
+		notifyErrors, _ := cmd.Flags().GetBool("notify-errors")
+		lockWait, _ := cmd.Flags().GetDuration("lock-wait")
+		since, err := parseBackfillSince(sinceValue)
+		if err != nil {
+			if notifyErrors {
+				notifyInboxReconciliationFailure(err)
+			}
+			return err
+		}
+		store, err := openStore()
+		if err != nil {
+			if notifyErrors {
+				notifyInboxReconciliationFailure(err)
+			}
+			return err
+		}
+		defer store.Close()
+		lock, err := acquireTickLockWithWait(store, lockWait)
+		if err != nil {
+			lockErr := fmt.Errorf("provider reconciliation requires the tick lock: %w", err)
+			if notifyErrors {
+				notifyInboxReconciliationFailure(lockErr)
+			}
+			return lockErr
+		}
+		defer lock.Close()
+		result, reconcileErr := internal.ReconcileInboxHistory(internal.AuditInboxHistoryConfig{
+			DB: store.DB, WorkspaceID: currentWorkspaceID(), Since: since,
+			SecretResolver: internal.EnvSecretResolver{}, GWS: configuredGWSClient(store),
+		})
+		if jsonOutput {
+			if err := printJSON(result); err != nil {
+				return err
+			}
+		} else if result != nil {
+			fmt.Printf("Reconciled workspace %s since %s: discovered %d, applied %d, remaining %d\n",
+				result.WorkspaceID, result.Since.Format(time.RFC3339), result.Discovered, result.Applied, result.Remaining)
+		}
+		if reconcileErr != nil && notifyErrors {
+			notifyInboxReconciliationFailure(reconcileErr)
+		}
+		return reconcileErr
+	},
+}
+
+func acquireTickLockWithWait(store *internal.Store, wait time.Duration) (internal.TickLock, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		lock, err := store.AcquireTickLock(context.Background())
+		if err == nil {
+			return lock, nil
+		}
+		if wait <= 0 || !strings.Contains(strings.ToLower(err.Error()), "tick already running") || !time.Now().Before(deadline) {
+			return nil, err
+		}
+		remaining := time.Until(deadline)
+		pause := 5 * time.Second
+		if remaining < pause {
+			pause = remaining
+		}
+		time.Sleep(pause)
+	}
+}
+
+func notifyInboxReconciliationFailure(reconcileErr error) {
+	notifier := configuredDiscordNotifierFromEnv()
+	if notifier == nil || reconcileErr == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	err := notifier.NotifyDiscord(ctx, internal.DiscordNotificationEvent{
+		EventType:   internal.DiscordEventInboxReconciliationFailed,
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		WorkspaceID: currentWorkspaceID(),
+		Snippet:     reconcileErr.Error(),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: inbox reconciliation alert failed: %v\n", err)
+	}
+}
+
+var inboxFollowupsCmd = &cobra.Command{
+	Use:   "followups",
+	Short: "List provider-verified post-conversation follow-up candidates",
+	Long: strings.TrimSpace(`
+Audit provider campaign threads before listing post-conversation revival
+candidates. Candidates have a human inbound reply followed by our outbound
+answer, no later prospect response, and no bounce or unsubscribe suppression.
+
+The command is read-only by default and fails closed when provider messages are
+missing. Use --reconcile to import provider-confirmed messages, verify a clean
+second audit, and then list candidates. This command never drafts or sends.
+`),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sinceValue, _ := cmd.Flags().GetString("since")
+		minAgeValue, _ := cmd.Flags().GetString("min-age")
+		campaignID, _ := cmd.Flags().GetInt64("campaign")
+		maxFollowups, _ := cmd.Flags().GetInt("max-followups")
+		limit, _ := cmd.Flags().GetInt("limit")
+		reconcile, _ := cmd.Flags().GetBool("reconcile")
+		showThread, _ := cmd.Flags().GetBool("show-thread")
+
+		since, err := parseBackfillSince(sinceValue)
+		if err != nil {
+			return err
+		}
+		minAge, err := parseFollowupAge(minAgeValue)
+		if err != nil {
+			return err
+		}
+		if campaignID < 0 {
+			return fmt.Errorf("--campaign must be a positive integer")
+		}
+		if maxFollowups < 0 {
+			return fmt.Errorf("--max-followups must not be negative")
+		}
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		if reconcile {
+			lock, err := store.AcquireTickLock(context.Background())
+			if err != nil {
+				return fmt.Errorf("provider reconciliation requires the tick lock: %w", err)
+			}
+			defer lock.Close()
+		}
+
+		result, reviewErr := internal.ReviewFollowupCandidates(internal.FollowupCandidatesConfig{
+			DB: store.DB, WorkspaceID: currentWorkspaceID(), CampaignID: campaignID,
+			Since: since, Now: time.Now().UTC(), MinAge: minAge,
+			MaxFollowups: maxFollowups, Limit: limit, IncludeThread: showThread, Reconcile: reconcile,
+			SecretResolver: internal.EnvSecretResolver{}, GWS: configuredGWSClient(store),
+		})
+		if jsonOutput {
+			if err := printJSON(result); err != nil {
+				return err
+			}
+			return reviewErr
+		}
+		if result != nil && result.Audit != nil {
+			fmt.Printf("Provider audit: scanned %d, matched %d, missing %d across %d accounts\n",
+				result.Audit.Scanned, result.Audit.Matched, result.Audit.Missing, len(result.Audit.Accounts))
+		}
+		if reviewErr != nil {
+			return reviewErr
+		}
+		printFollowupCandidates(result.Candidates, showThread)
+		return nil
 	},
 }
 
@@ -2069,6 +2240,53 @@ func printEmailThread(messages []internal.EmailMessage) {
 			body = strings.TrimSpace(message.Snippet)
 		}
 		fmt.Println(body)
+	}
+}
+
+func parseFollowupAge(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if strings.HasSuffix(value, "d") {
+		var days int
+		if _, err := fmt.Sscanf(strings.TrimSuffix(value, "d"), "%d", &days); err != nil || days < 0 {
+			return 0, fmt.Errorf("--min-age must look like 7d or 168h")
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration < 0 {
+		return 0, fmt.Errorf("--min-age must look like 7d or 168h")
+	}
+	return duration, nil
+}
+
+func printFollowupCandidates(candidates []internal.FollowupCandidate, showThread bool) {
+	if len(candidates) == 0 {
+		fmt.Println("No provider-verified follow-up candidates.")
+		return
+	}
+	fmt.Printf("%d provider-verified follow-up candidates:\n", len(candidates))
+	fmt.Println("Structural shortlist only. Review the conversation before drafting or sending.")
+	for _, candidate := range candidates {
+		fmt.Printf("\n#%d campaign=%d lead=%d %s", candidate.Rank, candidate.CampaignID, candidate.LeadID, candidate.Company)
+		if candidate.Company == "" {
+			fmt.Printf("%s", candidate.LeadEmail)
+		}
+		fmt.Printf("\nFrom: %s\nTo: %s\nSubject: %s\n", candidate.FromEmail, candidate.ToEmail, candidate.Subject)
+		fmt.Printf("Last outbound: %s (%d days ago) | replies=%d prior_followups=%d\n",
+			candidate.LastOutboundAt.UTC().Format(time.RFC3339), candidate.AgeDays,
+			candidate.ReplyCount, candidate.FollowupCount)
+		fmt.Printf("Last inbound from %s:\n%s\n", candidate.LastInboundFrom, strings.TrimSpace(candidate.LastInboundBody))
+		fmt.Printf("Our last response:\n%s\n", strings.TrimSpace(candidate.LastOutboundBody))
+		fmt.Printf("Review: cold-cli --workspace %s inbox show --campaign %d --lead %d\n",
+			currentWorkspaceID(), candidate.CampaignID, candidate.LeadID)
+		if showThread {
+			fmt.Printf("Thread (%d messages):\n", len(candidate.Thread))
+			for index, message := range candidate.Thread {
+				fmt.Printf("  --- %d/%d %s %s ---\n", index+1, len(candidate.Thread), strings.ToUpper(message.Direction), message.OccurredAt.UTC().Format(time.RFC3339))
+				fmt.Printf("  From: %s\n  To: %s\n  Subject: %s\n\n%s\n",
+					message.FromEmail, message.ToEmails, message.Subject, strings.TrimSpace(message.Body))
+			}
+		}
 	}
 }
 
@@ -2452,11 +2670,21 @@ func init() {
 		command.Flags().String("thread", "", "specific provider thread ID (default: latest stored thread)")
 	}
 	inboxSyncCmd.Flags().Bool("dry-run", false, "fetch and report missing messages without storing them")
-	inboxAuditCmd.Flags().String("since", time.Now().UTC().AddDate(0, 0, -120).Format(time.RFC3339), "earliest provider message date (RFC3339)")
+	inboxAuditCmd.Flags().String("since", "120d", "earliest provider message date (YYYY-MM-DD, RFC3339, or duration like 30d)")
 	inboxAuditCmd.Flags().Bool("apply", false, "store provider-confirmed missing thread messages without sending email")
+	inboxReconcileCmd.Flags().String("since", "30d", "earliest provider message date (YYYY-MM-DD, RFC3339, or duration like 30d)")
+	inboxReconcileCmd.Flags().Bool("notify-errors", false, "send a Discord operational alert when reconciliation fails")
+	inboxReconcileCmd.Flags().Duration("lock-wait", 0, "wait this long for an active tick to finish (for example 10m)")
+	inboxFollowupsCmd.Flags().String("since", "120d", "earliest candidate/provider message date (YYYY-MM-DD, RFC3339, or duration like 30d)")
+	inboxFollowupsCmd.Flags().String("min-age", "7d", "minimum age of our latest unanswered response (for example 7d or 168h)")
+	inboxFollowupsCmd.Flags().Int64("campaign", 0, "only list candidates from this campaign ID")
+	inboxFollowupsCmd.Flags().Int("max-followups", 0, "maximum prior revival follow-ups allowed after the latest inbound reply")
+	inboxFollowupsCmd.Flags().Int("limit", 20, "maximum candidates to return")
+	inboxFollowupsCmd.Flags().Bool("reconcile", false, "import provider-confirmed missing messages and verify clean state before listing")
+	inboxFollowupsCmd.Flags().Bool("show-thread", false, "print each candidate's complete stored thread")
 	inboxShowCmd.Flags().Int("limit", 100, "maximum stored messages to print")
 	inboxShowCmd.Flags().Bool("stored-only", false, "print stored snapshots without refreshing the provider")
-	inboxCmd.AddCommand(inboxBackfillCmd, inboxReplyCmd, inboxSyncCmd, inboxShowCmd, inboxAuditCmd)
+	inboxCmd.AddCommand(inboxBackfillCmd, inboxReplyCmd, inboxSyncCmd, inboxShowCmd, inboxAuditCmd, inboxReconcileCmd, inboxFollowupsCmd)
 
 	statsCmd.Flags().Bool("leads", false, "show per-lead breakdown")
 	statsCmd.Flags().Bool("variants", false, "show per-variant A/B test results")

@@ -605,6 +605,28 @@ func TestTickDryRunDefersOperationalCompletionNotification(t *testing.T) {
 	}
 }
 
+func TestBuildDiscordWebhookPayloadForInboxReconciliationFailure(t *testing.T) {
+	payload := BuildDiscordWebhookPayload(DiscordNotificationEvent{
+		EventType:   DiscordEventInboxReconciliationFailed,
+		WorkspaceID: "storeinspect",
+		Timestamp:   "2026-08-13T03:00:00Z",
+		Snippet:     "provider reconciliation incomplete: 2 messages remain untracked",
+	})
+	if len(payload.Embeds) != 1 {
+		t.Fatalf("expected one embed, got %+v", payload)
+	}
+	embed := payload.Embeds[0]
+	if embed.Title != "StoreInspect inbox reconciliation failed" {
+		t.Fatalf("unexpected title: %q", embed.Title)
+	}
+	if !strings.Contains(embed.Description, "2 messages remain untracked") || embed.Color != 0xef4444 {
+		t.Fatalf("unexpected reconciliation alert: %+v", embed)
+	}
+	if len(payload.AllowedMentions.Parse) != 0 {
+		t.Fatalf("mentions must remain disabled: %+v", payload.AllowedMentions)
+	}
+}
+
 func insertDiscordEvent(t *testing.T, db *sql.DB, eventType, messageID string) int64 {
 	t.Helper()
 	return insertDiscordEventForAccount(t, db, 1, eventType, messageID)

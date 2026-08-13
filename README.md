@@ -193,6 +193,14 @@ cold-cli --workspace storeinspect inbox sync --campaign 123 --lead 456
                                             # refresh one complete Gmail or IMAP Inbox + Sent thread
 cold-cli --workspace storeinspect inbox show --campaign 123 --lead 456
                                             # refresh and print the complete thread
+cold-cli --workspace storeinspect inbox audit --since 120d
+                                            # read-only all-provider stale-state audit
+cold-cli --workspace storeinspect inbox reconcile --since 30d
+                                            # import provider-confirmed messages, then verify missing=0
+cold-cli --workspace storeinspect inbox followups --since 120d --min-age 7d
+                                            # fail-closed post-conversation candidate review
+cold-cli --workspace storeinspect inbox followups --since 120d --min-age 7d --reconcile
+                                            # reconcile, verify, then list candidates; never sends
 cold-cli --workspace storeinspect inbox reply --campaign 123 --lead 456 --body-file reply.txt
                                             # refresh, then preview a manual thread reply; never sends by default
 cold-cli --workspace storeinspect inbox reply --campaign 123 --lead 456 --body-file reply.txt --send --confirm-to lead@example.com
@@ -376,6 +384,48 @@ matched by later reply polling like scheduled sends.
 
 Use `--reply-all` only after reviewing the previewed Cc list; `--confirm-cc` is
 then required when sending. Attachments are not currently supported.
+
+### Provider-Verified Follow-Up Review
+
+`inbox followups` lists post-conversation revival candidates. It is separate
+from scheduled campaign sequence steps. A candidate must have a human inbound
+reply followed by our outbound response, no newer prospect reply, an active
+sender and lead, and no recorded bounce or unsubscribe. By default, a thread
+that already received a revival follow-up is excluded. Use `--max-followups`
+only after explicitly reviewing why another touch is appropriate.
+This is a structural shortlist, not a send recommendation. Completed deals,
+polite declines and other closed conversations still require human review.
+
+The command always audits provider state first. It exits without candidates if
+any account audit fails or if a provider message is missing from cold-cli.
+`--reconcile` explicitly imports provider-confirmed inbound and outbound
+messages, repeats the read-only audit and requires zero remaining messages
+before candidate selection. It never drafts or sends email.
+
+Safe revival workflow:
+
+```bash
+cold-cli --workspace storeinspect inbox followups --since 120d --min-age 7d --reconcile
+cold-cli --workspace storeinspect inbox show --campaign 123 --lead 456
+cold-cli --workspace storeinspect inbox reply --campaign 123 --lead 456 --body-file reply.txt
+cold-cli --workspace storeinspect inbox reply --campaign 123 --lead 456 --body-file reply.txt --send --confirm-to lead@example.com
+```
+
+`inbox reconcile` is the unattended form of the same provider import plus
+verification gate. It holds the tick lock so scheduled sends cannot race a
+reconciliation write. `--notify-errors` sends a Discord operational alert when
+the provider audit cannot reach a verified clean state. A practical hosted
+schedule is a nightly 30-day pass plus a weekly 120-day pass:
+
+```cron
+2 2 * * * /usr/bin/nice -n 10 /usr/bin/ionice -c2 -n7 /home/coldcli/bin/cold-cli --env-file /home/coldcli/.cold-cli-env --workspace storeinspect inbox reconcile --since 30d --lock-wait 10m --notify-errors >> /home/coldcli/.cold-cli/reconcile.log 2>&1
+32 3 * * 0 /usr/bin/nice -n 10 /usr/bin/ionice -c2 -n7 /home/coldcli/bin/cold-cli --env-file /home/coldcli/.cold-cli-env --workspace storeinspect inbox reconcile --since 120d --lock-wait 10m --notify-errors >> /home/coldcli/.cold-cli/reconcile.log 2>&1
+```
+
+Routine tick polling captures new inbound replies. The reconciliation schedule
+also imports messages sent manually through Gmail or IMAP webmail and messages
+moved out of INBOX. Messages deleted from the provider before reconciliation
+cannot be recovered.
 
 ### Bounce Detection
 

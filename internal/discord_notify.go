@@ -21,6 +21,7 @@ const (
 	DiscordEventCampaignCompleted             = "campaign_completed"
 	DiscordEventCampaignCompletedWithFailures = "campaign_completed_with_failures"
 	DiscordEventSenderIdle                    = "sender_idle"
+	DiscordEventInboxReconciliationFailed     = "inbox_reconciliation_failed"
 )
 
 // DiscordNotifier sends a single cold-cli event to Discord.
@@ -151,6 +152,8 @@ func BuildDiscordWebhookPayload(event DiscordNotificationEvent) discordWebhookPa
 		return buildDiscordCampaignPayload(event)
 	case DiscordEventSenderIdle:
 		return buildDiscordSenderIdlePayload(event)
+	case DiscordEventInboxReconciliationFailed:
+		return buildDiscordInboxReconciliationFailurePayload(event)
 	}
 
 	title := "New cold email reply"
@@ -181,6 +184,26 @@ func BuildDiscordWebhookPayload(event DiscordNotificationEvent) discordWebhookPa
 			Color:       color,
 			Timestamp:   event.Timestamp,
 			Fields:      fields,
+		}},
+	}
+}
+
+func buildDiscordInboxReconciliationFailurePayload(event DiscordNotificationEvent) discordWebhookPayload {
+	workspace := discordWorkspaceLabel(event.WorkspaceID)
+	description := truncateDiscordText(cleanDiscordText(event.Snippet), 1000)
+	if description == "" {
+		description = "The provider audit did not reach a verified clean state. Follow-up selection must remain blocked."
+	}
+	return discordWebhookPayload{
+		AllowedMentions: discordAllowedMentions{Parse: []string{}},
+		Embeds: []discordEmbed{{
+			Title:       workspace + " inbox reconciliation failed",
+			Description: description,
+			Color:       0xef4444,
+			Timestamp:   event.Timestamp,
+			Fields: []discordEmbedField{
+				{Name: "Workspace", Value: discordFieldValue(event.WorkspaceID), Inline: true},
+			},
 		}},
 	}
 }

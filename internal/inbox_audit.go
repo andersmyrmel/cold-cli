@@ -56,6 +56,57 @@ type InboxAuditResult struct {
 	Messages    []InboxAuditMessage       `json:"messages"`
 }
 
+type InboxReconcileResult struct {
+	WorkspaceID  string            `json:"workspace_id"`
+	Since        time.Time         `json:"since"`
+	Discovered   int               `json:"discovered"`
+	Applied      int               `json:"applied"`
+	Remaining    int               `json:"remaining"`
+	ApplyAudit   *InboxAuditResult `json:"apply_audit"`
+	Verification *InboxAuditResult `json:"verification"`
+}
+
+// ReconcileInboxHistory imports provider-confirmed campaign thread messages,
+// then performs a second read-only audit. Callers must use the verification
+// result, not the apply pass, as the clean-state gate.
+func ReconcileInboxHistory(cfg AuditInboxHistoryConfig) (*InboxReconcileResult, error) {
+	if cfg.Since.IsZero() {
+		cfg.Since = time.Now().UTC().AddDate(0, 0, -120)
+	}
+	cfg.Apply = true
+	applyResult, err := AuditInboxHistory(cfg)
+	result := &InboxReconcileResult{
+		WorkspaceID: NormalizeWorkspaceID(cfg.WorkspaceID),
+		Since:       cfg.Since.UTC(),
+		ApplyAudit:  applyResult,
+	}
+	if applyResult != nil {
+		result.Discovered = applyResult.Missing
+		result.Applied = applyResult.Applied
+		result.Since = applyResult.Since
+	}
+	if err != nil {
+		return result, fmt.Errorf("applying provider reconciliation: %w", err)
+	}
+
+	cfg.Apply = false
+	verification, err := AuditInboxHistory(cfg)
+	result.Verification = verification
+	if verification != nil {
+		result.Remaining = verification.Missing
+	}
+	if err != nil {
+		return result, fmt.Errorf("verifying provider reconciliation: %w", err)
+	}
+	if verification == nil {
+		return result, fmt.Errorf("provider reconciliation verification returned no result")
+	}
+	if verification.Missing != 0 {
+		return result, fmt.Errorf("provider reconciliation incomplete: %d messages remain untracked", verification.Missing)
+	}
+	return result, nil
+}
+
 func AuditInboxHistory(cfg AuditInboxHistoryConfig) (*InboxAuditResult, error) {
 	if cfg.DB == nil {
 		return nil, fmt.Errorf("db is required")
