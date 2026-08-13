@@ -3,6 +3,7 @@ package internal
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -94,6 +95,28 @@ func NewGWSCLI() *GWSCLI {
 		Timeout:    30 * time.Second,
 		ConfigDirs: map[string]string{},
 	}
+}
+
+// ConfiguredGWSClient loads per-account OAuth config directories from the
+// cold-cli database for CLI and hosted worker entrypoints.
+func ConfiguredGWSClient(db *sql.DB) *GWSCLI {
+	gwsCLI := NewGWSCLI()
+	if db == nil {
+		return gwsCLI
+	}
+	rows, err := queryDB(db, `SELECT email, gws_config_dir FROM accounts
+		WHERE status = 'active' AND provider = 'gws' AND gws_config_dir <> ''`)
+	if err != nil {
+		return gwsCLI
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var email, configDir string
+		if err := rows.Scan(&email, &configDir); err == nil {
+			gwsCLI.SetConfigDir(email, configDir)
+		}
+	}
+	return gwsCLI
 }
 
 // SetConfigDir registers a gws config directory for a specific account.

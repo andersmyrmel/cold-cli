@@ -189,8 +189,12 @@ cold-cli tick --dry-run                    # show what would happen
 cold-cli tick --now                        # ignore schedule, send all pending immediately
 cold-cli inbox backfill --dry-run          # preview historical inbox thread snapshot backfill
 cold-cli inbox backfill                    # store missing reply + related sent snapshots
+cold-cli --workspace storeinspect inbox sync --campaign 123 --lead 456
+                                            # refresh one complete Gmail or IMAP Inbox + Sent thread
+cold-cli --workspace storeinspect inbox show --campaign 123 --lead 456
+                                            # refresh and print the complete thread
 cold-cli --workspace storeinspect inbox reply --campaign 123 --lead 456 --body-file reply.txt
-                                            # preview a manual thread reply; never sends by default
+                                            # refresh, then preview a manual thread reply; never sends by default
 cold-cli --workspace storeinspect inbox reply --campaign 123 --lead 456 --body-file reply.txt --send --confirm-to lead@example.com
                                             # explicitly send the exact reviewed reply
 
@@ -346,12 +350,24 @@ Unsubscribe requests ("unsubscribe", "remove me", "opt out", etc.) are auto-dete
 
 ### Manually Approved Thread Replies
 
+`inbox sync` makes the provider mailbox authoritative before follow-up review.
+For Google Workspace accounts it fetches the complete Gmail thread, including
+messages sent manually outside cold-cli. For SMTP/IMAP accounts it searches
+both `INBOX` and common `Sent` mailboxes by RFC `Message-ID`, `In-Reply-To`, and
+`References` headers, then stores only messages connected to the selected
+thread. `inbox show` refreshes by default and prints the stored conversation in
+chronological order; use `--stored-only` only for offline inspection.
+
 `inbox reply` sends a one-off reply through the account that owns the stored
 thread. It is preview-only unless `--send` is present, and sending also requires
 `--confirm-to` to match the resolved primary recipient. The command honors a
 message's `Reply-To`, preserves RFC reply references, blocks bounced,
 unsubscribed, auto-reply, and globally suppressed leads, and uses an
 idempotency record so an uncertain result cannot be retried silently.
+Provider refresh is mandatory for delivery. A refresh failure or a newly
+discovered bounce, unsubscribe, or auto-reply blocks the send. Preview-only
+inspection can opt out with `--stored-only`, but that flag cannot be combined
+with `--send`.
 
 For SMTP/IMAP accounts, the delivered message is also appended to the `Sent`
 mailbox. A Sent-copy failure is reported as a warning without misreporting the

@@ -47,6 +47,43 @@ func TestParseIMAPRawMessage(t *testing.T) {
 	}
 }
 
+func TestParseIMAPRawMessageDecodesMultipartBodies(t *testing.T) {
+	raw := strings.Join([]string{
+		"From: Lead <lead@example.net>",
+		"To: sender@example.com",
+		"Subject: Re: details",
+		"Message-ID: <multipart@example.net>",
+		"In-Reply-To: <root@example.com>",
+		"References: <root@example.com>",
+		"Date: Mon, 10 Aug 2026 10:00:00 +0000",
+		"MIME-Version: 1.0",
+		"Content-Type: multipart/alternative; boundary=thread-boundary",
+		"",
+		"--thread-boundary",
+		"Content-Type: text/plain; charset=UTF-8",
+		"Content-Transfer-Encoding: quoted-printable",
+		"",
+		"This is the full reply =E2=80=94 including details.",
+		"--thread-boundary",
+		"Content-Type: text/html; charset=UTF-8",
+		"Content-Transfer-Encoding: quoted-printable",
+		"",
+		"<p>This is the <strong>full reply</strong> =E2=80=94 including details.</p>",
+		"--thread-boundary--",
+	}, "\r\n")
+
+	msg := ParseIMAPRawMessage("sender@example.com", "INBOX", 42, []byte(raw), nil)
+	if msg.TextBody != "This is the full reply — including details." {
+		t.Fatalf("unexpected text body: %q", msg.TextBody)
+	}
+	if msg.HTMLBody != "<p>This is the <strong>full reply</strong> — including details.</p>" {
+		t.Fatalf("unexpected HTML body: %q", msg.HTMLBody)
+	}
+	if msg.Snippet != msg.TextBody {
+		t.Fatalf("expected plain-text snippet, got %q", msg.Snippet)
+	}
+}
+
 func TestParseIMAPRawMessageEnvelopeFallback(t *testing.T) {
 	envelopeDate := time.Date(2026, time.April, 30, 11, 33, 47, 0, time.UTC)
 	msg := ParseIMAPRawMessage("sender@example.com", "INBOX", 7, []byte("not a valid RFC message"), &imap.Envelope{
@@ -128,5 +165,17 @@ func TestIMAPTransportAppendSent(t *testing.T) {
 		if !strings.Contains(gotMessage, expected) {
 			t.Fatalf("Sent copy missing %q:\n%s", expected, gotMessage)
 		}
+	}
+}
+
+func TestIMAPThreadSearchCriteriaMatchesThreadingHeaders(t *testing.T) {
+	criteria := imapThreadSearchCriteria(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC), []string{
+		"<root@example.com>", "<reply@example.net>", "not-an-rfc-id",
+	})
+	if criteria.Since.IsZero() {
+		t.Fatal("expected a since bound")
+	}
+	if len(criteria.Or) != 1 {
+		t.Fatalf("expected one nested OR tree, got %+v", criteria.Or)
 	}
 }

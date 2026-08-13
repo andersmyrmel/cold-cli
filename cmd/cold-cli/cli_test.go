@@ -199,7 +199,7 @@ func TestCLI_InboxReplyPreviewsByDefaultAndRequiresRecipientConfirmation(t *test
 	if err := os.WriteFile(bodyFile, []byte("Happy to send the details."), 0600); err != nil {
 		t.Fatal(err)
 	}
-	out, code := runCLI(t, bin, env, "inbox", "reply", "--campaign", "1", "--lead", "1", "--body-file", bodyFile)
+	out, code := runCLI(t, bin, env, "inbox", "reply", "--campaign", "1", "--lead", "1", "--body-file", bodyFile, "--stored-only")
 	if code != 0 {
 		t.Fatalf("preview failed (exit %d): %s", code, out)
 	}
@@ -212,6 +212,16 @@ func TestCLI_InboxReplyPreviewsByDefaultAndRequiresRecipientConfirmation(t *test
 	out, code = runCLI(t, bin, env, "inbox", "reply", "--campaign", "1", "--lead", "1", "--body-file", bodyFile, "--send")
 	if code == 0 || !strings.Contains(out, "--confirm-to") {
 		t.Fatalf("expected send confirmation failure, exit=%d output=%s", code, out)
+	}
+
+	out, code = runCLI(t, bin, env, "inbox", "show", "--campaign", "1", "--lead", "1", "--stored-only")
+	if code != 0 {
+		t.Fatalf("stored thread show failed (exit %d): %s", code, out)
+	}
+	for _, expected := range []string{"Thread <root@example.com> (1 messages)", "INBOUND", "Interested"} {
+		if !strings.Contains(out, expected) {
+			t.Fatalf("thread show missing %q:\n%s", expected, out)
+		}
 	}
 }
 

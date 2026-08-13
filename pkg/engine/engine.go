@@ -18,6 +18,7 @@ type AddSMTPIMAPAccountOpts = internal.AddSMTPIMAPAccountOpts
 type AddSMTPIMAPAccountResult = internal.AddSMTPIMAPAccountResult
 type CreateCampaignResult = internal.CreateCampaignResult
 type EmailMessage = internal.EmailMessage
+type GWSClient = internal.GWSClient
 type ListEmailThreadMessagesOpts = internal.ListEmailThreadMessagesOpts
 type PauseAccountResult = internal.PauseAccountResult
 type PreviewInboxReplyConfig = internal.PreviewInboxReplyConfig
@@ -28,6 +29,8 @@ type SecretResolver = internal.SecretResolver
 type SecretResolverFunc = internal.SecretResolverFunc
 type SendInboxReplyConfig = internal.SendInboxReplyConfig
 type SendInboxReplyResult = internal.SendInboxReplyResult
+type SyncEmailThreadConfig = internal.SyncEmailThreadConfig
+type SyncEmailThreadResult = internal.SyncEmailThreadResult
 type SendSMTPTestEmailOpts = internal.SendSMTPTestEmailOpts
 type SendSMTPTestEmailResult = internal.SendSMTPTestEmailResult
 type Store = internal.Store
@@ -103,6 +106,14 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 
 func ListEmailThreadMessages(db *sql.DB, opts ListEmailThreadMessagesOpts) ([]EmailMessage, error) {
 	return internal.ListEmailThreadMessages(db, opts)
+}
+
+func SyncEmailThread(cfg SyncEmailThreadConfig) (*SyncEmailThreadResult, error) {
+	return internal.SyncEmailThread(cfg)
+}
+
+func ConfiguredGWSClient(db *sql.DB) GWSClient {
+	return internal.ConfiguredGWSClient(db)
 }
 
 func SendInboxReply(cfg SendInboxReplyConfig) (*SendInboxReplyResult, error) {

@@ -3,9 +3,12 @@ package internal
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/mail"
 	"net/textproto"
@@ -20,6 +23,10 @@ import (
 // IMAPMessageLister lists mailbox messages for reply and bounce polling.
 type IMAPMessageLister interface {
 	ListMessages(account Account, since time.Time, includeSpamTrash bool) ([]GWSMessage, error)
+}
+
+type IMAPThreadMessageLister interface {
+	ListThreadMessages(account Account, since time.Time, messageIDs []string) ([]GWSMessage, error)
 }
 
 // IMAPSentAppender stores an SMTP-delivered message in the account's Sent
@@ -132,6 +139,29 @@ func (t *IMAPTransport) appendToMailbox(account Account, password, mailbox strin
 }
 
 func (t *IMAPTransport) ListMessages(account Account, since time.Time, includeSpamTrash bool) ([]GWSMessage, error) {
+	mailboxes := append([]string{}, t.Mailboxes...)
+	if includeSpamTrash {
+		mailboxes = append(mailboxes, t.SpamTrashBoxes...)
+	}
+	if len(mailboxes) == 0 {
+		mailboxes = []string{"INBOX"}
+	}
+	return t.listMessagesFromMailboxes(account, since, uniqueMailboxNames(mailboxes), nil)
+}
+
+// ListThreadMessages searches Inbox and Sent server-side by RFC threading
+// headers so refreshing one conversation does not download every message in
+// the account since the campaign began.
+func (t *IMAPTransport) ListThreadMessages(account Account, since time.Time, messageIDs []string) ([]GWSMessage, error) {
+	mailboxes := []string{"INBOX"}
+	mailboxes = append(mailboxes, t.SentMailboxes...)
+	if len(t.SentMailboxes) == 0 {
+		mailboxes = append(mailboxes, "Sent")
+	}
+	return t.listMessagesFromMailboxes(account, since, uniqueMailboxNames(mailboxes), messageIDs)
+}
+
+func (t *IMAPTransport) listMessagesFromMailboxes(account Account, since time.Time, mailboxes []string, messageIDs []string) ([]GWSMessage, error) {
 	if account.Provider != AccountProviderSMTPIMAP {
 		return nil, fmt.Errorf("account %s is provider %s, expected %s", account.Email, account.Provider, AccountProviderSMTPIMAP)
 	}
@@ -161,17 +191,9 @@ func (t *IMAPTransport) ListMessages(account Account, since time.Time, includeSp
 	}
 	defer client.Logout()
 
-	mailboxes := append([]string{}, t.Mailboxes...)
-	if includeSpamTrash {
-		mailboxes = append(mailboxes, t.SpamTrashBoxes...)
-	}
-	if len(mailboxes) == 0 {
-		mailboxes = []string{"INBOX"}
-	}
-
 	var all []GWSMessage
 	for i, mailbox := range mailboxes {
-		messages, err := t.listMailboxMessages(client, account, mailbox, since)
+		messages, err := t.listMailboxMessages(client, account, mailbox, since, messageIDs)
 		if err != nil {
 			if i > 0 {
 				continue
@@ -286,13 +308,12 @@ func (t *IMAPTransport) open(account Account, password string) (*imapclient.Clie
 	return client, nil
 }
 
-func (t *IMAPTransport) listMailboxMessages(client imapClient, account Account, mailbox string, since time.Time) ([]GWSMessage, error) {
+func (t *IMAPTransport) listMailboxMessages(client imapClient, account Account, mailbox string, since time.Time, messageIDs []string) ([]GWSMessage, error) {
 	if _, err := client.Select(mailbox, true); err != nil {
 		return nil, fmt.Errorf("selecting IMAP mailbox %s: %w", mailbox, err)
 	}
 
-	criteria := imap.NewSearchCriteria()
-	criteria.Since = since.AddDate(0, 0, -1)
+	criteria := imapThreadSearchCriteria(since, messageIDs)
 
 	uids, err := client.UidSearch(criteria)
 	if err != nil {
@@ -327,6 +348,62 @@ func (t *IMAPTransport) listMailboxMessages(client imapClient, account Account, 
 	return messages, nil
 }
 
+func imapThreadSearchCriteria(since time.Time, messageIDs []string) *imap.SearchCriteria {
+	criteria := imap.NewSearchCriteria()
+	criteria.Since = since.AddDate(0, 0, -1)
+	var terms []*imap.SearchCriteria
+	seen := map[string]struct{}{}
+	for _, messageID := range messageIDs {
+		messageID = normalizeMessageID(messageID)
+		if !looksLikeMessageID(messageID) {
+			continue
+		}
+		key := strings.ToLower(messageID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		for _, headerName := range []string{"Message-ID", "References", "In-Reply-To"} {
+			term := imap.NewSearchCriteria()
+			term.Header.Set(headerName, messageID)
+			terms = append(terms, term)
+		}
+	}
+	if len(terms) == 1 {
+		criteria.Header = terms[0].Header
+	} else if len(terms) > 1 {
+		criteria.Or = append(criteria.Or, [2]*imap.SearchCriteria{terms[0], foldIMAPOrCriteria(terms[1:])})
+	}
+	return criteria
+}
+
+func foldIMAPOrCriteria(terms []*imap.SearchCriteria) *imap.SearchCriteria {
+	if len(terms) == 1 {
+		return terms[0]
+	}
+	criteria := imap.NewSearchCriteria()
+	criteria.Or = append(criteria.Or, [2]*imap.SearchCriteria{terms[0], foldIMAPOrCriteria(terms[1:])})
+	return criteria
+}
+
+func uniqueMailboxNames(mailboxes []string) []string {
+	seen := map[string]struct{}{}
+	result := make([]string, 0, len(mailboxes))
+	for _, mailbox := range mailboxes {
+		mailbox = strings.TrimSpace(mailbox)
+		if mailbox == "" {
+			continue
+		}
+		key := strings.ToLower(mailbox)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, mailbox)
+	}
+	return result
+}
+
 func (t *IMAPTransport) parseMessage(account Account, mailbox string, msg *imap.Message, section *imap.BodySectionName) (GWSMessage, error) {
 	body := msg.GetBody(section)
 	if body == nil {
@@ -348,13 +425,18 @@ func ParseIMAPRawMessage(accountEmail, mailbox string, uid uint32, raw []byte, e
 	headers := map[string]string{}
 	var snippet string
 	var textBody string
+	var htmlBody string
+	var mimeType string
 	if err == nil {
 		for key, values := range parsed.Header {
 			headers[textproto.CanonicalMIMEHeaderKey(key)] = strings.Join(values, ", ")
 		}
-		body, _ := io.ReadAll(io.LimitReader(parsed.Body, 4096))
-		textBody = strings.TrimSpace(string(body))
+		mimeType, _, _ = mime.ParseMediaType(parsed.Header.Get("Content-Type"))
+		textBody, htmlBody = extractIMAPMessageBodies(textproto.MIMEHeader(parsed.Header), parsed.Body)
 		snippet = textBody
+		if snippet == "" && htmlBody != "" {
+			snippet = emailHTMLToText(htmlBody)
+		}
 	} else {
 		snippet = strings.TrimSpace(string(raw))
 		textBody = snippet
@@ -399,12 +481,78 @@ func ParseIMAPRawMessage(accountEmail, mailbox string, uid uint32, raw []byte, e
 		ThreadID:  threadID,
 		Snippet:   snippet,
 		TextBody:  textBody,
+		HTMLBody:  htmlBody,
+		MimeType:  mimeType,
 		Headers:   headers,
 		From:      from,
 		To:        to,
 		Subject:   subject,
 		InReplyTo: inReplyTo,
 		Date:      date,
+	}
+}
+
+func extractIMAPMessageBodies(header textproto.MIMEHeader, body io.Reader) (string, string) {
+	contentType := strings.TrimSpace(header.Get("Content-Type"))
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || mediaType == "" {
+		mediaType = "text/plain"
+	}
+	mediaType = strings.ToLower(mediaType)
+
+	if strings.HasPrefix(mediaType, "multipart/") {
+		boundary := params["boundary"]
+		if boundary == "" {
+			return "", ""
+		}
+		reader := multipart.NewReader(body, boundary)
+		var textParts, htmlParts []string
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				break
+			}
+			partText, partHTML := extractIMAPMessageBodies(part.Header, part)
+			if strings.TrimSpace(partText) != "" {
+				textParts = append(textParts, strings.TrimSpace(partText))
+			}
+			if strings.TrimSpace(partHTML) != "" {
+				htmlParts = append(htmlParts, strings.TrimSpace(partHTML))
+			}
+		}
+		return strings.Join(textParts, "\n\n"), strings.Join(htmlParts, "\n")
+	}
+
+	if disposition, _, _ := mime.ParseMediaType(header.Get("Content-Disposition")); strings.EqualFold(disposition, "attachment") {
+		return "", ""
+	}
+	decoded := decodeIMAPTransferEncoding(body, header.Get("Content-Transfer-Encoding"))
+	content, err := io.ReadAll(decoded)
+	if err != nil {
+		return "", ""
+	}
+	value := strings.TrimSpace(string(content))
+	switch mediaType {
+	case "text/plain":
+		return value, ""
+	case "text/html":
+		return "", value
+	default:
+		return "", ""
+	}
+}
+
+func decodeIMAPTransferEncoding(body io.Reader, encoding string) io.Reader {
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "base64":
+		return base64.NewDecoder(base64.StdEncoding, body)
+	case "quoted-printable":
+		return quotedprintable.NewReader(body)
+	default:
+		return body
 	}
 }
 

@@ -53,19 +53,7 @@ func printJSON(v any) error {
 }
 
 func configuredGWSClient(store *internal.Store) *internal.GWSCLI {
-	gwsCLI := internal.NewGWSCLI()
-	rows, err := store.Query("SELECT email, gws_config_dir FROM accounts WHERE status = 'active' AND provider = 'gws' AND gws_config_dir != ''")
-	if err != nil {
-		return gwsCLI
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var email, configDir string
-		if err := rows.Scan(&email, &configDir); err == nil {
-			gwsCLI.SetConfigDir(email, configDir)
-		}
-	}
-	return gwsCLI
+	return internal.ConfiguredGWSClient(store.DB)
 }
 
 func configuredDiscordNotifierFromEnv() internal.DiscordNotifier {
@@ -1832,6 +1820,7 @@ reviewed copy is preserved.
 		confirmTo, _ := cmd.Flags().GetString("confirm-to")
 		confirmCC, _ := cmd.Flags().GetString("confirm-cc")
 		idempotencyKey, _ := cmd.Flags().GetString("idempotency-key")
+		storedOnly, _ := cmd.Flags().GetBool("stored-only")
 
 		if campaignID < 1 {
 			return fmt.Errorf("--campaign must be a positive integer")
@@ -1841,6 +1830,12 @@ reviewed copy is preserved.
 		}
 		if strings.TrimSpace(bodyFile) == "" {
 			return fmt.Errorf("--body-file is required")
+		}
+		if send && strings.TrimSpace(confirmTo) == "" {
+			return fmt.Errorf("--confirm-to is required with --send")
+		}
+		if send && storedOnly {
+			return fmt.Errorf("--stored-only cannot be used with --send; provider refresh is mandatory before delivery")
 		}
 		bodyBytes, err := os.ReadFile(bodyFile)
 		if err != nil {
@@ -1859,6 +1854,16 @@ reviewed copy is preserved.
 			return err
 		}
 		defer store.Close()
+		gws := configuredGWSClient(store)
+
+		if !storedOnly {
+			if _, err := internal.SyncEmailThread(internal.SyncEmailThreadConfig{
+				DB: store.DB, WorkspaceID: currentWorkspaceID(), CampaignID: campaignID, LeadID: leadID,
+				SecretResolver: internal.EnvSecretResolver{}, GWS: gws,
+			}); err != nil {
+				return fmt.Errorf("refreshing provider thread before preview: %w", err)
+			}
+		}
 
 		preview, err := internal.PreviewInboxReply(internal.PreviewInboxReplyConfig{
 			DB: store.DB, WorkspaceID: currentWorkspaceID(), CampaignID: campaignID, LeadID: leadID,
@@ -1890,7 +1895,7 @@ reviewed copy is preserved.
 		result, err := internal.SendInboxReply(internal.SendInboxReplyConfig{
 			DB: store.DB, WorkspaceID: currentWorkspaceID(), CampaignID: campaignID, LeadID: leadID,
 			Subject: subject, Body: body, ReplyAll: replyAll, IdempotencyKey: idempotencyKey,
-			GWS: configuredGWSClient(store),
+			GWS: gws,
 		})
 		if err != nil {
 			return err
@@ -1912,6 +1917,118 @@ reviewed copy is preserved.
 		}
 		return nil
 	},
+}
+
+var inboxSyncCmd = &cobra.Command{
+	Use:   "sync",
+	Short: "Refresh one complete thread from Gmail or IMAP Inbox and Sent",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		campaignID, _ := cmd.Flags().GetInt64("campaign")
+		leadID, _ := cmd.Flags().GetInt64("lead")
+		threadID, _ := cmd.Flags().GetString("thread")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		if campaignID < 1 {
+			return fmt.Errorf("--campaign must be a positive integer")
+		}
+		if leadID < 1 {
+			return fmt.Errorf("--lead must be a positive integer")
+		}
+
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		result, err := internal.SyncEmailThread(internal.SyncEmailThreadConfig{
+			DB: store.DB, WorkspaceID: currentWorkspaceID(), CampaignID: campaignID, LeadID: leadID,
+			ThreadID: threadID, DryRun: dryRun, SecretResolver: internal.EnvSecretResolver{},
+			GWS: configuredGWSClient(store),
+		})
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return printJSON(result)
+		}
+		prefix := "Refreshed"
+		if dryRun {
+			prefix = "[dry-run] Would refresh"
+		}
+		fmt.Printf("%s %s thread %s: fetched %d, matched %d, added %d (%d inbound, %d outbound), %d stored\n",
+			prefix, result.Provider, result.ThreadID, result.Fetched, result.Matched, result.Added,
+			result.InboundAdded, result.OutboundAdded, result.Stored)
+		return nil
+	},
+}
+
+var inboxShowCmd = &cobra.Command{
+	Use:   "show",
+	Short: "Refresh and print one complete stored thread",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		campaignID, _ := cmd.Flags().GetInt64("campaign")
+		leadID, _ := cmd.Flags().GetInt64("lead")
+		threadID, _ := cmd.Flags().GetString("thread")
+		limit, _ := cmd.Flags().GetInt("limit")
+		storedOnly, _ := cmd.Flags().GetBool("stored-only")
+		if campaignID < 1 {
+			return fmt.Errorf("--campaign must be a positive integer")
+		}
+		if leadID < 1 {
+			return fmt.Errorf("--lead must be a positive integer")
+		}
+
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		if !storedOnly {
+			result, err := internal.SyncEmailThread(internal.SyncEmailThreadConfig{
+				DB: store.DB, WorkspaceID: currentWorkspaceID(), CampaignID: campaignID, LeadID: leadID,
+				ThreadID: threadID, SecretResolver: internal.EnvSecretResolver{}, GWS: configuredGWSClient(store),
+			})
+			if err != nil {
+				return err
+			}
+			threadID = result.ThreadID
+		}
+		messages, err := internal.ListEmailThreadMessages(store.DB, internal.ListEmailThreadMessagesOpts{
+			CampaignID: campaignID, LeadID: leadID, ThreadID: threadID, Limit: limit,
+		})
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return printJSON(messages)
+		}
+		printEmailThread(messages)
+		return nil
+	},
+}
+
+func printEmailThread(messages []internal.EmailMessage) {
+	if len(messages) == 0 {
+		fmt.Println("No stored thread messages.")
+		return
+	}
+	fmt.Printf("Thread %s (%d messages)\n", messages[0].ThreadID, len(messages))
+	for index, message := range messages {
+		fmt.Printf("\n--- %d/%d %s %s ---\n", index+1, len(messages), strings.ToUpper(message.Direction), message.OccurredAt.UTC().Format(time.RFC3339))
+		fmt.Printf("From: %s\n", message.FromEmail)
+		fmt.Printf("To: %s\n", message.ToEmails)
+		if message.CcEmails != "" {
+			fmt.Printf("Cc: %s\n", message.CcEmails)
+		}
+		fmt.Printf("Subject: %s\n\n", message.Subject)
+		body := strings.TrimSpace(message.DisplayBody)
+		if body == "" {
+			body = strings.TrimSpace(message.TextBody)
+		}
+		if body == "" {
+			body = strings.TrimSpace(message.Snippet)
+		}
+		fmt.Println(body)
+	}
 }
 
 func printInboxReplyPreview(preview *internal.InboxReplyPreview) {
@@ -2287,7 +2404,16 @@ func init() {
 	inboxReplyCmd.Flags().String("confirm-to", "", "exact primary recipient required with --send")
 	inboxReplyCmd.Flags().String("confirm-cc", "", "exact comma-separated Cc recipients required with --send --reply-all")
 	inboxReplyCmd.Flags().String("idempotency-key", "", "operator key for an intentional new attempt; normally generated from exact content")
-	inboxCmd.AddCommand(inboxBackfillCmd, inboxReplyCmd)
+	inboxReplyCmd.Flags().Bool("stored-only", false, "preview stored snapshots without provider refresh (sending is blocked)")
+	for _, command := range []*cobra.Command{inboxSyncCmd, inboxShowCmd} {
+		command.Flags().Int64("campaign", 0, "campaign ID containing the stored thread")
+		command.Flags().Int64("lead", 0, "lead ID containing the stored thread")
+		command.Flags().String("thread", "", "specific provider thread ID (default: latest stored thread)")
+	}
+	inboxSyncCmd.Flags().Bool("dry-run", false, "fetch and report missing messages without storing them")
+	inboxShowCmd.Flags().Int("limit", 100, "maximum stored messages to print")
+	inboxShowCmd.Flags().Bool("stored-only", false, "print stored snapshots without refreshing the provider")
+	inboxCmd.AddCommand(inboxBackfillCmd, inboxReplyCmd, inboxSyncCmd, inboxShowCmd)
 
 	statsCmd.Flags().Bool("leads", false, "show per-lead breakdown")
 	statsCmd.Flags().Bool("variants", false, "show per-variant A/B test results")

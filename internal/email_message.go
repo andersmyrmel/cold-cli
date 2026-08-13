@@ -251,8 +251,10 @@ type SendInboxReplyConfig struct {
 	Now            time.Time
 	SecretResolver SecretResolver
 	GWS            GWSClient
+	IMAP           IMAPMessageLister
 	SMTPSender     SMTPEmailSender
 	SentAppender   IMAPSentAppender
+	RefreshThread  bool
 }
 
 type SendInboxReplyResult struct {
@@ -427,6 +429,14 @@ func PreviewInboxReply(cfg PreviewInboxReplyConfig) (*InboxReplyPreview, error) 
 }
 
 func SendInboxReply(cfg SendInboxReplyConfig) (*SendInboxReplyResult, error) {
+	if cfg.RefreshThread {
+		if _, err := SyncEmailThread(SyncEmailThreadConfig{
+			DB: cfg.DB, WorkspaceID: cfg.WorkspaceID, CampaignID: cfg.CampaignID, LeadID: cfg.LeadID,
+			SecretResolver: cfg.SecretResolver, GWS: cfg.GWS, IMAP: cfg.IMAP,
+		}); err != nil {
+			return nil, fmt.Errorf("refreshing thread before reply: %w", err)
+		}
+	}
 	preview, err := PreviewInboxReply(PreviewInboxReplyConfig{
 		DB: cfg.DB, WorkspaceID: cfg.WorkspaceID, CampaignID: cfg.CampaignID, LeadID: cfg.LeadID,
 		Subject: cfg.Subject, Body: cfg.Body, ReplyAll: cfg.ReplyAll, IdempotencyKey: cfg.IdempotencyKey,
