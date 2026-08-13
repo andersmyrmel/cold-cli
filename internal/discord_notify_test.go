@@ -119,6 +119,40 @@ func TestListDiscordNotificationEvents(t *testing.T) {
 	}
 }
 
+func TestReconciledReplyNotificationIsLabeledHistorical(t *testing.T) {
+	db := setupReplyTestDB(t)
+	if _, err := execDB(db, `INSERT INTO events (
+		campaign_id, lead_id, account_id, type, step_number, message_id, timestamp, metadata
+	) VALUES (1, 1, 1, 'reply', 0, 'recovered-reply', ?, ?)`,
+		time.Date(2026, time.July, 23, 14, 44, 0, 0, time.UTC),
+		`{"source":"inbox_reconcile"}`); err != nil {
+		t.Fatalf("insert reconciled reply event: %v", err)
+	}
+	insertInboundTestMessage(t, db, 1, 1, 1, "reply", "recovered-reply", "Jamie <jamie@example.com>", "Re: 3 stores", "Sure, yes please.")
+
+	events, err := listDiscordNotificationEvents(db, 0, 10, nil)
+	if err != nil {
+		t.Fatalf("listDiscordNotificationEvents error: %v", err)
+	}
+	if len(events) != 1 || !events[0].Recovered {
+		t.Fatalf("expected one recovered notification event, got %#v", events)
+	}
+
+	payload := BuildDiscordWebhookPayload(events[0])
+	if len(payload.Embeds) != 1 || payload.Embeds[0].Title != "Recovered historical reply" {
+		t.Fatalf("unexpected recovered reply payload: %#v", payload)
+	}
+	foundNotice := false
+	for _, field := range payload.Embeds[0].Fields {
+		if field.Name == "Notice" && strings.Contains(field.Value, "original message time") {
+			foundNotice = true
+		}
+	}
+	if !foundNotice {
+		t.Fatalf("expected recovered timestamp notice, got %#v", payload.Embeds[0].Fields)
+	}
+}
+
 func TestListDiscordNotificationEventsFiltersByProvider(t *testing.T) {
 	db := setupReplyTestDB(t)
 	if _, err := execDB(db, `UPDATE accounts SET provider = ? WHERE id = 1`, AccountProviderSMTPIMAP); err != nil {

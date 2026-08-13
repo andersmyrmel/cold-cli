@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -95,6 +96,17 @@ func TestAuditInboxHistoryApplyStoresManualOutboundAndFollowingReply(t *testing.
 	}
 	if messageCount != 4 || manualEvents != 1 || replyEvents != 1 {
 		t.Fatalf("unexpected applied state: messages=%d manual=%d replies=%d", messageCount, manualEvents, replyEvents)
+	}
+	var metadataRaw string
+	if err := store.DB.QueryRow("SELECT metadata FROM events WHERE type = 'reply' AND message_id = 'gmail-reply-2'").Scan(&metadataRaw); err != nil {
+		t.Fatalf("loading reconciled reply metadata: %v", err)
+	}
+	var metadata map[string]string
+	if err := json.Unmarshal([]byte(metadataRaw), &metadata); err != nil {
+		t.Fatalf("decoding reconciled reply metadata %q: %v", metadataRaw, err)
+	}
+	if metadata["source"] != inboxReconcileEventSource {
+		t.Fatalf("expected reconciliation source metadata, got %#v", metadata)
 	}
 	second, err := AuditInboxHistory(AuditInboxHistoryConfig{
 		DB: store.DB, WorkspaceID: "storeinspect", Since: since, GWS: gws, Apply: true,

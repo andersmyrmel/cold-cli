@@ -2,12 +2,15 @@ package internal
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 )
+
+const inboxReconcileEventSource = "inbox_reconcile"
 
 type AuditInboxHistoryConfig struct {
 	DB             *sql.DB
@@ -260,11 +263,10 @@ func applyAuditMessage(db *sql.DB, account Account, target auditThreadTarget, ms
 	}
 	if !sameEmailAddress(msg.From, account.Email) {
 		msg.ThreadID = target.ThreadID
-		before := 0
-		if err := queryRowDB(db, `SELECT COUNT(*) FROM events WHERE campaign_id = ? AND lead_id = ? AND message_id = ?`, target.CampaignID, target.LeadID, msg.ID).Scan(&before); err != nil {
+		if _, err := processReplyMessages(db, []Account{account}, func(Account) ([]GWSMessage, error) { return []GWSMessage{msg}, nil }); err != nil {
 			return false, err
 		}
-		if _, err := processReplyMessages(db, []Account{account}, func(Account) ([]GWSMessage, error) { return []GWSMessage{msg}, nil }); err != nil {
+		if err := markReconciledInboundEvent(db, target, msg); err != nil {
 			return false, err
 		}
 		if auditMessageAlreadyStored(db, target.CampaignID, target.LeadID, msg) {
@@ -290,6 +292,31 @@ func applyAuditMessage(db *sql.DB, account Account, target auditThreadTarget, ms
 		return false, err
 	}
 	return true, nil
+}
+
+func markReconciledInboundEvent(db *sql.DB, target auditThreadTarget, msg GWSMessage) error {
+	eventType := string(classifyInboundMessage(msg))
+	if eventType != EmailMessageTypeReply && eventType != EmailMessageTypeUnsubscribe {
+		return nil
+	}
+	metadata, err := json.Marshal(map[string]string{"source": inboxReconcileEventSource})
+	if err != nil {
+		return fmt.Errorf("encoding reconciliation event metadata: %w", err)
+	}
+	result, err := execDB(db, `UPDATE events SET metadata = ?
+		WHERE campaign_id = ? AND lead_id = ? AND message_id = ? AND type = ?`,
+		string(metadata), target.CampaignID, target.LeadID, msg.ID, eventType)
+	if err != nil {
+		return fmt.Errorf("marking reconciled %s event: %w", eventType, err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("counting reconciled %s event update: %w", eventType, err)
+	}
+	if updated != 1 {
+		return fmt.Errorf("marking reconciled %s event: expected one event for message %s, updated %d", eventType, msg.ID, updated)
+	}
+	return nil
 }
 
 func providerRFCMessageID(msg GWSMessage) string {

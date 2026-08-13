@@ -72,6 +72,7 @@ type DiscordNotificationEvent struct {
 	PendingCount      int
 	IdleSince         string
 	Reminder          bool
+	Recovered         bool
 }
 
 // DiscordWebhookNotifier posts cold-cli notifications to a Discord webhook URL.
@@ -162,6 +163,14 @@ func BuildDiscordWebhookPayload(event DiscordNotificationEvent) discordWebhookPa
 		title = "Unsubscribe request"
 		color = 0xf97316
 	}
+	if event.Recovered {
+		if event.EventType == EmailMessageTypeUnsubscribe || event.EventType == "unsubscribe" {
+			title = "Recovered historical unsubscribe"
+		} else {
+			title = "Recovered historical reply"
+		}
+		color = 0x3b82f6
+	}
 
 	description := truncateDiscordText(cleanDiscordText(event.Snippet), 500)
 	if description == "" {
@@ -174,6 +183,11 @@ func BuildDiscordWebhookPayload(event DiscordNotificationEvent) discordWebhookPa
 		{Name: "Lead", Value: discordFieldValue(leadLabel(event)), Inline: false},
 		{Name: "From", Value: discordFieldValue(event.FromEmail), Inline: true},
 		{Name: "Subject", Value: discordFieldValue(event.Subject), Inline: false},
+	}
+	if event.Recovered {
+		fields = append(fields, discordEmbedField{
+			Name: "Notice", Value: "Imported during provider reconciliation. The timestamp is the original message time.", Inline: false,
+		})
 	}
 
 	return discordWebhookPayload{
@@ -740,6 +754,7 @@ func listDiscordNotificationEvents(db *sql.DB, afterEventID int64, limit int, pr
 			e.id,
 			e.type,
 			e.timestamp,
+			e.metadata,
 			e.message_id,
 			c.name,
 			l.email,
@@ -805,10 +820,12 @@ func listDiscordNotificationEvents(db *sql.DB, afterEventID int64, limit int, pr
 	var events []DiscordNotificationEvent
 	for rows.Next() {
 		var event DiscordNotificationEvent
+		var metadata string
 		if err := rows.Scan(
 			&event.EventID,
 			&event.EventType,
 			&event.Timestamp,
+			&metadata,
 			&event.MessageID,
 			&event.CampaignName,
 			&event.LeadEmail,
@@ -820,9 +837,20 @@ func listDiscordNotificationEvents(db *sql.DB, afterEventID int64, limit int, pr
 		); err != nil {
 			return nil, fmt.Errorf("scanning discord notification event: %w", err)
 		}
+		event.Recovered = discordEventWasReconciled(metadata)
 		events = append(events, event)
 	}
 	return events, rows.Err()
+}
+
+func discordEventWasReconciled(metadata string) bool {
+	var parsed struct {
+		Source string `json:"source"`
+	}
+	if err := json.Unmarshal([]byte(metadata), &parsed); err != nil {
+		return false
+	}
+	return parsed.Source == inboxReconcileEventSource
 }
 
 func cleanDiscordNotifyProviders(providers []string) []string {

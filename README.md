@@ -427,7 +427,9 @@ The exact production crontab is tracked in `ops/mova-coldcli.crontab`.
 Routine tick polling captures new inbound replies. The reconciliation schedule
 also imports messages sent manually through Gmail or IMAP webmail and messages
 moved out of INBOX. Messages deleted from the provider before reconciliation
-cannot be recovered.
+cannot be recovered. Discord labels replies imported by reconciliation as
+`Recovered historical reply` and retains their original arrival timestamp;
+only replies discovered by routine polling are labeled as new.
 
 ### Bounce Detection
 
