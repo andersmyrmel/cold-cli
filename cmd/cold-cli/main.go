@@ -1971,6 +1971,7 @@ messages that are missing from cold-cli without storing or sending.
 `),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sinceValue, _ := cmd.Flags().GetString("since")
+		apply, _ := cmd.Flags().GetBool("apply")
 		since, err := time.Parse(time.RFC3339, strings.TrimSpace(sinceValue))
 		if err != nil {
 			return fmt.Errorf("--since must be RFC3339: %w", err)
@@ -1982,15 +1983,15 @@ messages that are missing from cold-cli without storing or sending.
 		defer store.Close()
 		result, auditErr := internal.AuditInboxHistory(internal.AuditInboxHistoryConfig{
 			DB: store.DB, WorkspaceID: currentWorkspaceID(), Since: since,
-			SecretResolver: internal.EnvSecretResolver{}, GWS: configuredGWSClient(store),
+			SecretResolver: internal.EnvSecretResolver{}, GWS: configuredGWSClient(store), Apply: apply,
 		})
 		if jsonOutput {
 			if err := printJSON(result); err != nil {
 				return err
 			}
 		} else {
-			fmt.Printf("Audited %d provider messages across %d accounts since %s: %d campaign-thread matches, %d untracked\n",
-				result.Scanned, len(result.Accounts), result.Since.Format(time.RFC3339), result.Matched, result.Missing)
+			fmt.Printf("Audited %d provider messages across %d accounts since %s: %d campaign-thread matches, %d untracked, %d applied\n",
+				result.Scanned, len(result.Accounts), result.Since.Format(time.RFC3339), result.Matched, result.Missing, result.Applied)
 			for _, message := range result.Messages {
 				fmt.Printf("%s %s campaign=%d lead=%d account=%s at=%s subject=%q message_id=%s\n",
 					message.Direction, message.Type, message.CampaignID, message.LeadID, message.AccountEmail,
@@ -2452,6 +2453,7 @@ func init() {
 	}
 	inboxSyncCmd.Flags().Bool("dry-run", false, "fetch and report missing messages without storing them")
 	inboxAuditCmd.Flags().String("since", time.Now().UTC().AddDate(0, 0, -120).Format(time.RFC3339), "earliest provider message date (RFC3339)")
+	inboxAuditCmd.Flags().Bool("apply", false, "store provider-confirmed missing thread messages without sending email")
 	inboxShowCmd.Flags().Int("limit", 100, "maximum stored messages to print")
 	inboxShowCmd.Flags().Bool("stored-only", false, "print stored snapshots without refreshing the provider")
 	inboxCmd.AddCommand(inboxBackfillCmd, inboxReplyCmd, inboxSyncCmd, inboxShowCmd, inboxAuditCmd)

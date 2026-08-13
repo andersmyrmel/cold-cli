@@ -16,6 +16,7 @@ type AuditInboxHistoryConfig struct {
 	SecretResolver SecretResolver
 	GWS            GWSClient
 	IMAP           IMAPMessageLister
+	Apply          bool
 }
 
 type InboxAuditMessage struct {
@@ -50,6 +51,7 @@ type InboxAuditResult struct {
 	Scanned     int                       `json:"scanned"`
 	Matched     int                       `json:"matched"`
 	Missing     int                       `json:"missing"`
+	Applied     int                       `json:"applied"`
 	Accounts    []InboxAuditAccountResult `json:"accounts"`
 	Messages    []InboxAuditMessage       `json:"messages"`
 }
@@ -98,6 +100,7 @@ func AuditInboxHistory(cfg AuditInboxHistoryConfig) (*InboxAuditResult, error) {
 			return inboundEmailOccurredAt(messages[i]).Before(inboundEmailOccurredAt(messages[j]))
 		})
 		discoveredTargets := map[string]auditThreadTarget{}
+		var missingMessages []auditMissingProviderMessage
 		for _, msg := range messages {
 			target, ok, matchErr := findAuditThreadTarget(cfg.DB, account, msg)
 			if matchErr != nil {
@@ -116,15 +119,134 @@ func AuditInboxHistory(cfg AuditInboxHistoryConfig) (*InboxAuditResult, error) {
 			if auditMessageAlreadyStored(cfg.DB, target.CampaignID, target.LeadID, msg) {
 				continue
 			}
-			missing := auditInboxMessage(target, account, msg)
-			result.Messages = append(result.Messages, missing)
+			missingMessages = append(missingMessages, auditMissingProviderMessage{Target: target, Message: msg})
 			accountResult.Missing++
 			result.Missing++
+		}
+		if cfg.Apply && account.Provider == AccountProviderSMTPIMAP && len(missingMessages) > 0 {
+			hydrated, hydrateErr := hydrateIMAPAuditMessages(cfg, account, missingMessages)
+			if hydrateErr != nil {
+				errs = append(errs, fmt.Errorf("hydrating missing messages for %s: %w", account.Email, hydrateErr))
+			} else {
+				missingMessages = hydrated
+			}
+		}
+		for _, missing := range missingMessages {
+			result.Messages = append(result.Messages, auditInboxMessage(missing.Target, account, missing.Message))
+			if cfg.Apply {
+				applied, applyErr := applyAuditMessage(cfg.DB, account, missing.Target, missing.Message)
+				if applyErr != nil {
+					errs = append(errs, fmt.Errorf("applying %s from %s: %w", missing.Message.ID, account.Email, applyErr))
+				} else if applied {
+					result.Applied++
+				}
+			}
 		}
 		result.Accounts = append(result.Accounts, accountResult)
 	}
 	sort.Slice(result.Messages, func(i, j int) bool { return result.Messages[i].OccurredAt.Before(result.Messages[j].OccurredAt) })
 	return result, errors.Join(errs...)
+}
+
+type auditMissingProviderMessage struct {
+	Target  auditThreadTarget
+	Message GWSMessage
+}
+
+func hydrateIMAPAuditMessages(cfg AuditInboxHistoryConfig, account Account, missing []auditMissingProviderMessage) ([]auditMissingProviderMessage, error) {
+	lister := cfg.IMAP
+	if lister == nil {
+		lister = NewIMAPTransport(cfg.SecretResolver)
+	}
+	threadLister, ok := lister.(IMAPThreadMessageLister)
+	if !ok {
+		return missing, nil
+	}
+	wanted := map[string]int{}
+	var ids []string
+	for index, item := range missing {
+		id := providerRFCMessageID(item.Message)
+		key := canonicalMessageID(id)
+		if key == "" {
+			continue
+		}
+		wanted[key] = index
+		ids = append(ids, id)
+	}
+	for start := 0; start < len(ids); start += imapAuditAnchorBatchSize {
+		end := start + imapAuditAnchorBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		var fetched []GWSMessage
+		var err error
+		for attempt := 0; attempt < 4; attempt++ {
+			fetched, err = threadLister.ListThreadMessages(account, cfg.Since, ids[start:end])
+			if err == nil {
+				break
+			}
+			wait, retry := imapAuditRetryWait(err)
+			if !retry || attempt == 3 {
+				break
+			}
+			time.Sleep(wait)
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, msg := range fetched {
+			if index, exists := wanted[canonicalMessageID(providerRFCMessageID(msg))]; exists {
+				missing[index].Message = msg
+			}
+		}
+	}
+	return missing, nil
+}
+
+func applyAuditMessage(db *sql.DB, account Account, target auditThreadTarget, msg GWSMessage) (bool, error) {
+	if auditMessageAlreadyStored(db, target.CampaignID, target.LeadID, msg) {
+		return false, nil
+	}
+	if !sameEmailAddress(msg.From, account.Email) {
+		before := 0
+		if err := queryRowDB(db, `SELECT COUNT(*) FROM events WHERE campaign_id = ? AND lead_id = ? AND message_id = ?`, target.CampaignID, target.LeadID, msg.ID).Scan(&before); err != nil {
+			return false, err
+		}
+		if _, err := processReplyMessages(db, []Account{account}, func(Account) ([]GWSMessage, error) { return []GWSMessage{msg}, nil }); err != nil {
+			return false, err
+		}
+		if auditMessageAlreadyStored(db, target.CampaignID, target.LeadID, msg) {
+			return true, nil
+		}
+		return false, fmt.Errorf("inbound provider message did not match its resolved campaign thread")
+	}
+
+	base := emailMessageBackfillEvent{
+		CampaignID: target.CampaignID, LeadID: target.LeadID, AccountID: account.ID,
+		AccountEmail: account.Email, Provider: account.Provider, ThreadID: target.ThreadID,
+		Timestamp: inboundEmailOccurredAt(msg),
+	}
+	stored := emailMessageFromThreadMessage(base, msg, EmailMessageDirectionOutbound, EmailMessageTypeManualReply)
+	stored.ThreadID = target.ThreadID
+	if err := insertEmailMessage(db, stored); err != nil {
+		return false, err
+	}
+	eventMessageID := providerRFCMessageID(msg)
+	if _, err := execDB(db, `INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id, timestamp)
+		VALUES (?, ?, ?, 'manual_reply', 0, ?, ?, ?)`, target.CampaignID, target.LeadID, account.ID,
+		eventMessageID, target.ThreadID, inboundEmailOccurredAt(msg)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func providerRFCMessageID(msg GWSMessage) string {
+	if msg.Headers != nil {
+		if value := normalizeMessageID(firstEmailHeader(msg.Headers, "Message-ID")); value != "" {
+			return value
+		}
+	}
+	return msg.ID
 }
 
 func findDiscoveredAuditThreadTarget(discovered map[string]auditThreadTarget, msg GWSMessage) (auditThreadTarget, bool) {
