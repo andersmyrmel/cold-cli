@@ -134,3 +134,30 @@ func TestSMTPTransport_RequiresSMTPIMAPProvider(t *testing.T) {
 		t.Fatal("expected provider error")
 	}
 }
+
+func TestSMTPTransportRejectsHeaderInjection(t *testing.T) {
+	transport := NewSMTPTransport(staticSecretResolver{"env:SMTP_PASSWORD": "smtp-secret"})
+	called := false
+	transport.send = func(Account, string, []string, []byte) error {
+		called = true
+		return nil
+	}
+
+	_, _, err := transport.SendEmail(Account{
+		Email: "sender@example.com", Provider: AccountProviderSMTPIMAP,
+		SMTPHost: "smtp.example.com", SMTPPort: 465,
+		SMTPUsername: "sender@example.com", SMTPPasswordRef: "env:SMTP_PASSWORD",
+		SMTPTLSMode: "ssl",
+	}, EmailParams{
+		FromEmail: "sender@example.com",
+		ToEmail:   "lead@example.com",
+		Subject:   "Hello\r\nBcc: attacker@example.com",
+		Body:      "Hi",
+	})
+	if err == nil || !strings.Contains(err.Error(), "subject") {
+		t.Fatalf("expected subject header validation error, got %v", err)
+	}
+	if called {
+		t.Fatal("SMTP transport was called for an unsafe message")
+	}
+}

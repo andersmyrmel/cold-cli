@@ -189,6 +189,10 @@ cold-cli tick --dry-run                    # show what would happen
 cold-cli tick --now                        # ignore schedule, send all pending immediately
 cold-cli inbox backfill --dry-run          # preview historical inbox thread snapshot backfill
 cold-cli inbox backfill                    # store missing reply + related sent snapshots
+cold-cli --workspace storeinspect inbox reply --campaign 123 --lead 456 --body-file reply.txt
+                                            # preview a manual thread reply; never sends by default
+cold-cli --workspace storeinspect inbox reply --campaign 123 --lead 456 --body-file reply.txt --send --confirm-to lead@example.com
+                                            # explicitly send the exact reviewed reply
 
 cold-cli stats [campaign]                  # sent/replied/bounced per campaign
 cold-cli stats <name> --leads             # per-lead breakdown
@@ -339,6 +343,23 @@ Do not run recipient validation inside `tick`: live SMTP checks are slow and can
 Matches inbox messages to sent emails using `In-Reply-To` headers, with provider thread/message IDs as a fallback where available. When a reply is detected, the lead is marked `replied` and remaining sends for that lead are cancelled. With `stop_on_domain_reply`, all other leads on the same domain are paused.
 
 Unsubscribe requests ("unsubscribe", "remove me", "opt out", etc.) are auto-detected and blacklist the lead globally across all campaigns.
+
+### Manually Approved Thread Replies
+
+`inbox reply` sends a one-off reply through the account that owns the stored
+thread. It is preview-only unless `--send` is present, and sending also requires
+`--confirm-to` to match the resolved primary recipient. The command honors a
+message's `Reply-To`, preserves RFC reply references, blocks bounced,
+unsubscribed, auto-reply, and globally suppressed leads, and uses an
+idempotency record so an uncertain result cannot be retried silently.
+
+For SMTP/IMAP accounts, the delivered message is also appended to the `Sent`
+mailbox. A Sent-copy failure is reported as a warning without misreporting the
+SMTP delivery as failed. Manual replies consume sender daily capacity and are
+matched by later reply polling like scheduled sends.
+
+Use `--reply-all` only after reviewing the previewed Cc list; `--confirm-cc` is
+then required when sending. Attachments are not currently supported.
 
 ### Bounce Detection
 

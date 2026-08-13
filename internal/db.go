@@ -140,6 +140,26 @@ CREATE TABLE IF NOT EXISTS email_messages (
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS manual_reply_attempts (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	campaign_id INTEGER NOT NULL REFERENCES campaigns(id),
+	lead_id INTEGER NOT NULL REFERENCES leads(id),
+	account_id INTEGER NOT NULL REFERENCES accounts(id),
+	idempotency_key TEXT NOT NULL UNIQUE,
+	status TEXT NOT NULL,
+	from_email TEXT NOT NULL,
+	to_email TEXT NOT NULL,
+	cc_emails TEXT NOT NULL DEFAULT '',
+	subject TEXT NOT NULL,
+	message_id TEXT NOT NULL,
+	thread_id TEXT NOT NULL DEFAULT '',
+	sent_mailbox TEXT NOT NULL DEFAULT '',
+	warning_message TEXT NOT NULL DEFAULT '',
+	error_message TEXT NOT NULL DEFAULT '',
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	sent_at DATETIME
+);
+
 CREATE TABLE IF NOT EXISTS kv (
 	key TEXT PRIMARY KEY,
 	value TEXT NOT NULL
@@ -152,6 +172,7 @@ CREATE INDEX IF NOT EXISTS idx_events_thread_id ON events(thread_id);
 CREATE INDEX IF NOT EXISTS idx_email_messages_thread ON email_messages(campaign_id, lead_id, thread_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_email_messages_message_id ON email_messages(message_id);
 CREATE INDEX IF NOT EXISTS idx_email_messages_account ON email_messages(account_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_manual_reply_attempts_thread ON manual_reply_attempts(campaign_id, lead_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
 CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(domain);
 `
@@ -274,6 +295,25 @@ var postgresSchemaStatements = []string{
 		occurred_at TIMESTAMPTZ NOT NULL,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
+	`CREATE TABLE IF NOT EXISTS manual_reply_attempts (
+		id BIGSERIAL PRIMARY KEY,
+		campaign_id BIGINT NOT NULL REFERENCES campaigns(id),
+		lead_id BIGINT NOT NULL REFERENCES leads(id),
+		account_id BIGINT NOT NULL REFERENCES accounts(id),
+		idempotency_key TEXT NOT NULL UNIQUE,
+		status TEXT NOT NULL,
+		from_email TEXT NOT NULL,
+		to_email TEXT NOT NULL,
+		cc_emails TEXT NOT NULL DEFAULT '',
+		subject TEXT NOT NULL,
+		message_id TEXT NOT NULL,
+		thread_id TEXT NOT NULL DEFAULT '',
+		sent_mailbox TEXT NOT NULL DEFAULT '',
+		warning_message TEXT NOT NULL DEFAULT '',
+		error_message TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		sent_at TIMESTAMPTZ
+	)`,
 	`CREATE TABLE IF NOT EXISTS kv (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
@@ -285,6 +325,7 @@ var postgresSchemaStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_email_messages_thread ON email_messages(campaign_id, lead_id, thread_id, occurred_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_email_messages_message_id ON email_messages(message_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_email_messages_account ON email_messages(account_id, occurred_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_manual_reply_attempts_thread ON manual_reply_attempts(campaign_id, lead_id, created_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email)`,
 	`CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(domain)`,
 }

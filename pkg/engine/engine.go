@@ -20,6 +20,8 @@ type CreateCampaignResult = internal.CreateCampaignResult
 type EmailMessage = internal.EmailMessage
 type ListEmailThreadMessagesOpts = internal.ListEmailThreadMessagesOpts
 type PauseAccountResult = internal.PauseAccountResult
+type PreviewInboxReplyConfig = internal.PreviewInboxReplyConfig
+type InboxReplyPreview = internal.InboxReplyPreview
 type RemoveAccountResult = internal.PauseAccountResult
 type ResumeAccountResult = internal.ResumeAccountResult
 type SecretResolver = internal.SecretResolver
@@ -105,4 +107,8 @@ func ListEmailThreadMessages(db *sql.DB, opts ListEmailThreadMessagesOpts) ([]Em
 
 func SendInboxReply(cfg SendInboxReplyConfig) (*SendInboxReplyResult, error) {
 	return internal.SendInboxReply(cfg)
+}
+
+func PreviewInboxReply(cfg PreviewInboxReplyConfig) (*InboxReplyPreview, error) {
+	return internal.PreviewInboxReply(cfg)
 }

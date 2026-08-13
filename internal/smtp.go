@@ -45,6 +45,9 @@ func (s *SMTPTransport) SendEmail(account Account, params EmailParams) (string, 
 	if params.ToEmail == "" {
 		return "", "", fmt.Errorf("recipient is required")
 	}
+	if err := ValidateEmailParamsHeaders(params); err != nil {
+		return "", "", err
+	}
 
 	resolver := s.Resolver
 	if resolver == nil {
@@ -73,7 +76,8 @@ func (s *SMTPTransport) SendEmail(account Account, params EmailParams) (string, 
 			return sendSMTPMessage(account, password, recipients, msg, s.Timeout)
 		}
 	}
-	if err := send(account, smtpPassword, []string{params.ToEmail}, msg); err != nil {
+	recipients := append([]string{params.ToEmail}, params.CcEmails...)
+	if err := send(account, smtpPassword, recipients, msg); err != nil {
 		return "", "", err
 	}
 

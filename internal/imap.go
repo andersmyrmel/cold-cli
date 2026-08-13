@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -21,6 +22,12 @@ type IMAPMessageLister interface {
 	ListMessages(account Account, since time.Time, includeSpamTrash bool) ([]GWSMessage, error)
 }
 
+// IMAPSentAppender stores an SMTP-delivered message in the account's Sent
+// mailbox so webmail and other IMAP clients show the same conversation.
+type IMAPSentAppender interface {
+	AppendSent(account Account, params EmailParams) (mailbox string, err error)
+}
+
 // IMAPAccountVerifier verifies IMAP connectivity and authentication.
 type IMAPAccountVerifier interface {
 	VerifyAccount(account Account) error
@@ -33,8 +40,10 @@ type IMAPTransport struct {
 
 	Mailboxes      []string
 	SpamTrashBoxes []string
+	SentMailboxes  []string
 	MaxBodyBytes   int64
 	openIMAPClient func(account Account, password string) (imapClient, error)
+	appendMessage  func(account Account, password, mailbox string, flags []string, date time.Time, msg []byte) error
 }
 
 type imapClient interface {
@@ -53,8 +62,73 @@ func NewIMAPTransport(resolver SecretResolver) *IMAPTransport {
 		Timeout:        30 * time.Second,
 		Mailboxes:      []string{"INBOX"},
 		SpamTrashBoxes: []string{"Spam", "Junk", "Junk E-mail", "Trash", "Deleted Items", "[Gmail]/Spam", "[Gmail]/Trash"},
+		SentMailboxes:  []string{"Sent"},
 		MaxBodyBytes:   64 * 1024,
 	}
+}
+
+func (t *IMAPTransport) AppendSent(account Account, params EmailParams) (string, error) {
+	if account.Provider != AccountProviderSMTPIMAP {
+		return "", fmt.Errorf("account %s is provider %s, expected %s", account.Email, account.Provider, AccountProviderSMTPIMAP)
+	}
+	if err := ValidateEmailParamsHeaders(params); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(params.MessageID) == "" {
+		return "", fmt.Errorf("message-id is required before appending a Sent copy")
+	}
+
+	resolver := t.Resolver
+	if resolver == nil {
+		resolver = EnvSecretResolver{}
+	}
+	imapRef := strings.TrimSpace(account.IMAPPasswordRef)
+	if imapRef == "" {
+		imapRef = account.SMTPPasswordRef
+	}
+	password, err := resolver.ResolveSecret(imapRef)
+	if err != nil {
+		return "", fmt.Errorf("resolving IMAP password for %s: %w", account.Email, err)
+	}
+
+	mailboxes := t.SentMailboxes
+	if len(mailboxes) == 0 {
+		mailboxes = []string{"Sent"}
+	}
+	raw := []byte(BuildRFCMessage(params))
+	appendMessage := t.appendMessage
+	if appendMessage == nil {
+		appendMessage = t.appendToMailbox
+	}
+
+	var lastErr error
+	for _, mailbox := range mailboxes {
+		mailbox = strings.TrimSpace(mailbox)
+		if mailbox == "" {
+			continue
+		}
+		if err := appendMessage(account, password, mailbox, []string{imap.SeenFlag}, params.Date, raw); err == nil {
+			return mailbox, nil
+		} else {
+			lastErr = err
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no Sent mailbox configured")
+	}
+	return "", fmt.Errorf("appending message to Sent mailbox: %w", lastErr)
+}
+
+func (t *IMAPTransport) appendToMailbox(account Account, password, mailbox string, flags []string, date time.Time, msg []byte) error {
+	client, err := t.open(account, password)
+	if err != nil {
+		return err
+	}
+	defer client.Logout()
+	if err := client.Append(mailbox, flags, date, bytes.NewBuffer(msg)); err != nil {
+		return fmt.Errorf("appending to IMAP mailbox %s: %w", mailbox, err)
+	}
+	return nil
 }
 
 func (t *IMAPTransport) ListMessages(account Account, since time.Time, includeSpamTrash bool) ([]GWSMessage, error) {

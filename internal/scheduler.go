@@ -520,7 +520,7 @@ func loadAccountScheduleRowsTx(tx *Tx, accountIDs []int64) ([]accountScheduleRow
 
 func loadSentUsageByAccountTx(tx *Tx, accountIDs []int64) (map[int64]map[string]int, error) {
 	query, args := accountIDInClauseQuery(
-		"SELECT account_id, timestamp FROM events WHERE type = 'sent' AND account_id IN (%s)",
+		"SELECT account_id, timestamp FROM events WHERE type IN ('sent', 'manual_reply') AND account_id IN (%s)",
 		accountIDs,
 	)
 	rows, err := tx.Query(query, args...)

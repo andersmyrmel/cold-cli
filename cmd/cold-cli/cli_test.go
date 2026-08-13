@@ -162,6 +162,59 @@ func TestCLI_EnvFileMissingFails(t *testing.T) {
 	}
 }
 
+func TestCLI_InboxReplyPreviewsByDefaultAndRequiresRecipientConfirmation(t *testing.T) {
+	bin, env, dataDir := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	db, err := internal.OpenDB(filepath.Join(dataDir, "data.db"))
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO accounts (email, provider, status) VALUES ('sender@example.com', 'smtp_imap', 'active')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content)
+		VALUES ('reply-test', 'completed', 'seq.yml', ?)`, "defaults:\n  from_name: Maya\nsteps:\n  - step: 1\n    subject: Hello\n    body: Initial"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO leads (email, domain) VALUES ('lead@example.com', 'example.com')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'replied')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO email_messages (
+		campaign_id, lead_id, account_id, direction, type, message_id, thread_id,
+		from_email, to_emails, subject, text_body, raw_headers, occurred_at
+	) VALUES (1, 1, 1, 'inbound', 'reply', '<reply@example.com>', '<root@example.com>',
+		'Lead <lead@example.com>', 'sender@example.com', 'Re: Hello', 'Interested',
+		'{"Message-ID":"<reply@example.com>"}', CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	bodyFile := filepath.Join(dataDir, "reply.txt")
+	if err := os.WriteFile(bodyFile, []byte("Happy to send the details."), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runCLI(t, bin, env, "inbox", "reply", "--campaign", "1", "--lead", "1", "--body-file", bodyFile)
+	if code != 0 {
+		t.Fatalf("preview failed (exit %d): %s", code, out)
+	}
+	for _, expected := range []string{"PREVIEW — NOT SENT", "From: Maya <sender@example.com>", "To: lead@example.com", "Happy to send the details."} {
+		if !strings.Contains(out, expected) {
+			t.Fatalf("preview missing %q:\n%s", expected, out)
+		}
+	}
+
+	out, code = runCLI(t, bin, env, "inbox", "reply", "--campaign", "1", "--lead", "1", "--body-file", bodyFile, "--send")
+	if code == 0 || !strings.Contains(out, "--confirm-to") {
+		t.Fatalf("expected send confirmation failure, exit=%d output=%s", code, out)
+	}
+}
+
 // --- account tests ---
 
 func TestCLI_AccountAdd(t *testing.T) {

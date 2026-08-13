@@ -53,6 +53,24 @@ func TestProcessReplies_Dedup(t *testing.T) {
 	}
 }
 
+func TestProcessRepliesMatchesManualReplyMessageID(t *testing.T) {
+	db := setupReplyTestDB(t)
+	db.Exec(`INSERT INTO events (campaign_id, lead_id, account_id, type, step_number, message_id, thread_id)
+		VALUES (1, 1, 1, 'manual_reply', 0, '<manual-1@example.com>', 'thread-1')`)
+
+	mock := &MockGWS{InboxMessages: []GWSMessage{{
+		ID: "reply-to-manual", InReplyTo: "<manual-1@example.com>",
+		From: "john@acme.com", Subject: "Re: Hi",
+	}}}
+	replies, _, err := ProcessReplies(db, mock, []Account{{ID: 1, Email: "sender@x.com", Status: "active"}})
+	if err != nil {
+		t.Fatalf("ProcessReplies error: %v", err)
+	}
+	if replies != 1 {
+		t.Fatalf("expected reply to manual message to match, got %d", replies)
+	}
+}
+
 func TestProcessReplies_PersistsInboundEmailMessageSnapshot(t *testing.T) {
 	db := setupReplyTestDB(t)
 	messageDate := time.Date(2026, time.April, 30, 11, 25, 43, 0, time.UTC)

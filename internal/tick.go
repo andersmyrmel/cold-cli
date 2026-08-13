@@ -469,6 +469,9 @@ func accountsByProvider(accounts []Account, provider string) []Account {
 }
 
 func sendRenderedEmail(cfg TickConfig, account Account, emailParams EmailParams) (string, string, error) {
+	if err := ValidateEmailParamsHeaders(emailParams); err != nil {
+		return "", "", err
+	}
 	switch account.Provider {
 	case AccountProviderGWS:
 		if cfg.GWS == nil {
@@ -516,7 +519,7 @@ func preloadDailyCounts(db *sql.DB, now time.Time, tz *time.Location) (map[int64
 	rows, err := queryDB(db, `
 		SELECT account_id, COUNT(*)
 		FROM events
-		WHERE type = 'sent' AND timestamp >= ?
+		WHERE type IN ('sent', 'manual_reply') AND timestamp >= ?
 		GROUP BY account_id`, today)
 	if err != nil {
 		return nil, err

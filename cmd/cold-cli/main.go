@@ -1810,6 +1810,139 @@ var inboxBackfillCmd = &cobra.Command{
 	},
 }
 
+var inboxReplyCmd = &cobra.Command{
+	Use:   "reply",
+	Short: "Preview or send one manually approved reply in a stored thread",
+	Long: strings.TrimSpace(`
+Preview a one-off reply using the original sending account and stored thread
+headers. Preview is the default and never sends email.
+
+Sending requires --send plus --confirm-to matching the previewed primary
+recipient. If --reply-all adds Cc recipients, --confirm-cc must match the
+previewed comma-separated list. The body must come from a file so the exact
+reviewed copy is preserved.
+`),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		campaignID, _ := cmd.Flags().GetInt64("campaign")
+		leadID, _ := cmd.Flags().GetInt64("lead")
+		bodyFile, _ := cmd.Flags().GetString("body-file")
+		subject, _ := cmd.Flags().GetString("subject")
+		replyAll, _ := cmd.Flags().GetBool("reply-all")
+		send, _ := cmd.Flags().GetBool("send")
+		confirmTo, _ := cmd.Flags().GetString("confirm-to")
+		confirmCC, _ := cmd.Flags().GetString("confirm-cc")
+		idempotencyKey, _ := cmd.Flags().GetString("idempotency-key")
+
+		if campaignID < 1 {
+			return fmt.Errorf("--campaign must be a positive integer")
+		}
+		if leadID < 1 {
+			return fmt.Errorf("--lead must be a positive integer")
+		}
+		if strings.TrimSpace(bodyFile) == "" {
+			return fmt.Errorf("--body-file is required")
+		}
+		bodyBytes, err := os.ReadFile(bodyFile)
+		if err != nil {
+			return fmt.Errorf("reading --body-file: %w", err)
+		}
+		if len(bodyBytes) > 1024*1024 {
+			return fmt.Errorf("--body-file exceeds the 1 MiB safety limit")
+		}
+		body := strings.TrimSpace(string(bodyBytes))
+		if body == "" {
+			return fmt.Errorf("--body-file is empty")
+		}
+
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+
+		preview, err := internal.PreviewInboxReply(internal.PreviewInboxReplyConfig{
+			DB: store.DB, WorkspaceID: currentWorkspaceID(), CampaignID: campaignID, LeadID: leadID,
+			Subject: subject, Body: body, ReplyAll: replyAll, IdempotencyKey: idempotencyKey,
+		})
+		if err != nil {
+			return err
+		}
+
+		if !send {
+			if jsonOutput {
+				return printJSON(preview)
+			}
+			printInboxReplyPreview(preview)
+			return nil
+		}
+
+		if !strings.EqualFold(strings.TrimSpace(confirmTo), preview.ToEmail) {
+			return fmt.Errorf("--confirm-to must exactly match preview recipient %s", preview.ToEmail)
+		}
+		expectedCC := strings.Join(preview.CcEmails, ",")
+		if expectedCC != "" && !strings.EqualFold(compactAddressList(confirmCC), compactAddressList(expectedCC)) {
+			return fmt.Errorf("--confirm-cc must exactly match preview Cc recipients %s", strings.Join(preview.CcEmails, ", "))
+		}
+		if expectedCC == "" && strings.TrimSpace(confirmCC) != "" {
+			return fmt.Errorf("--confirm-cc was provided, but the preview has no Cc recipients")
+		}
+
+		result, err := internal.SendInboxReply(internal.SendInboxReplyConfig{
+			DB: store.DB, WorkspaceID: currentWorkspaceID(), CampaignID: campaignID, LeadID: leadID,
+			Subject: subject, Body: body, ReplyAll: replyAll, IdempotencyKey: idempotencyKey,
+			GWS: configuredGWSClient(store),
+		})
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return printJSON(result)
+		}
+		if result.AlreadySent {
+			fmt.Printf("Not resent: identical reply was already sent as %s\n", result.MessageID)
+			return nil
+		}
+		fmt.Printf("Sent reply from %s to %s", result.FromEmail, result.ToEmail)
+		if len(result.CcEmails) > 0 {
+			fmt.Printf(" (Cc: %s)", strings.Join(result.CcEmails, ", "))
+		}
+		fmt.Printf(" as %s\n", result.MessageID)
+		for _, warning := range result.Warnings {
+			fmt.Printf("Warning: %s\n", warning)
+		}
+		return nil
+	},
+}
+
+func printInboxReplyPreview(preview *internal.InboxReplyPreview) {
+	fmt.Println("PREVIEW — NOT SENT")
+	from := preview.FromEmail
+	if preview.FromName != "" {
+		from = fmt.Sprintf("%s <%s>", preview.FromName, preview.FromEmail)
+	}
+	fmt.Printf("From: %s\n", from)
+	fmt.Printf("To: %s\n", preview.ToEmail)
+	if len(preview.CcEmails) > 0 {
+		fmt.Printf("Cc: %s\n", strings.Join(preview.CcEmails, ", "))
+	}
+	fmt.Printf("Subject: %s\n", preview.Subject)
+	fmt.Printf("In-Reply-To: %s\n", preview.InReplyTo)
+	fmt.Printf("References: %s\n", preview.References)
+	fmt.Printf("Idempotency-Key: %s\n", preview.IdempotencyKey)
+	for _, warning := range preview.Warnings {
+		fmt.Printf("Warning: %s\n", warning)
+	}
+	fmt.Printf("\n%s\n", preview.Body)
+}
+
+func compactAddressList(value string) string {
+	parts := strings.Split(value, ",")
+	for i := range parts {
+		parts[i] = strings.ToLower(strings.TrimSpace(parts[i]))
+	}
+	return strings.Join(parts, ",")
+}
+
 // --- stats command ---
 
 var statsCmd = &cobra.Command{
@@ -2145,7 +2278,16 @@ func init() {
 	inboxBackfillCmd.Flags().String("since", "", "only backfill inbound events since YYYY-MM-DD, RFC3339, or duration like 30d")
 	inboxBackfillCmd.Flags().Bool("dry-run", false, "show how many snapshots would be backfilled without inserting")
 	inboxBackfillCmd.Flags().Bool("no-sent", false, "only backfill inbound messages, not related sent messages")
-	inboxCmd.AddCommand(inboxBackfillCmd)
+	inboxReplyCmd.Flags().Int64("campaign", 0, "campaign ID containing the stored thread")
+	inboxReplyCmd.Flags().Int64("lead", 0, "lead ID containing the stored thread")
+	inboxReplyCmd.Flags().String("body-file", "", "path to the exact plain-text reply body")
+	inboxReplyCmd.Flags().String("subject", "", "subject override (default: reply to latest subject)")
+	inboxReplyCmd.Flags().Bool("reply-all", false, "include non-sender To/Cc participants from the latest inbound message")
+	inboxReplyCmd.Flags().Bool("send", false, "send the previewed reply; omitted means preview only")
+	inboxReplyCmd.Flags().String("confirm-to", "", "exact primary recipient required with --send")
+	inboxReplyCmd.Flags().String("confirm-cc", "", "exact comma-separated Cc recipients required with --send --reply-all")
+	inboxReplyCmd.Flags().String("idempotency-key", "", "operator key for an intentional new attempt; normally generated from exact content")
+	inboxCmd.AddCommand(inboxBackfillCmd, inboxReplyCmd)
 
 	statsCmd.Flags().Bool("leads", false, "show per-lead breakdown")
 	statsCmd.Flags().Bool("variants", false, "show per-variant A/B test results")

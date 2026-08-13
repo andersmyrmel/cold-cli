@@ -142,7 +142,7 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 				err := queryRowDB(db, `
 					SELECT e.campaign_id, e.lead_id, e.account_id
 					FROM events e
-					WHERE e.message_id = ? AND e.type = 'sent'
+					WHERE e.message_id = ? AND e.type IN ('sent', 'manual_reply')
 					LIMIT 1`,
 					msg.InReplyTo,
 				).Scan(&campaignID, &leadID, &threadAccountID)
@@ -160,7 +160,7 @@ func processReplyMessages(db *sql.DB, accounts []Account, listMessages func(Acco
 				err := queryRowDB(db, `
 					SELECT e.campaign_id, e.lead_id, e.account_id
 					FROM events e
-					WHERE e.thread_id = ? AND e.type = 'sent'
+					WHERE e.thread_id = ? AND e.type IN ('sent', 'manual_reply')
 					LIMIT 1`,
 					msg.ThreadID,
 				).Scan(&campaignID, &leadID, &threadAccountID)
@@ -425,7 +425,7 @@ func resolveBounceEventContext(db *sql.DB, account Account, campaignID, leadID i
 		err := queryRowDB(db, `
 			SELECT e.campaign_id, e.account_id
 			FROM events e
-			WHERE e.thread_id = ? AND e.type = 'sent'
+			WHERE e.thread_id = ? AND e.type IN ('sent', 'manual_reply')
 			ORDER BY e.timestamp DESC, e.id DESC
 			LIMIT 1`, msg.ThreadID).Scan(&sentCampaignID, &sentAccountID)
 		if err == nil {
@@ -443,7 +443,7 @@ func resolveBounceEventContext(db *sql.DB, account Account, campaignID, leadID i
 		err := queryRowDB(db, `
 			SELECT e.campaign_id, e.account_id
 			FROM events e
-			WHERE e.lead_id = ? AND e.type = 'sent'
+			WHERE e.lead_id = ? AND e.type IN ('sent', 'manual_reply')
 			ORDER BY e.timestamp DESC, e.id DESC
 			LIMIT 1`, leadID).Scan(&sentCampaignID, &sentAccountID)
 		if err == nil {
@@ -720,7 +720,7 @@ func resolveBounceToLead(db *sql.DB, msg GWSMessage) (leadID int64, found bool) 
 		var id int64
 		err := queryRowDB(db, `
 			SELECT e.lead_id FROM events e
-			WHERE e.thread_id = ? AND e.type = 'sent'
+			WHERE e.thread_id = ? AND e.type IN ('sent', 'manual_reply')
 			LIMIT 1`, msg.ThreadID).Scan(&id)
 		if err == nil {
 			return id, true

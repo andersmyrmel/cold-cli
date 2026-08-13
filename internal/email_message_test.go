@@ -1,9 +1,30 @@
 package internal
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
+
+type mockSentMessageAppender struct {
+	calls   int
+	mailbox string
+	err     error
+	params  EmailParams
+}
+
+func (m *mockSentMessageAppender) AppendSent(_ Account, params EmailParams) (string, error) {
+	m.calls++
+	m.params = params
+	if m.err != nil {
+		return "", m.err
+	}
+	if m.mailbox == "" {
+		m.mailbox = "Sent"
+	}
+	return m.mailbox, nil
+}
 
 func TestListEmailThreadMessages(t *testing.T) {
 	db := testDB(t)
@@ -210,13 +231,16 @@ func TestSendInboxReply_SendsAndPersistsSMTPIMAPReply(t *testing.T) {
 		MessageID: "<manual-1@example.com>",
 		ThreadID:  "thread-1",
 	}
+	sentAppender := &mockSentMessageAppender{}
 	result, err := SendInboxReply(SendInboxReplyConfig{
-		DB:         db,
-		CampaignID: 1,
-		LeadID:     1,
-		Body:       "Happy to send details.",
-		Now:        now,
-		SMTPSender: smtpMock,
+		DB:             db,
+		CampaignID:     1,
+		LeadID:         1,
+		Body:           "Happy to send details.",
+		Now:            now,
+		SMTPSender:     smtpMock,
+		SentAppender:   sentAppender,
+		IdempotencyKey: "reply-test-1",
 	})
 	if err != nil {
 		t.Fatalf("SendInboxReply error: %v", err)
@@ -241,6 +265,15 @@ func TestSendInboxReply_SendsAndPersistsSMTPIMAPReply(t *testing.T) {
 	if params.InReplyTo != "<reply-1@example.com>" {
 		t.Fatalf("expected In-Reply-To from raw headers, got %s", params.InReplyTo)
 	}
+	if sentAppender.calls != 1 {
+		t.Fatalf("expected one Sent-folder append, got %d", sentAppender.calls)
+	}
+	if sentAppender.params.MessageID != "<manual-1@example.com>" {
+		t.Fatalf("expected Sent copy to use delivered message id, got %q", sentAppender.params.MessageID)
+	}
+	if result.SentMailbox != "Sent" {
+		t.Fatalf("expected Sent mailbox in result, got %q", result.SentMailbox)
+	}
 	if params.ThreadID != "thread-1" {
 		t.Fatalf("expected thread-1, got %s", params.ThreadID)
 	}
@@ -251,6 +284,13 @@ func TestSendInboxReply_SendsAndPersistsSMTPIMAPReply(t *testing.T) {
 	}
 	if eventCount != 1 {
 		t.Fatalf("expected 1 manual reply event, got %d", eventCount)
+	}
+	dailyCounts, err := preloadDailyCounts(db, now, time.UTC)
+	if err != nil {
+		t.Fatalf("loading daily counts: %v", err)
+	}
+	if dailyCounts[1] != 1 {
+		t.Fatalf("expected manual reply to consume one daily send slot, got %d", dailyCounts[1])
 	}
 
 	var saved EmailMessage
@@ -294,5 +334,185 @@ func TestSendInboxReply_SendsAndPersistsSMTPIMAPReply(t *testing.T) {
 	}
 	if !saved.OccurredAt.Equal(now) {
 		t.Fatalf("expected occurred_at %s, got %s", now.Format(time.RFC3339), saved.OccurredAt.Format(time.RFC3339))
+	}
+}
+
+func TestPreviewInboxReplyUsesReplyToAndCompleteReferences(t *testing.T) {
+	db := testDB(t)
+	now := time.Date(2026, time.May, 6, 12, 0, 0, 0, time.UTC)
+
+	db.Exec(`INSERT INTO accounts (workspace_id, email, provider, status) VALUES ('storeinspect', 'sender@x.com', ?, 'active')`, AccountProviderSMTPIMAP)
+	db.Exec(`INSERT INTO campaigns (workspace_id, name, status, sequence_file, sequence_content)
+		VALUES ('storeinspect', 'test', 'active', 'seq.yml', ?)`, "defaults:\n  from_name: Maya\nsteps:\n  - step: 1\n    subject: Hi\n    body: Hello")
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('john@acme.com', 'John', 'acme.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'replied')")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+
+	if err := insertEmailMessage(db, EmailMessage{
+		CampaignID: 1,
+		LeadID:     1,
+		AccountID:  1,
+		Direction:  EmailMessageDirectionInbound,
+		Type:       EmailMessageTypeReply,
+		MessageID:  "gmail-api-id",
+		ThreadID:   "<root@example.com>",
+		FromEmail:  "John <john@acme.com>",
+		ToEmails:   "Maya <sender@x.com>",
+		Subject:    "Re: Hi",
+		TextBody:   "Please send it.",
+		RawHeaders: `{"Message-ID":"<reply@example.com>","References":"<root@example.com> <prior@example.com>","Reply-To":"Deals <deals@acme.com>"}`,
+		OccurredAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := PreviewInboxReply(PreviewInboxReplyConfig{
+		DB:          db,
+		WorkspaceID: "storeinspect",
+		CampaignID:  1,
+		LeadID:      1,
+		Body:        "Happy to.",
+	})
+	if err != nil {
+		t.Fatalf("PreviewInboxReply error: %v", err)
+	}
+	if preview.FromName != "Maya" {
+		t.Fatalf("expected from name Maya, got %q", preview.FromName)
+	}
+	if preview.ToEmail != "deals@acme.com" {
+		t.Fatalf("expected Reply-To recipient, got %q", preview.ToEmail)
+	}
+	if preview.InReplyTo != "<reply@example.com>" {
+		t.Fatalf("expected inbound RFC message id, got %q", preview.InReplyTo)
+	}
+	if preview.References != "<root@example.com> <prior@example.com> <reply@example.com>" {
+		t.Fatalf("unexpected references: %q", preview.References)
+	}
+	if preview.IdempotencyKey == "" {
+		t.Fatal("expected generated idempotency key")
+	}
+}
+
+func TestPreviewInboxReplyPreservesPriorManualReplyRecipients(t *testing.T) {
+	db := testDB(t)
+	db.Exec(`INSERT INTO accounts (email, provider, status) VALUES ('sender@x.com', ?, 'active')`, AccountProviderSMTPIMAP)
+	db.Exec("INSERT INTO campaigns (name, status, sequence_file) VALUES ('test', 'active', 'seq.yml')")
+	db.Exec("INSERT INTO leads (email, domain) VALUES ('john@acme.com', 'acme.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'replied')")
+	if err := insertEmailMessage(db, EmailMessage{
+		CampaignID: 1, LeadID: 1, AccountID: 1,
+		Direction: EmailMessageDirectionOutbound, Type: EmailMessageTypeManualReply,
+		MessageID: "<manual@example.com>", ThreadID: "<root@example.com>",
+		InReplyTo: "<reply@example.com>", FromEmail: "sender@x.com",
+		ToEmails: "deals@acme.com", Subject: "Re: Hi", TextBody: "First reply",
+		RawHeaders: `{"Message-ID":"<manual@example.com>","References":"<root@example.com> <reply@example.com>","Cc":"partner@acme.com"}`,
+		OccurredAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := PreviewInboxReply(PreviewInboxReplyConfig{
+		DB: db, CampaignID: 1, LeadID: 1, Body: "Following up", ReplyAll: true,
+	})
+	if err != nil {
+		t.Fatalf("PreviewInboxReply error: %v", err)
+	}
+	if preview.ToEmail != "deals@acme.com" {
+		t.Fatalf("expected prior manual To recipient, got %q", preview.ToEmail)
+	}
+	if len(preview.CcEmails) != 1 || preview.CcEmails[0] != "partner@acme.com" {
+		t.Fatalf("expected prior manual Cc recipient, got %#v", preview.CcEmails)
+	}
+}
+
+func TestPreviewInboxReplyBlocksSuppressedLead(t *testing.T) {
+	db := testDB(t)
+	db.Exec("INSERT INTO accounts (email, status) VALUES ('sender@x.com', 'active')")
+	db.Exec("INSERT INTO campaigns (name, status, sequence_file) VALUES ('test', 'active', 'seq.yml')")
+	db.Exec("INSERT INTO leads (email, domain, global_status) VALUES ('john@acme.com', 'acme.com', 'blacklisted')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'replied')")
+	if err := insertEmailMessage(db, EmailMessage{
+		CampaignID: 1, LeadID: 1, AccountID: 1,
+		Direction: EmailMessageDirectionInbound, Type: EmailMessageTypeReply,
+		MessageID: "<reply@example.com>", FromEmail: "john@acme.com",
+		Subject: "Re: Hi", TextBody: "Thanks", OccurredAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := PreviewInboxReply(PreviewInboxReplyConfig{DB: db, CampaignID: 1, LeadID: 1, Body: "Hello"})
+	if err == nil || !strings.Contains(err.Error(), "blacklisted") {
+		t.Fatalf("expected blacklisted guard, got %v", err)
+	}
+}
+
+func TestSendInboxReplyIsIdempotent(t *testing.T) {
+	db := testDB(t)
+	now := time.Date(2026, time.May, 6, 12, 0, 0, 0, time.UTC)
+	db.Exec(`INSERT INTO accounts (email, provider, status) VALUES ('sender@x.com', ?, 'active')`, AccountProviderSMTPIMAP)
+	db.Exec("INSERT INTO campaigns (name, status, sequence_file) VALUES ('test', 'active', 'seq.yml')")
+	db.Exec("INSERT INTO leads (email, domain) VALUES ('john@acme.com', 'acme.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'replied')")
+	if err := insertEmailMessage(db, EmailMessage{
+		CampaignID: 1, LeadID: 1, AccountID: 1,
+		Direction: EmailMessageDirectionInbound, Type: EmailMessageTypeReply,
+		MessageID: "<reply@example.com>", ThreadID: "<root@example.com>",
+		FromEmail: "john@acme.com", Subject: "Re: Hi", TextBody: "Thanks", OccurredAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	smtpMock := &MockSMTPEmailSender{MessageID: "<manual@example.com>", ThreadID: "<root@example.com>"}
+	cfg := SendInboxReplyConfig{
+		DB: db, CampaignID: 1, LeadID: 1, Body: "Happy to.", Now: now,
+		SMTPSender: smtpMock, SentAppender: &mockSentMessageAppender{}, IdempotencyKey: "same-operation",
+	}
+	first, err := SendInboxReply(cfg)
+	if err != nil {
+		t.Fatalf("first send failed: %v", err)
+	}
+	second, err := SendInboxReply(cfg)
+	if err != nil {
+		t.Fatalf("idempotent replay failed: %v", err)
+	}
+	if len(smtpMock.SentEmails) != 1 {
+		t.Fatalf("expected one SMTP delivery, got %d", len(smtpMock.SentEmails))
+	}
+	if first.MessageID != second.MessageID || !second.AlreadySent {
+		t.Fatalf("expected existing result on retry: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestSendInboxReplyPersistsDeliveryWhenSentAppendFails(t *testing.T) {
+	db := testDB(t)
+	now := time.Date(2026, time.May, 6, 12, 0, 0, 0, time.UTC)
+	db.Exec(`INSERT INTO accounts (email, provider, status) VALUES ('sender@x.com', ?, 'active')`, AccountProviderSMTPIMAP)
+	db.Exec("INSERT INTO campaigns (name, status, sequence_file) VALUES ('test', 'active', 'seq.yml')")
+	db.Exec("INSERT INTO leads (email, domain) VALUES ('john@acme.com', 'acme.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'replied')")
+	if err := insertEmailMessage(db, EmailMessage{
+		CampaignID: 1, LeadID: 1, AccountID: 1,
+		Direction: EmailMessageDirectionInbound, Type: EmailMessageTypeReply,
+		MessageID: "<reply@example.com>", FromEmail: "john@acme.com",
+		Subject: "Re: Hi", TextBody: "Thanks", OccurredAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := SendInboxReply(SendInboxReplyConfig{
+		DB: db, CampaignID: 1, LeadID: 1, Body: "Happy to.", Now: now,
+		SMTPSender:     &MockSMTPEmailSender{MessageID: "<manual@example.com>"},
+		SentAppender:   &mockSentMessageAppender{err: errors.New("append failed")},
+		IdempotencyKey: "append-failure",
+	})
+	if err != nil {
+		t.Fatalf("delivery should succeed despite Sent append failure: %v", err)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "Sent") {
+		t.Fatalf("expected Sent warning, got %#v", result.Warnings)
+	}
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM email_messages WHERE message_id = '<manual@example.com>'").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("expected persisted delivery, count=%d err=%v", count, err)
 	}
 }

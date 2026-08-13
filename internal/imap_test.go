@@ -83,3 +83,50 @@ func TestDedupeMailboxMessages(t *testing.T) {
 		t.Errorf("expected first message preserved, got %q", deduped[0].Subject)
 	}
 }
+
+func TestIMAPTransportAppendSent(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 8, 30, 0, 0, time.UTC)
+	transport := NewIMAPTransport(staticSecretResolver{"env:MAIL_PASSWORD": "secret"})
+	var gotMailbox string
+	var gotPassword string
+	var gotMessage string
+	transport.appendMessage = func(_ Account, password, mailbox string, flags []string, date time.Time, msg []byte) error {
+		gotMailbox = mailbox
+		gotPassword = password
+		gotMessage = string(msg)
+		if len(flags) != 1 || flags[0] != imap.SeenFlag {
+			t.Fatalf("unexpected flags: %#v", flags)
+		}
+		if !date.Equal(now) {
+			t.Fatalf("unexpected append date: %s", date)
+		}
+		return nil
+	}
+
+	mailbox, err := transport.AppendSent(Account{
+		Email: "sender@example.com", Provider: AccountProviderSMTPIMAP,
+		IMAPPasswordRef: "env:MAIL_PASSWORD",
+	}, EmailParams{
+		FromEmail: "sender@example.com", ToEmail: "lead@example.com",
+		Subject: "Re: Hello", Body: "Reply", MessageID: "<reply@example.com>",
+		InReplyTo: "<parent@example.com>", References: "<root@example.com> <parent@example.com>", Date: now,
+	})
+	if err != nil {
+		t.Fatalf("AppendSent error: %v", err)
+	}
+	if mailbox != "Sent" || gotMailbox != "Sent" {
+		t.Fatalf("expected Sent mailbox, result=%q called=%q", mailbox, gotMailbox)
+	}
+	if gotPassword != "secret" {
+		t.Fatalf("expected resolved password")
+	}
+	for _, expected := range []string{
+		"Message-ID: <reply@example.com>",
+		"In-Reply-To: <parent@example.com>",
+		"References: <root@example.com> <parent@example.com>",
+	} {
+		if !strings.Contains(gotMessage, expected) {
+			t.Fatalf("Sent copy missing %q:\n%s", expected, gotMessage)
+		}
+	}
+}

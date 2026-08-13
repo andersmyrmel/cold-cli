@@ -16,6 +16,7 @@ type EmailParams struct {
 	FromName  string
 	FromEmail string
 	ToEmail   string
+	CcEmails  []string
 	Subject   string
 	Body      string
 
@@ -56,6 +57,9 @@ func BuildRFCMessage(p EmailParams) string {
 	}
 
 	msg.WriteString(fmt.Sprintf("To: %s\r\n", p.ToEmail))
+	if len(p.CcEmails) > 0 {
+		msg.WriteString(fmt.Sprintf("Cc: %s\r\n", strings.Join(p.CcEmails, ", ")))
+	}
 	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", encodeSubject(p.Subject)))
 
 	// Threading headers for follow-ups
@@ -81,6 +85,38 @@ func BuildRFCMessage(p EmailParams) string {
 	msg.WriteString(plainTextToHTML(p.Body))
 
 	return msg.String()
+}
+
+// ValidateEmailParamsHeaders rejects control characters that could create
+// additional RFC 5322 headers. Address syntax is validated separately by the
+// caller because display names are allowed in some message sources.
+func ValidateEmailParamsHeaders(p EmailParams) error {
+	fields := []struct {
+		name  string
+		value string
+	}{
+		{"from name", p.FromName},
+		{"from email", p.FromEmail},
+		{"to email", p.ToEmail},
+		{"subject", p.Subject},
+		{"in-reply-to", p.InReplyTo},
+		{"references", p.References},
+		{"message-id", p.MessageID},
+		{"unsubscribe email", p.UnsubscribeEmail},
+		{"unsubscribe subject", p.UnsubscribeSubject},
+	}
+	for _, cc := range p.CcEmails {
+		fields = append(fields, struct {
+			name  string
+			value string
+		}{"cc email", cc})
+	}
+	for _, field := range fields {
+		if strings.ContainsAny(field.value, "\r\n\x00") {
+			return fmt.Errorf("%s contains an unsafe control character", field.name)
+		}
+	}
+	return nil
 }
 
 // BuildRawMessage constructs an RFC 2822 message and returns it as a base64url-encoded string.
