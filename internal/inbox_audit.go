@@ -159,7 +159,7 @@ func listHistoricalProviderMessages(cfg AuditInboxHistoryConfig, account Account
 	}
 }
 
-const imapAuditAnchorBatchSize = 20
+const imapAuditAnchorBatchSize = 100
 
 func loadIMAPAuditAnchors(db *sql.DB, workspaceID string, accountID int64) ([]string, error) {
 	rows, err := queryDB(db, `SELECT DISTINCT e.message_id
