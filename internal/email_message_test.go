@@ -393,6 +393,35 @@ func TestPreviewInboxReplyUsesReplyToAndCompleteReferences(t *testing.T) {
 	}
 }
 
+func TestPreviewInboxReplyRendersSenderFromThreadAccount(t *testing.T) {
+	db := testDB(t)
+	db.Exec(`INSERT INTO accounts (workspace_id, email, provider, status) VALUES ('storeinspect', 'clara@storeinspecthq.com', ?, 'active')`, AccountProviderSMTPIMAP)
+	if _, err := db.Exec(`INSERT INTO campaigns (workspace_id, name, status, sequence_file, sequence_content) VALUES ('storeinspect', 'sender-template', 'active', 'seq.yml', ?)`, "defaults:\n  from_name: '{{sender_name}} {{missing}}'\nsteps:\n  - step: 1\n    subject: Hi\n    body: Hello"); err != nil {
+		t.Fatal(err)
+	}
+	db.Exec("INSERT INTO leads (email, first_name, domain) VALUES ('john@acme.com', 'John', 'acme.com')")
+	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'replied')")
+	db.Exec("INSERT INTO campaign_accounts (campaign_id, account_id) VALUES (1, 1)")
+	if err := insertEmailMessage(db, EmailMessage{
+		CampaignID: 1, LeadID: 1, AccountID: 1,
+		Direction: EmailMessageDirectionInbound, Type: EmailMessageTypeReply,
+		MessageID: "<reply@example.com>", ThreadID: "<root@example.com>",
+		FromEmail: "john@acme.com", ToEmails: "clara@storeinspecthq.com",
+		Subject: "Re: Hi", TextBody: "Please send it.", OccurredAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := PreviewInboxReply(PreviewInboxReplyConfig{
+		DB: db, WorkspaceID: "storeinspect", CampaignID: 1, LeadID: 1, Body: "Happy to.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.FromName != "Clara" || preview.FromEmail != "clara@storeinspecthq.com" {
+		t.Fatalf("unexpected sender: %q <%s>", preview.FromName, preview.FromEmail)
+	}
+}
+
 func TestPreviewInboxReplyPreservesPriorManualReplyRecipients(t *testing.T) {
 	db := testDB(t)
 	db.Exec(`INSERT INTO accounts (email, provider, status) VALUES ('sender@x.com', ?, 'active')`, AccountProviderSMTPIMAP)
