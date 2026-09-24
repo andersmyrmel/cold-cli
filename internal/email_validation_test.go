@@ -43,17 +43,19 @@ func TestValidateLeadEmails_CompanyDomainVerifiedPasses(t *testing.T) {
 }
 
 func TestValidateLeadEmails_FreeMailRequiresManualReviewByDefault(t *testing.T) {
-	records := []LeadRecord{{Fields: map[string]string{"email": "person@gmail.com"}}}
+	records := []LeadRecord{{Fields: map[string]string{"email": "person@gmail.com"}}, {Fields: map[string]string{"email": "person@pm.me"}}, {Fields: map[string]string{"email": "person@protonmail.ch"}}}
 	result, err := ValidateLeadEmails(records, fakeRecipientVerifier{}, EmailValidationPolicy{})
 	if err != nil {
 		t.Fatalf("ValidateLeadEmails error: %v", err)
 	}
 
-	if result.Pass != 0 || result.ManualReview != 1 || result.Fail != 0 {
+	if result.Pass != 0 || result.ManualReview != 3 || result.Fail != 0 {
 		t.Fatalf("unexpected summary: %+v", result)
 	}
-	if result.Rows[0].SMTPStatus != RecipientStatusFreeMail {
-		t.Fatalf("expected free_email smtp status, got %q", result.Rows[0].SMTPStatus)
+	for _, row := range result.Rows {
+		if row.SMTPStatus != RecipientStatusFreeMail {
+			t.Fatalf("expected free_email smtp status, got %q", row.SMTPStatus)
+		}
 	}
 }
 

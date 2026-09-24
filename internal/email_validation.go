@@ -42,7 +42,9 @@ var smtpSkippedRecipientDomains = map[string]bool{
 	"me.com":         true,
 	"mac.com":        true,
 	"protonmail.com": true,
+	"protonmail.ch":  true,
 	"proton.me":      true,
+	"pm.me":          true,
 }
 
 type EmailValidationPolicy struct {
