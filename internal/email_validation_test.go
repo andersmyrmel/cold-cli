@@ -1,11 +1,14 @@
 package internal
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeRecipientVerifier struct {
@@ -188,4 +191,121 @@ func TestSMTPRecipientVerifier_MXLookupFailureClassification(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSMTPRecipientVerifier_IPv4PreferencePreservesRecipientClassification(t *testing.T) {
+	tests := []struct {
+		name           string
+		fakeCode       int
+		recipientCode  int
+		wantSMTPStatus string
+		wantProbes     int
+	}{
+		{name: "verified mailbox", fakeCode: 550, recipientCode: 250, wantSMTPStatus: RecipientStatusVerified, wantProbes: 2},
+		{name: "catch-all domain", fakeCode: 250, recipientCode: 250, wantSMTPStatus: RecipientStatusCatchAll, wantProbes: 1},
+		{name: "rejected mailbox", fakeCode: 550, recipientCode: 550, wantSMTPStatus: RecipientStatusRejected, wantProbes: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var networks []string
+			verifier := SMTPRecipientVerifier{
+				lookupMX: func(string) ([]*net.MX, error) {
+					return []*net.MX{{Host: "mx.example.com.", Pref: 10}}, nil
+				},
+				dialContext: func(_ context.Context, network, address string) (net.Conn, error) {
+					if address != "mx.example.com:25" {
+						t.Fatalf("unexpected MX address %q", address)
+					}
+					networks = append(networks, network)
+					return smtpTestConnection(t, tt.fakeCode, tt.recipientCode), nil
+				},
+			}
+			result, err := verifier.VerifyRecipients(context.Background(), "example.com", []string{"founder@example.com"})
+			if err != nil {
+				t.Fatalf("VerifyRecipients: %v", err)
+			}
+			if got := result.Results["founder@example.com"]; got != tt.wantSMTPStatus {
+				t.Fatalf("SMTP status = %q, want %q (error %q)", got, tt.wantSMTPStatus, result.Error)
+			}
+			if len(networks) != tt.wantProbes {
+				t.Fatalf("got %d probes, want %d", len(networks), tt.wantProbes)
+			}
+			for _, network := range networks {
+				if network != "tcp4" {
+					t.Fatalf("dialed %q, want tcp4", network)
+				}
+			}
+		})
+	}
+}
+
+func TestSMTPRCPTStatus_FallsBackToIPv6OnlyWhenIPv4CannotConnect(t *testing.T) {
+	var networks []string
+	code, err := smtpRCPTStatus(
+		context.Background(), "mx.example.com", "founder@example.com", "verify.cold-cli.local", "verify@cold-cli.local", time.Second,
+		func(_ context.Context, network, address string) (net.Conn, error) {
+			networks = append(networks, network)
+			if network == "tcp4" {
+				return nil, errors.New("IPv4 unavailable")
+			}
+			return smtpTestConnection(t, 550, 250), nil
+		},
+	)
+	if err != nil || code != 250 {
+		t.Fatalf("SMTP probe = %d, %v; want 250, nil", code, err)
+	}
+	if got := strings.Join(networks, ","); got != "tcp4,tcp6" {
+		t.Fatalf("dial sequence = %q, want tcp4,tcp6", got)
+	}
+}
+
+func TestSMTPRCPTStatus_BothIPFamiliesUnavailable(t *testing.T) {
+	var networks []string
+	_, err := smtpRCPTStatus(
+		context.Background(), "mx.example.com", "founder@example.com", "verify.cold-cli.local", "verify@cold-cli.local", time.Second,
+		func(_ context.Context, network, _ string) (net.Conn, error) {
+			networks = append(networks, network)
+			return nil, fmt.Errorf("%s unavailable", network)
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "tcp4 unavailable") || !strings.Contains(err.Error(), "tcp6 unavailable") {
+		t.Fatalf("expected both connection errors, got %v", err)
+	}
+	if got := strings.Join(networks, ","); got != "tcp4,tcp6" {
+		t.Fatalf("dial sequence = %q, want tcp4,tcp6", got)
+	}
+}
+
+func smtpTestConnection(t *testing.T, fakeCode, recipientCode int) net.Conn {
+	t.Helper()
+	client, server := net.Pipe()
+	go func() {
+		defer server.Close()
+		reader := bufio.NewReader(server)
+		fmt.Fprint(server, "220 mx.example.com ESMTP ready\r\n")
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			switch {
+			case strings.HasPrefix(line, "EHLO "):
+				fmt.Fprint(server, "250 mx.example.com\r\n")
+			case strings.HasPrefix(line, "MAIL FROM:"):
+				fmt.Fprint(server, "250 sender accepted\r\n")
+			case strings.HasPrefix(line, "RCPT TO:"):
+				code := recipientCode
+				if strings.Contains(line, "cold-cli-check-") {
+					code = fakeCode
+				}
+				fmt.Fprintf(server, "%d recipient response\r\n", code)
+			case strings.HasPrefix(line, "QUIT"):
+				fmt.Fprint(server, "221 goodbye\r\n")
+				return
+			default:
+				fmt.Fprint(server, "500 unsupported command\r\n")
+			}
+		}
+	}()
+	return client
 }
