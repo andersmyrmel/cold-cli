@@ -42,7 +42,9 @@ var smtpSkippedRecipientDomains = map[string]bool{
 	"me.com":         true,
 	"mac.com":        true,
 	"protonmail.com": true,
+	"protonmail.ch":  true,
 	"proton.me":      true,
+	"pm.me":          true,
 }
 
 type EmailValidationPolicy struct {
@@ -84,9 +86,11 @@ type RecipientVerificationResult struct {
 }
 
 type SMTPRecipientVerifier struct {
-	Timeout  time.Duration
-	HeloName string
-	MailFrom string
+	Timeout     time.Duration
+	HeloName    string
+	MailFrom    string
+	lookupMX    func(string) ([]*net.MX, error)
+	dialContext func(context.Context, string, string) (net.Conn, error)
 }
 
 func ValidateLeadEmails(records []LeadRecord, verifier RecipientVerifier, policy EmailValidationPolicy) (*LeadEmailValidationResult, error) {
@@ -247,8 +251,28 @@ func (v SMTPRecipientVerifier) VerifyRecipients(ctx context.Context, domain stri
 		mailFrom = "verify@cold-cli.local"
 	}
 
-	mxRecords, err := net.LookupMX(domain)
-	if err != nil || len(mxRecords) == 0 {
+	lookupMX := v.lookupMX
+	if lookupMX == nil {
+		lookupMX = net.LookupMX
+	}
+	mxRecords, err := lookupMX(domain)
+	if err != nil {
+		status := RecipientStatusUnknown
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) && dnsErr.IsNotFound && !dnsErr.IsTemporary && !dnsErr.IsTimeout {
+			status = RecipientStatusNoMX
+		}
+		for _, email := range emails {
+			result.Results[email] = status
+		}
+		if status == RecipientStatusNoMX {
+			result.Error = "no MX records"
+		} else {
+			result.Error = fmt.Sprintf("MX lookup for %s failed: %v", domain, err)
+		}
+		return result, nil
+	}
+	if len(mxRecords) == 0 {
 		for _, email := range emails {
 			result.Results[email] = RecipientStatusNoMX
 		}
@@ -261,7 +285,7 @@ func (v SMTPRecipientVerifier) VerifyRecipients(ctx context.Context, domain stri
 
 	host := strings.TrimSuffix(mxRecords[0].Host, ".")
 	catchAllEmail := fmt.Sprintf("cold-cli-check-%d-%d@%s", time.Now().UnixNano(), rand.Intn(100000), domain)
-	catchAllStatus, err := smtpRCPTStatus(ctx, host, catchAllEmail, heloName, mailFrom, timeout)
+	catchAllStatus, err := smtpRCPTStatus(ctx, host, catchAllEmail, heloName, mailFrom, timeout, v.dialContext)
 	if err == nil && catchAllStatus == 250 {
 		for _, email := range emails {
 			result.Results[email] = RecipientStatusCatchAll
@@ -270,7 +294,7 @@ func (v SMTPRecipientVerifier) VerifyRecipients(ctx context.Context, domain stri
 	}
 
 	for _, email := range emails {
-		code, err := smtpRCPTStatus(ctx, host, email, heloName, mailFrom, timeout)
+		code, err := smtpRCPTStatus(ctx, host, email, heloName, mailFrom, timeout, v.dialContext)
 		if err != nil {
 			result.Results[email] = RecipientStatusUnknown
 			result.Error = err.Error()
@@ -290,14 +314,24 @@ func (v SMTPRecipientVerifier) VerifyRecipients(ctx context.Context, domain stri
 	return result, nil
 }
 
-func smtpRCPTStatus(ctx context.Context, host, recipient, heloName, mailFrom string, timeout time.Duration) (int, error) {
+func smtpRCPTStatus(ctx context.Context, host, recipient, heloName, mailFrom string, timeout time.Duration, dialContext func(context.Context, string, string) (net.Conn, error)) (int, error) {
 	if timeout == 0 {
 		timeout = 10 * time.Second
 	}
-	dialer := &net.Dialer{Timeout: timeout}
-	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, "25"))
-	if err != nil {
-		return 0, fmt.Errorf("connecting to MX %s: %w", host, err)
+	if dialContext == nil {
+		dialer := &net.Dialer{Timeout: timeout}
+		dialContext = dialer.DialContext
+	}
+	address := net.JoinHostPort(host, "25")
+	// IPv6 from a probe host can fail reverse-DNS checks before RCPT even when
+	// the same MX accepts its IPv4 address. Preserve IPv6-only MX support.
+	conn, ipv4Err := dialContext(ctx, "tcp4", address)
+	if ipv4Err != nil {
+		var ipv6Err error
+		conn, ipv6Err = dialContext(ctx, "tcp6", address)
+		if ipv6Err != nil {
+			return 0, fmt.Errorf("connecting to MX %s (IPv4: %v; IPv6: %w)", host, ipv4Err, ipv6Err)
+		}
 	}
 	defer conn.Close()
 
