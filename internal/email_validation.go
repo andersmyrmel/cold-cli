@@ -87,6 +87,7 @@ type SMTPRecipientVerifier struct {
 	Timeout  time.Duration
 	HeloName string
 	MailFrom string
+	lookupMX func(string) ([]*net.MX, error)
 }
 
 func ValidateLeadEmails(records []LeadRecord, verifier RecipientVerifier, policy EmailValidationPolicy) (*LeadEmailValidationResult, error) {
@@ -247,8 +248,28 @@ func (v SMTPRecipientVerifier) VerifyRecipients(ctx context.Context, domain stri
 		mailFrom = "verify@cold-cli.local"
 	}
 
-	mxRecords, err := net.LookupMX(domain)
-	if err != nil || len(mxRecords) == 0 {
+	lookupMX := v.lookupMX
+	if lookupMX == nil {
+		lookupMX = net.LookupMX
+	}
+	mxRecords, err := lookupMX(domain)
+	if err != nil {
+		status := RecipientStatusUnknown
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) && dnsErr.IsNotFound && !dnsErr.IsTemporary && !dnsErr.IsTimeout {
+			status = RecipientStatusNoMX
+		}
+		for _, email := range emails {
+			result.Results[email] = status
+		}
+		if status == RecipientStatusNoMX {
+			result.Error = "no MX records"
+		} else {
+			result.Error = fmt.Sprintf("MX lookup for %s failed: %v", domain, err)
+		}
+		return result, nil
+	}
+	if len(mxRecords) == 0 {
 		for _, email := range emails {
 			result.Results[email] = RecipientStatusNoMX
 		}

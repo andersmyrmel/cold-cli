@@ -2,6 +2,9 @@ package internal
 
 import (
 	"context"
+	"errors"
+	"net"
+	"strings"
 	"testing"
 )
 
@@ -99,5 +102,88 @@ func TestValidateLeadEmails_AllowFlagsCanPassRiskyStatuses(t *testing.T) {
 
 	if result.Pass != 3 || result.ManualReview != 0 || result.Fail != 0 {
 		t.Fatalf("unexpected summary: %+v", result)
+	}
+}
+
+func TestSMTPRecipientVerifier_MXLookupFailureClassification(t *testing.T) {
+	tests := []struct {
+		name             string
+		records          []*net.MX
+		lookupErr        error
+		recipientStatus  string
+		validationStatus string
+		errorContains    string
+	}{
+		{
+			name:             "confirmed NXDOMAIN",
+			lookupErr:        &net.DNSError{Err: "no such host", Name: "example.com", IsNotFound: true},
+			recipientStatus:  RecipientStatusNoMX,
+			validationStatus: EmailValidationFail,
+		},
+		{
+			name:             "successful lookup without MX records",
+			records:          []*net.MX{},
+			recipientStatus:  RecipientStatusNoMX,
+			validationStatus: EmailValidationFail,
+		},
+		{
+			name:             "DNS timeout",
+			lookupErr:        &net.DNSError{Err: "i/o timeout", Name: "example.com", IsTimeout: true},
+			recipientStatus:  RecipientStatusUnknown,
+			validationStatus: EmailValidationManualReview,
+			errorContains:    "i/o timeout",
+		},
+		{
+			name:             "temporary DNS failure",
+			lookupErr:        &net.DNSError{Err: "server misbehaving", Name: "example.com", IsTemporary: true},
+			recipientStatus:  RecipientStatusUnknown,
+			validationStatus: EmailValidationManualReview,
+			errorContains:    "server misbehaving",
+		},
+		{
+			name:             "temporary failure with misleading not-found flag",
+			lookupErr:        &net.DNSError{Err: "temporary resolver failure", Name: "example.com", IsNotFound: true, IsTemporary: true},
+			recipientStatus:  RecipientStatusUnknown,
+			validationStatus: EmailValidationManualReview,
+			errorContains:    "temporary resolver failure",
+		},
+		{
+			name:             "unclassified DNS failure",
+			lookupErr:        errors.New("resolver unavailable"),
+			recipientStatus:  RecipientStatusUnknown,
+			validationStatus: EmailValidationManualReview,
+			errorContains:    "resolver unavailable",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			verifier := SMTPRecipientVerifier{
+				lookupMX: func(domain string) ([]*net.MX, error) {
+					if domain != "example.com" {
+						t.Fatalf("unexpected lookup domain %q", domain)
+					}
+					return tt.records, tt.lookupErr
+				},
+			}
+			result, err := ValidateLeadEmails(
+				[]LeadRecord{{Fields: map[string]string{"email": "founder@example.com"}}},
+				verifier,
+				EmailValidationPolicy{},
+			)
+			if err != nil {
+				t.Fatalf("ValidateLeadEmails: %v", err)
+			}
+			if len(result.Rows) != 1 {
+				t.Fatalf("expected one result, got %+v", result)
+			}
+			row := result.Rows[0]
+			if row.SMTPStatus != tt.recipientStatus || row.ValidationStatus != tt.validationStatus {
+				t.Fatalf("got SMTP %q / validation %q, want %q / %q", row.SMTPStatus, row.ValidationStatus, tt.recipientStatus, tt.validationStatus)
+			}
+			if tt.errorContains != "" && !strings.Contains(row.Detail, tt.errorContains) {
+				t.Fatalf("expected detail to contain %q, got %q", tt.errorContains, row.Detail)
+			}
+		})
 	}
 }
