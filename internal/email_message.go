@@ -403,6 +403,9 @@ func PreviewInboxReply(cfg PreviewInboxReplyConfig) (*InboxReplyPreview, error) 
 	}
 	references := replyReferences(latest, inReplyTo)
 	fromName := replyFromName(sequenceFile, sequenceContent)
+	fromName = RenderTemplate(fromName, SenderTemplateFields(account.Email))
+	fromName, _ = StripUnresolved(fromName)
+	fromName = strings.TrimSpace(fromName)
 
 	params := EmailParams{
 		FromName: fromName, FromEmail: account.Email, ToEmail: toEmail, CcEmails: ccEmails,
