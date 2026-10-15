@@ -190,6 +190,11 @@ tick starts
 │      │   step 1: new thread (Subject, From, To)
 │      │   step 2+: In-Reply-To, References, Re: Subject, thread_id
 │      │   optional: List-Unsubscribe header (if configured)
+│      ├─ reload workspace pre_send_checks and run its contact checker
+│      │   on the actual To/Cc addresses and known lead phone numbers
+│      │   - exit 0: allow this delivery (no cached allow result)
+│      │   - exit 2: skip remaining campaign steps for this lead
+│      │   - error/timeout: fail this send without calling the provider
 │      ├─ call provider sender (gws or SMTP, 30s timeout)
 │      │   success → mark 'sent', INSERT event (error-checked + logged)
 │      │   failure → mark 'failed', slog.Error, continue

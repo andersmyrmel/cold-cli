@@ -471,13 +471,18 @@ func SendInboxReply(cfg SendInboxReplyConfig) (*SendInboxReplyResult, error) {
 	if !reserved {
 		return existing, nil
 	}
+	contactFields, err := loadLeadFields(cfg.DB, cfg.LeadID)
+	if err != nil {
+		markManualReplyAttemptFailed(cfg.DB, preview.IdempotencyKey, err)
+		return nil, fmt.Errorf("loading contacts for pre-send check: %w", err)
+	}
 
 	storedMessageID, threadID, err := sendRenderedEmail(TickConfig{
 		DB:             cfg.DB,
 		GWS:            cfg.GWS,
 		SecretResolver: cfg.SecretResolver,
 		SMTPSender:     cfg.SMTPSender,
-	}, account, emailParams)
+	}, account, emailParams, contactFields)
 	if err != nil {
 		markManualReplyAttemptFailed(cfg.DB, preview.IdempotencyKey, err)
 		return nil, err

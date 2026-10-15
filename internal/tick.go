@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -305,8 +306,16 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 			continue
 		}
 
-		storedMessageID, threadID, err := sendRenderedEmail(cfg, account, emailParams)
+		storedMessageID, threadID, err := sendRenderedEmail(cfg, account, emailParams, leadFields)
 		if err != nil {
+			if errors.Is(err, ErrContactSuppressed) {
+				if err := skipSuppressedCampaignLead(cfg.DB, send.CampaignID, send.LeadID); err != nil {
+					return nil, fmt.Errorf("skipping suppressed contact: %w", err)
+				}
+				slog.Info("outreach suppressed before delivery", "send_id", send.ID, "campaign_id", send.CampaignID, "lead_id", send.LeadID)
+				result.Skipped++
+				continue
+			}
 			errMsg := err.Error()
 			slog.Error("send failed",
 				"send_id", send.ID, "step", send.StepNumber,
@@ -461,9 +470,29 @@ func accountsByProvider(accounts []Account, provider string) []Account {
 	return filtered
 }
 
-func sendRenderedEmail(cfg TickConfig, account Account, emailParams EmailParams) (string, string, error) {
+func skipSuppressedCampaignLead(db *sql.DB, campaignID, leadID int64) error {
+	tx, err := beginTx(db)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE scheduled_sends SET status = 'skipped', error_message = ?
+		WHERE campaign_id = ? AND lead_id = ? AND status = 'pending'`, ErrContactSuppressed.Error(), campaignID, leadID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE campaign_leads SET status = 'paused'
+		WHERE campaign_id = ? AND lead_id = ?`, campaignID, leadID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func sendRenderedEmail(cfg TickConfig, account Account, emailParams EmailParams, contactFields map[string]string) (string, string, error) {
 	if err := ValidateEmailParamsHeaders(emailParams); err != nil {
 		return "", "", err
+	}
+	if err := checkBeforeSend(account, emailParams, contactFields); err != nil {
+		return "", "", fmt.Errorf("pre-send check: %w", err)
 	}
 	switch account.Provider {
 	case AccountProviderGWS:

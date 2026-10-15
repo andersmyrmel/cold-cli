@@ -9,15 +9,16 @@ import (
 )
 
 type Config struct {
-	DefaultTimezone    string `yaml:"default_timezone"`
-	DefaultDailyLimit  int    `yaml:"default_daily_limit"`
-	MinGapSeconds      int    `yaml:"min_gap_seconds"`
-	MaxGapSeconds      int    `yaml:"max_gap_seconds"`
-	SendWindowStart    string `yaml:"send_window_start"`
-	SendWindowEnd      string `yaml:"send_window_end"`
-	SendDays           string `yaml:"send_days"`
-	UnsubscribeHeader  bool   `yaml:"unsubscribe_header"`
-	UnsubscribeSubject string `yaml:"unsubscribe_subject"`
+	DefaultTimezone    string                        `yaml:"default_timezone"`
+	DefaultDailyLimit  int                           `yaml:"default_daily_limit"`
+	MinGapSeconds      int                           `yaml:"min_gap_seconds"`
+	MaxGapSeconds      int                           `yaml:"max_gap_seconds"`
+	SendWindowStart    string                        `yaml:"send_window_start"`
+	SendWindowEnd      string                        `yaml:"send_window_end"`
+	SendDays           string                        `yaml:"send_days"`
+	UnsubscribeHeader  bool                          `yaml:"unsubscribe_header"`
+	UnsubscribeSubject string                        `yaml:"unsubscribe_subject"`
+	PreSendChecks      map[string]PreSendCheckConfig `yaml:"pre_send_checks"`
 }
 
 var DefaultConfig = Config{

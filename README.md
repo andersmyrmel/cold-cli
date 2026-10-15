@@ -239,6 +239,30 @@ cold-cli lead blacklist <email|domain>     # blacklist + cancel pending sends
 
 All commands support `--json` for programmatic use.
 
+### Live do-not-contact checks
+
+For a workspace whose central do-not-contact list lives outside cold-cli,
+configure a checker in `~/.cold-cli/config.yml`:
+
+```yaml
+pre_send_checks:
+  your-workspace:
+    command: ["/absolute/path/contact-check", "check", "--stdin"]
+    timeout_seconds: 20
+```
+
+The checker receives one recipient email or known lead phone number per line.
+It must return exit code `0` to allow sending, `2` for a suppressed contact, or
+another nonzero code for an error. The executable runs directly, without a
+shell. Its output is discarded to keep credentials and private notes out of
+logs. Use a dedicated read-only credential for an external suppression store.
+
+Every actual scheduled delivery and manual inbox reply runs a fresh check,
+including follow-ups and all reply-all recipients. A suppression skips the
+scheduled lead's remaining campaign steps. Errors and timeouts block delivery;
+they do not fall back to the local blacklist. Workspaces without a configured
+checker retain their existing behavior. Previews and dry runs never send.
+
 ### Workspaces
 
 `cold-cli` is the source of truth for account and campaign ownership. Accounts
