@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS campaign_leads (
 	lead_id INTEGER NOT NULL REFERENCES leads(id),
 	status TEXT NOT NULL DEFAULT 'active',
 	started_at DATETIME,
+	cohort_start_date TEXT NOT NULL DEFAULT '',
 	PRIMARY KEY (campaign_id, lead_id)
 );
 
@@ -241,6 +242,7 @@ var postgresSchemaStatements = []string{
 		lead_id BIGINT NOT NULL REFERENCES leads(id),
 		status TEXT NOT NULL DEFAULT 'active',
 		started_at TIMESTAMPTZ,
+		cohort_start_date TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (campaign_id, lead_id)
 	)`,
 	`CREATE TABLE IF NOT EXISTS scheduled_sends (
@@ -351,6 +353,7 @@ var postgresMigrationStatements = []string{
 	`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS idle_notified_at TIMESTAMPTZ`,
 	`ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS display_body TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS display_html TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE campaign_leads ADD COLUMN IF NOT EXISTS cohort_start_date TEXT NOT NULL DEFAULT ''`,
 }
 
 const (
@@ -452,6 +455,7 @@ func runSQLiteMigrations(db *sql.DB) error {
 		"ALTER TABLE campaigns ADD COLUMN sequence_content TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE campaigns ADD COLUMN start_date TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE scheduled_sends ADD COLUMN error_message TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE campaign_leads ADD COLUMN cohort_start_date TEXT NOT NULL DEFAULT ''",
 	}
 	for _, m := range migrations {
 		if err := withBusyRetry(func() error {

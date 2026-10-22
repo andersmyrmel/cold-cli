@@ -240,6 +240,9 @@ type accountScheduleRow struct {
 	SentAt     time.Time
 	HasSentAt  bool
 	ScheduleTZ string
+	// CohortStartDate is the explicit add-leads --start-date for this lead's
+	// enrollment, or empty when the lead follows the campaign start date.
+	CohortStartDate string
 }
 
 type leadScheduleQueue struct {
@@ -441,10 +444,12 @@ func loadAccountScheduleRowsTx(tx *Tx, accountIDs []int64) ([]accountScheduleRow
 	query, args := accountIDInClauseQuery(`
 		SELECT ss.id, ss.campaign_id, ss.lead_id, l.email, ss.account_id, ss.step_number, ss.status,
 			CAST(ss.send_at AS TEXT), CASE WHEN ss.sent_at IS NULL THEN NULL ELSE CAST(ss.sent_at AS TEXT) END, c.sequence_file, c.sequence_content, c.start_date,
-			c.send_window_start, c.send_window_end, c.send_days, c.timezone, c.min_gap_seconds, l.custom_fields
+			c.send_window_start, c.send_window_end, c.send_days, c.timezone, c.min_gap_seconds, l.custom_fields,
+			COALESCE(cl.cohort_start_date, '')
 		FROM scheduled_sends ss
 		JOIN campaigns c ON c.id = ss.campaign_id
 		JOIN leads l ON l.id = ss.lead_id
+		LEFT JOIN campaign_leads cl ON cl.campaign_id = ss.campaign_id AND cl.lead_id = ss.lead_id
 		WHERE ss.account_id IN (%s)
 		  AND c.status IN ('active', 'draft')
 		ORDER BY ss.account_id, ss.campaign_id, ss.lead_id, ss.step_number, ss.id`,
@@ -468,6 +473,7 @@ func loadAccountScheduleRowsTx(tx *Tx, accountIDs []int64) ([]accountScheduleRow
 		if err := rows.Scan(
 			&row.ID, &row.CampaignID, &row.LeadID, &row.LeadEmail, &row.AccountID, &row.StepNumber, &row.Status,
 			&sendAtStr, &sentAtStr, &seqFile, &seqContent, &startDate, &sendWindowStart, &sendWindowEnd, &sendDaysStr, &timezoneName, &minGapSeconds, &customFields,
+			&row.CohortStartDate,
 		); err != nil {
 			return nil, nil, err
 		}
@@ -627,8 +633,21 @@ func effectiveScheduleRulesForLead(base *campaignScheduleRules, row accountSched
 func firstPendingAnchorForRow(row accountScheduleRow, prevAnchor time.Time, havePrev bool, rules *campaignScheduleRules) (time.Time, error) {
 	if !havePrev {
 		existingAnchor := clampToWindow(row.SendAt.In(rules.Timezone), rules.WindowStartTOD, rules.WindowEndTOD, rules.SendDays, rules.Timezone)
-		if row.StepNumber == 1 && strings.TrimSpace(rules.StartDate) != "" {
-			freshAnchor, err := campaignStartAnchor(timeNow().In(rules.Timezone), rules.StartDate, rules.WindowStartTOD, rules.Timezone)
+		cohortStartDate := strings.TrimSpace(row.CohortStartDate)
+		if row.StepNumber == 1 && cohortStartDate != "" {
+			// An explicitly dated cohort never sends before its own start date,
+			// and stale-row repair is measured from that date, not the campaign's.
+			cohortFloor, err := campaignStartAnchor(time.Time{}, cohortStartDate, rules.WindowStartTOD, rules.Timezone)
+			if err != nil {
+				return time.Time{}, fmt.Errorf("invalid cohort start date %q for lead %s: %w", cohortStartDate, row.LeadEmail, err)
+			}
+			cohortFloor = clampToWindow(cohortFloor, rules.WindowStartTOD, rules.WindowEndTOD, rules.SendDays, rules.Timezone)
+			if existingAnchor.Before(cohortFloor) {
+				existingAnchor = cohortFloor
+			}
+		}
+		if row.StepNumber == 1 && (strings.TrimSpace(rules.StartDate) != "" || cohortStartDate != "") {
+			freshAnchor, err := leadStartAnchor(timeNow().In(rules.Timezone), rules.StartDate, cohortStartDate, rules.WindowStartTOD, rules.Timezone)
 			if err != nil {
 				return time.Time{}, err
 			}

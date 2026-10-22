@@ -1141,7 +1141,7 @@ func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, e
 		}
 
 		added, sends, err := insertLeadsAndSchedule(tx, out.campaignID, accountIDs, records, seq,
-			opts.StartDate, src.WindowStart, src.WindowEnd, sendDays, tz, src.MinGap, src.MaxGap)
+			opts.StartDate, "", src.WindowStart, src.WindowEnd, sendDays, tz, src.MinGap, src.MaxGap)
 		if err != nil {
 			return out, err
 		}
@@ -1346,7 +1346,7 @@ func AddLeadsToCampaignWithOpts(db *sql.DB, opts AddLeadsToCampaignOpts) (*AddLe
 			}
 		}
 		added, sends, err := insertLeadsAndSchedule(tx, campID, accountIDs, records, seq,
-			effectiveStartDate, windowStart, windowEnd, sendDays, tz, minGap, maxGap)
+			effectiveStartDate, strings.TrimSpace(opts.StartDate), windowStart, windowEnd, sendDays, tz, minGap, maxGap)
 		if err != nil {
 			return out, err
 		}
@@ -1462,10 +1462,12 @@ func campaignStartDateArrived(startDate string, now time.Time, tz *time.Location
 
 // insertLeadsAndSchedule is the shared logic for creating leads and their scheduled sends.
 // It inserts/upserts leads, links them to the campaign, computes schedule, and inserts sends.
+// cohortStartDate is the explicit add-leads --start-date (empty when none); it is
+// stored on campaign_leads so later rebalances keep the cohort's start as a floor.
 // Returns the number of leads added and sends created.
 func insertLeadsAndSchedule(tx *Tx, campaignID int64, accountIDs []int64,
 	records []LeadRecord, seq *Sequence,
-	startDate, windowStart, windowEnd string, sendDays []time.Weekday, tz *time.Location,
+	startDate, cohortStartDate, windowStart, windowEnd string, sendDays []time.Weekday, tz *time.Location,
 	minGap, maxGap int) (leadsAdded int, sendsAdded int, err error) {
 
 	var leadsForSchedule []LeadForSchedule
@@ -1515,8 +1517,8 @@ func insertLeadsAndSchedule(tx *Tx, campaignID int64, accountIDs []int64,
 			continue
 		}
 
-		if _, err := tx.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (?, ?, 'active')",
-			campaignID, leadID); err != nil {
+		if _, err := tx.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status, cohort_start_date) VALUES (?, ?, 'active', ?)",
+			campaignID, leadID, cohortStartDate); err != nil {
 			return 0, 0, fmt.Errorf("linking lead %s: %w", email, err)
 		}
 
@@ -1617,6 +1619,7 @@ func reschedulePendingSends(tx *Tx, campaignID int64, seq *Sequence,
 		SentAt     time.Time
 		HasSentAt  bool
 		ScheduleTZ string
+		CohortDate string
 	}
 
 	stepByNumber := make(map[int]SequenceStep, len(seq.Steps))
@@ -1626,9 +1629,11 @@ func reschedulePendingSends(tx *Tx, campaignID int64, seq *Sequence,
 
 	rows, err := tx.Query(`
 		SELECT ss.id, ss.lead_id, l.email, ss.step_number, ss.status, CAST(ss.send_at AS TEXT),
-			CASE WHEN ss.sent_at IS NULL THEN NULL ELSE CAST(ss.sent_at AS TEXT) END, l.custom_fields
+			CASE WHEN ss.sent_at IS NULL THEN NULL ELSE CAST(ss.sent_at AS TEXT) END, l.custom_fields,
+			COALESCE(cl.cohort_start_date, '')
 		FROM scheduled_sends ss
 		JOIN leads l ON l.id = ss.lead_id
+		LEFT JOIN campaign_leads cl ON cl.campaign_id = ss.campaign_id AND cl.lead_id = ss.lead_id
 		WHERE ss.campaign_id = ?
 		ORDER BY ss.lead_id, ss.step_number`, campaignID)
 	if err != nil {
@@ -1642,7 +1647,7 @@ func reschedulePendingSends(tx *Tx, campaignID int64, seq *Sequence,
 		var send scheduledSendState
 		var sendAtStr, customFields string
 		var sentAtStr sql.NullString
-		if err := rows.Scan(&send.ID, &send.LeadID, &send.LeadEmail, &send.StepNumber, &send.Status, &sendAtStr, &sentAtStr, &customFields); err != nil {
+		if err := rows.Scan(&send.ID, &send.LeadID, &send.LeadEmail, &send.StepNumber, &send.Status, &sendAtStr, &sentAtStr, &customFields, &send.CohortDate); err != nil {
 			return fmt.Errorf("scanning scheduled send: %w", err)
 		}
 
@@ -1702,9 +1707,9 @@ func reschedulePendingSends(tx *Tx, campaignID int64, seq *Sequence,
 
 		var prevSendAt time.Time
 		var havePrev bool
-		freshAnchor, err := campaignStartAnchor(timeNow().In(leadTZ), startDate, windowStartTOD, leadTZ)
+		freshAnchor, err := leadStartAnchor(timeNow().In(leadTZ), startDate, byLead[leadID][0].CohortDate, windowStartTOD, leadTZ)
 		if err != nil {
-			return fmt.Errorf("invalid start date %q (expected YYYY-MM-DD): %w", startDate, err)
+			return err
 		}
 
 		if !hasSentHistory {
@@ -1781,6 +1786,26 @@ func campaignStartAnchor(now time.Time, startDate string, windowStart timeOfDay,
 	startAt := time.Date(parsed.Year(), parsed.Month(), parsed.Day(), windowStart.hour, windowStart.min, 0, 0, tz)
 	if startAt.After(anchor) {
 		anchor = startAt
+	}
+	return anchor, nil
+}
+
+// leadStartAnchor is the earliest step-1 time for one lead: the later of the
+// campaign start and the lead's explicit add-leads cohort start, if any.
+func leadStartAnchor(now time.Time, campaignStartDate, cohortStartDate string, windowStart timeOfDay, tz *time.Location) (time.Time, error) {
+	anchor, err := campaignStartAnchor(now, campaignStartDate, windowStart, tz)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid start date %q (expected YYYY-MM-DD): %w", campaignStartDate, err)
+	}
+	if strings.TrimSpace(cohortStartDate) == "" {
+		return anchor, nil
+	}
+	cohortAnchor, err := campaignStartAnchor(now, cohortStartDate, windowStart, tz)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid cohort start date %q (expected YYYY-MM-DD): %w", cohortStartDate, err)
+	}
+	if cohortAnchor.After(anchor) {
+		anchor = cohortAnchor
 	}
 	return anchor, nil
 }
