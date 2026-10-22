@@ -86,7 +86,8 @@ leads
 campaign_leads
 ├─ campaign_id, lead_id
 ├─ status (active/replied/bounced/paused)
-└─ started_at
+├─ started_at
+└─ cohort_start_date (explicit add-leads --start-date; '' = follow campaign start)
 
 scheduled_sends
 ├─ id
@@ -254,6 +255,7 @@ Round-robin assignment at initial schedule time (not dynamic per send). All step
 - **Bounce detected** → `leads.global_status = 'bounced'` (global), `campaign_leads.status = 'bounced'`, pending sends skipped
 - Daily send counts derived from `COUNT(*) FROM events WHERE type='sent'` with timezone-aware day boundary
 - When a send drifts later than planned, future pending rows for that lead are re-anchored from actual `sent_at`, not the stale planned time
+- Unsent step-1 rows stranded more than 30 days past their start anchor are pulled back to it on rebalance. The anchor is the campaign start, or the later `campaign_leads.cohort_start_date` for leads added with `add-leads --start-date`, which also acts as a floor, so far-future dated cohorts keep their dates
 
 ## Template Engine
 
