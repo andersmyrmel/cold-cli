@@ -418,6 +418,22 @@ Matches inbox messages to sent emails using `In-Reply-To` headers, with provider
 
 Unsubscribe requests ("unsubscribe", "remove me", "opt out", etc.) are auto-detected and blacklist the lead globally across all campaigns.
 
+Automatic acknowledgements, vacation replies and read receipts do not count as
+human replies. Zendesk wraps agent comments in `Auto-Submitted: auto-generated`
+notifications too: a recognized updated-ticket comment is classified from its
+newest comment text, while acknowledgements remain automatic. Content checks use
+the current body without quoted history; a greeting or mention of a support
+ticket alone is not evidence of an automatic response.
+
+Previously recorded automatic replies are deduplicated and are not silently
+reclassified after an upgrade. The exact reviewed Rhino correction is in
+`ops/repairs/2026-10-26-rhino-human-replies.sql`. It previews with rollback by
+default; `psql -X -v apply=true -f <file>` applies it. The script holds the runner's
+tick lock, verifies the exact rows, preserves send history and appends correction
+evidence to event metadata. Rehearse it with
+`python3 ops/repairs/test_rhino_reply_repair.py` against the existing local Docker
+Postgres container; the rehearsal drops its own small fixture database on exit.
+
 ### Manually Approved Thread Replies
 
 `inbox sync` makes the provider mailbox authoritative before follow-up review.

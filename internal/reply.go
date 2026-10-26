@@ -381,7 +381,8 @@ func classifyInboundMessage(msg GWSMessage) inboundClassification {
 	if isAutoReplyMessage(msg) {
 		return inboundClassificationAutoReply
 	}
-	if IsUnsubscribeRequest(msg.Subject, msg.Snippet) {
+	body, _ := inboundClassificationBody(msg)
+	if IsUnsubscribeRequest(msg.Subject, body) {
 		return inboundClassificationUnsubscribe
 	}
 	return inboundClassificationReply
@@ -624,8 +625,9 @@ func isAutoReplyMessage(msg GWSMessage) bool {
 		return true
 	}
 
-	autoSubmitted := strings.ToLower(strings.TrimSpace(headerValue(msg.Headers, "Auto-Submitted")))
-	if autoSubmitted != "" && autoSubmitted != "no" {
+	body, zendeskComment := inboundClassificationBody(msg)
+	autoSubmitted := strings.ToLower(strings.TrimSpace(strings.SplitN(headerValue(msg.Headers, "Auto-Submitted"), ";", 2)[0]))
+	if autoSubmitted != "" && autoSubmitted != "no" && !(autoSubmitted == "auto-generated" && zendeskComment) {
 		return true
 	}
 
@@ -646,7 +648,7 @@ func isAutoReplyMessage(msg GWSMessage) bool {
 		return true
 	}
 
-	text := classificationText(msg.Subject + " " + msg.Snippet + " " + msg.TextBody + " " + msg.HTMLBody)
+	text := classificationText(msg.Subject + " " + body)
 	autoPhrases := []string{
 		"auto reply",
 		"auto-reply",
@@ -656,8 +658,6 @@ func isAutoReplyMessage(msg GWSMessage) bool {
 		"out of office",
 		"out of the office",
 		"away from the office",
-		"thank you for contacting us",
-		"thanks for contacting us",
 		"ticket submitted",
 		"ticket has been submitted",
 		"your ticket has been submitted",
@@ -667,7 +667,6 @@ func isAutoReplyMessage(msg GWSMessage) bool {
 		"we've received your request",
 		"we received your request",
 		"your request has been received",
-		"support ticket",
 		"read receipt",
 		"return receipt",
 		"disposition notification",
