@@ -203,23 +203,23 @@ cold-cli tick --dry-run                    # show what would happen
 cold-cli tick --now                        # ignore schedule, send all pending immediately
 cold-cli inbox backfill --dry-run          # preview historical inbox thread snapshot backfill
 cold-cli inbox backfill                    # store missing reply + related sent snapshots
-cold-cli --workspace storeinspect inbox sync --campaign 123 --lead 456
+cold-cli --workspace workspace-a inbox sync --campaign 123 --lead 456
                                             # refresh one complete Gmail or IMAP Inbox + Sent thread
-cold-cli --workspace storeinspect inbox show --campaign 123 --lead 456
+cold-cli --workspace workspace-a inbox show --campaign 123 --lead 456
                                             # refresh and print the complete thread
-cold-cli --workspace storeinspect inbox audit --since 120d
+cold-cli --workspace workspace-a inbox audit --since 120d
                                             # read-only all-provider stale-state audit
-cold-cli --workspace storeinspect inbox reconcile --since 30d
+cold-cli --workspace workspace-a inbox reconcile --since 30d
                                             # import provider-confirmed messages, then verify missing=0
-cold-cli --workspace storeinspect inbox followups --since 120d --min-age 7d
+cold-cli --workspace workspace-a inbox followups --since 120d --min-age 7d
                                             # fail-closed post-conversation candidate review
-cold-cli --workspace storeinspect inbox followups --since 120d --min-age 7d --reconcile
+cold-cli --workspace workspace-a inbox followups --since 120d --min-age 7d --reconcile
                                             # reconcile, verify, then list candidates; never sends
-cold-cli --workspace storeinspect inbox needs-reply --since 120d --reconcile
+cold-cli --workspace workspace-a inbox needs-reply --since 120d --reconcile
                                             # reconcile, verify, then list latest-inbound threads; never sends
-cold-cli --workspace storeinspect inbox reply --campaign 123 --lead 456 --body-file reply.txt
+cold-cli --workspace workspace-a inbox reply --campaign 123 --lead 456 --body-file reply.txt
                                             # refresh, then preview a manual thread reply; never sends by default
-cold-cli --workspace storeinspect inbox reply --campaign 123 --lead 456 --body-file reply.txt --send --confirm-to lead@example.com
+cold-cli --workspace workspace-a inbox reply --campaign 123 --lead 456 --body-file reply.txt --send --confirm-to lead@example.com
                                             # explicitly send the exact reviewed reply
 
 cold-cli stats [campaign]                  # sent/replied/bounced per campaign
@@ -309,7 +309,7 @@ phone notification surface.
 export DISCORD_WEBHOOK_URL='https://discord.com/api/webhooks/...'
 export DISCORD_WEBHOOK_USERNAME='cold-cli Replies'
 export DISCORD_WEBHOOK_AVATAR_URL='https://example.com/brand/logo.png'
-export COLD_CLI_DISCORD_WORKSPACES='storeinspect'
+export COLD_CLI_DISCORD_WORKSPACES='workspace-a'
 cold-cli tick
 ```
 
@@ -398,7 +398,7 @@ cross-campaign history, global suppressions, and the same MX/SMTP policy used by
 `validate-leads`:
 
 ```bash
-cold-cli --workspace storeinspect campaign preflight --leads leads.csv
+cold-cli --workspace workspace-a campaign preflight --leads leads.csv
 ```
 
 By default it checks prior email and company-domain history across every
@@ -426,13 +426,9 @@ the current body without quoted history; a greeting or mention of a support
 ticket alone is not evidence of an automatic response.
 
 Previously recorded automatic replies are deduplicated and are not silently
-reclassified after an upgrade. The exact reviewed Rhino correction is in
-`ops/repairs/2026-10-26-rhino-human-replies.sql`. It previews with rollback by
-default; `psql -X -v apply=true -f <file>` applies it. The script holds the runner's
-tick lock, verifies the exact rows, preserves send history and appends correction
-evidence to event metadata. Rehearse it with
-`python3 ops/repairs/test_rhino_reply_repair.py` against the existing local Docker
-Postgres container; the rehearsal drops its own small fixture database on exit.
+reclassified after an upgrade. Corrections to existing records require a
+separately reviewed repair that preserves send history and runs under the tick
+lock. Keep installation-specific repairs outside the public repository.
 
 ### Manually Approved Thread Replies
 
@@ -483,10 +479,10 @@ before candidate selection. It never drafts or sends email.
 Safe revival workflow:
 
 ```bash
-cold-cli --workspace storeinspect inbox followups --since 120d --min-age 7d --reconcile
-cold-cli --workspace storeinspect inbox show --campaign 123 --lead 456
-cold-cli --workspace storeinspect inbox reply --campaign 123 --lead 456 --body-file reply.txt
-cold-cli --workspace storeinspect inbox reply --campaign 123 --lead 456 --body-file reply.txt --send --confirm-to lead@example.com
+cold-cli --workspace workspace-a inbox followups --since 120d --min-age 7d --reconcile
+cold-cli --workspace workspace-a inbox show --campaign 123 --lead 456
+cold-cli --workspace workspace-a inbox reply --campaign 123 --lead 456 --body-file reply.txt
+cold-cli --workspace workspace-a inbox reply --campaign 123 --lead 456 --body-file reply.txt --send --confirm-to lead@example.com
 ```
 
 `inbox reconcile` is the unattended form of the same provider import plus
@@ -496,11 +492,12 @@ the provider audit cannot reach a verified clean state. A practical hosted
 schedule is a nightly 30-day pass plus a weekly 120-day pass:
 
 ```cron
-2 2 * * * /usr/bin/nice -n 10 /usr/bin/ionice -c2 -n7 /home/coldcli/bin/cold-cli --env-file /home/coldcli/.cold-cli-env --workspace storeinspect inbox reconcile --since 30d --lock-wait 10m --notify-errors >> /home/coldcli/.cold-cli/reconcile.log 2>&1
-32 3 * * 0 /usr/bin/nice -n 10 /usr/bin/ionice -c2 -n7 /home/coldcli/bin/cold-cli --env-file /home/coldcli/.cold-cli-env --workspace storeinspect inbox reconcile --since 120d --lock-wait 10m --notify-errors >> /home/coldcli/.cold-cli/reconcile.log 2>&1
+0 2 * * * /usr/bin/nice -n 10 /usr/bin/ionice -c2 -n7 /path/to/cold-cli --env-file /path/to/runner.env --workspace workspace-a inbox reconcile --since 30d --lock-wait 10m --notify-errors >> /path/to/reconcile.log 2>&1
+0 3 * * 0 /usr/bin/nice -n 10 /usr/bin/ionice -c2 -n7 /path/to/cold-cli --env-file /path/to/runner.env --workspace workspace-a inbox reconcile --since 120d --lock-wait 10m --notify-errors >> /path/to/reconcile.log 2>&1
 ```
 
-The exact production crontab is tracked in `ops/mova-coldcli.crontab`.
+See `ops/cold-cli.crontab.example` for an example. Replace its paths and workspace
+with your installation's values before installing it.
 
 Routine tick polling captures new inbound replies. The reconciliation schedule
 also imports messages sent manually through Gmail or IMAP webmail and messages
@@ -518,8 +515,8 @@ audit as `inbox followups`: it fails closed if provider state cannot be read or
 if any campaign-thread message is missing.
 
 ```bash
-cold-cli --workspace storeinspect inbox needs-reply --since 120d --reconcile
-cold-cli --workspace storeinspect inbox needs-reply --since 120d --reconcile --show-thread
+cold-cli --workspace workspace-a inbox needs-reply --since 120d --reconcile
+cold-cli --workspace workspace-a inbox needs-reply --since 120d --reconcile --show-thread
 ```
 
 This is a structural review queue, not a requirement to answer every message.

@@ -41,7 +41,7 @@ func TestAuditInboxHistoryReportsUntrackedInboundAndOutboundWithoutWriting(t *te
 	}
 
 	result, err := AuditInboxHistory(AuditInboxHistoryConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: since, GWS: gws,
+		DB: store.DB, WorkspaceID: "workspace-a", Since: since, GWS: gws,
 	})
 	if err != nil {
 		t.Fatalf("AuditInboxHistory error: %v", err)
@@ -76,7 +76,7 @@ func TestAuditInboxHistoryApplyStoresManualOutboundAndFollowingReply(t *testing.
 		{ID: "gmail-reply-2", ThreadID: "thread-1", From: "lead@example.net", To: "sender@example.com", InReplyTo: "<manual@example.com>", TextBody: "Thanks", Date: since.Add(96 * time.Hour), Headers: map[string]string{"Message-ID": "<reply-2@example.net>", "References": "<root@example.com> <reply@example.net> <manual@example.com>"}},
 	}
 	result, err := AuditInboxHistory(AuditInboxHistoryConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: since, GWS: gws, Apply: true,
+		DB: store.DB, WorkspaceID: "workspace-a", Since: since, GWS: gws, Apply: true,
 	})
 	if err != nil {
 		t.Fatalf("AuditInboxHistory apply error: %v", err)
@@ -109,7 +109,7 @@ func TestAuditInboxHistoryApplyStoresManualOutboundAndFollowingReply(t *testing.
 		t.Fatalf("expected reconciliation source metadata, got %#v", metadata)
 	}
 	second, err := AuditInboxHistory(AuditInboxHistoryConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: since, GWS: gws, Apply: true,
+		DB: store.DB, WorkspaceID: "workspace-a", Since: since, GWS: gws, Apply: true,
 	})
 	if err != nil {
 		t.Fatalf("second AuditInboxHistory apply error: %v", err)
@@ -128,7 +128,7 @@ func TestAuditInboxHistorySearchesIMAPFromCampaignAnchors(t *testing.T) {
 		{ID: "<reply-2@example.net>", From: "lead@example.net", To: "sender@example.com", InReplyTo: "<manual@example.com>", Date: since.Add(96 * time.Hour), Headers: map[string]string{"Message-ID": "<reply-2@example.net>"}},
 	}}
 	result, err := AuditInboxHistory(AuditInboxHistoryConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: since, IMAP: imap,
+		DB: store.DB, WorkspaceID: "workspace-a", Since: since, IMAP: imap,
 	})
 	if err != nil {
 		t.Fatalf("AuditInboxHistory error: %v", err)

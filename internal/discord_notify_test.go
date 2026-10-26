@@ -58,8 +58,8 @@ func TestBuildDiscordWebhookPayloadCampaignCompletionAndIdleReminder(t *testing.
 	completion := BuildDiscordWebhookPayload(DiscordNotificationEvent{
 		EventType:         DiscordEventCampaignCompleted,
 		Timestamp:         "2026-08-01T12:00:00Z",
-		WorkspaceID:       "storeinspect",
-		CampaignName:      "Shopify App Store Leads",
+		WorkspaceID:       "workspace-a",
+		CampaignName:      "Example campaign",
 		CampaignStatus:    "completed",
 		AccountEmails:     []string{"sender@example.com"},
 		IdleAccountEmails: []string{"sender@example.com"},
@@ -67,7 +67,7 @@ func TestBuildDiscordWebhookPayloadCampaignCompletionAndIdleReminder(t *testing.
 		SentCount:         20,
 		ReplyCount:        1,
 	})
-	if len(completion.Embeds) != 1 || completion.Embeds[0].Title != "StoreInspect campaign finished" {
+	if len(completion.Embeds) != 1 || completion.Embeds[0].Title != "workspace-a campaign finished" {
 		t.Fatalf("unexpected campaign completion payload: %#v", completion)
 	}
 	if !strings.Contains(completion.Embeds[0].Description, "no pending sends") {
@@ -79,11 +79,11 @@ func TestBuildDiscordWebhookPayloadCampaignCompletionAndIdleReminder(t *testing.
 
 	idle := BuildDiscordWebhookPayload(DiscordNotificationEvent{
 		EventType:    DiscordEventSenderIdle,
-		WorkspaceID:  "storeinspect",
+		WorkspaceID:  "workspace-a",
 		AccountEmail: "sender@example.com",
 		Reminder:     true,
 	})
-	if len(idle.Embeds) != 1 || idle.Embeds[0].Title != "StoreInspect sender is still idle" {
+	if len(idle.Embeds) != 1 || idle.Embeds[0].Title != "workspace-a sender is still idle" {
 		t.Fatalf("unexpected idle reminder payload: %#v", idle)
 	}
 }
@@ -403,11 +403,11 @@ func TestTickDryRunLeavesReplyNotificationForRealTick(t *testing.T) {
 func TestProcessDiscordOperationalNotificationsCampaignCompletionIncludesIdleInbox(t *testing.T) {
 	db := setupReplyTestDB(t)
 	now := time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC)
-	if _, err := execDB(db, "UPDATE accounts SET workspace_id = 'storeinspect' WHERE id = 1"); err != nil {
+	if _, err := execDB(db, "UPDATE accounts SET workspace_id = 'workspace-a' WHERE id = 1"); err != nil {
 		t.Fatalf("update account workspace: %v", err)
 	}
 	if _, err := execDB(db, `UPDATE campaigns
-		SET workspace_id = 'storeinspect', status = 'completed', completed_at = ?
+		SET workspace_id = 'workspace-a', status = 'completed', completed_at = ?
 		WHERE id = 1`, now.UTC().Format(time.RFC3339)); err != nil {
 		t.Fatalf("complete campaign: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestProcessDiscordOperationalNotificationsCampaignCompletionIncludesIdleInb
 
 	notifier := &fakeDiscordNotifier{}
 	notified, err := ProcessDiscordOperationalNotifications(context.Background(), db, notifier, DiscordOperationalNotifyOptions{
-		Workspaces: []string{"storeinspect"},
+		Workspaces: []string{"workspace-a"},
 		Now:        now,
 	})
 	if err != nil {
@@ -434,7 +434,7 @@ func TestProcessDiscordOperationalNotificationsCampaignCompletionIncludesIdleInb
 		t.Fatalf("expected one combined completion notification, got notified=%d events=%d", notified, len(notifier.Events))
 	}
 	event := notifier.Events[0]
-	if event.EventType != DiscordEventCampaignCompleted || event.WorkspaceID != "storeinspect" {
+	if event.EventType != DiscordEventCampaignCompleted || event.WorkspaceID != "workspace-a" {
 		t.Fatalf("unexpected completion event: %#v", event)
 	}
 	if event.CampaignName != "test" || event.LeadsContacted != 1 || event.SentCount != 1 {
@@ -448,7 +448,7 @@ func TestProcessDiscordOperationalNotificationsCampaignCompletionIncludesIdleInb
 	}
 
 	notified, err = ProcessDiscordOperationalNotifications(context.Background(), db, notifier, DiscordOperationalNotifyOptions{
-		Workspaces: []string{"storeinspect"},
+		Workspaces: []string{"workspace-a"},
 		Now:        now.Add(time.Hour),
 	})
 	if err != nil {
@@ -462,15 +462,15 @@ func TestProcessDiscordOperationalNotificationsCampaignCompletionIncludesIdleInb
 func TestProcessDiscordOperationalNotificationsIdleLifecycleAndReminder(t *testing.T) {
 	db := setupReplyTestDB(t)
 	now := time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC)
-	if _, err := execDB(db, "UPDATE accounts SET workspace_id = 'storeinspect' WHERE id = 1"); err != nil {
+	if _, err := execDB(db, "UPDATE accounts SET workspace_id = 'workspace-a' WHERE id = 1"); err != nil {
 		t.Fatalf("update account workspace: %v", err)
 	}
-	if _, err := execDB(db, "UPDATE campaigns SET workspace_id = 'storeinspect' WHERE id = 1"); err != nil {
+	if _, err := execDB(db, "UPDATE campaigns SET workspace_id = 'workspace-a' WHERE id = 1"); err != nil {
 		t.Fatalf("update campaign workspace: %v", err)
 	}
 
 	notifier := &fakeDiscordNotifier{}
-	opts := DiscordOperationalNotifyOptions{Workspaces: []string{"storeinspect"}, Now: now}
+	opts := DiscordOperationalNotifyOptions{Workspaces: []string{"workspace-a"}, Now: now}
 	notified, err := ProcessDiscordOperationalNotifications(context.Background(), db, notifier, opts)
 	if err != nil {
 		t.Fatalf("first idle notification error: %v", err)
@@ -525,12 +525,12 @@ func TestProcessDiscordOperationalNotificationsIdleLifecycleAndReminder(t *testi
 func TestProcessDiscordOperationalNotificationsRetriesFailedWebhook(t *testing.T) {
 	db := setupReplyTestDB(t)
 	now := time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC)
-	if _, err := execDB(db, "UPDATE accounts SET workspace_id = 'storeinspect' WHERE id = 1"); err != nil {
+	if _, err := execDB(db, "UPDATE accounts SET workspace_id = 'workspace-a' WHERE id = 1"); err != nil {
 		t.Fatalf("update account workspace: %v", err)
 	}
 
 	notifier := &fakeDiscordNotifier{FailOnCall: 1}
-	opts := DiscordOperationalNotifyOptions{Workspaces: []string{"storeinspect"}, Now: now}
+	opts := DiscordOperationalNotifyOptions{Workspaces: []string{"workspace-a"}, Now: now}
 	notified, err := ProcessDiscordOperationalNotifications(context.Background(), db, notifier, opts)
 	if err == nil || notified != 0 {
 		t.Fatalf("expected initial webhook failure, got notified=%d err=%v", notified, err)
@@ -550,24 +550,24 @@ func TestProcessDiscordOperationalNotificationsScopesIdleAlertsByWorkspace(t *te
 	db := setupReplyTestDB(t)
 	notifier := &fakeDiscordNotifier{}
 	notified, err := ProcessDiscordOperationalNotifications(context.Background(), db, notifier, DiscordOperationalNotifyOptions{
-		Workspaces: []string{"storeinspect"},
+		Workspaces: []string{"workspace-a"},
 		Now:        time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC),
 	})
 	if err != nil {
 		t.Fatalf("ProcessDiscordOperationalNotifications error: %v", err)
 	}
 	if notified != 0 || len(notifier.Events) != 0 {
-		t.Fatalf("default-workspace inbox should not alert StoreInspect, got notified=%d events=%#v", notified, notifier.Events)
+		t.Fatalf("default-workspace inbox should not alert Workspace A, got notified=%d events=%#v", notified, notifier.Events)
 	}
 }
 
 func TestTickNotifiesCompletionBeforeNoActiveCampaignEarlyExit(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
 	now := time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC)
-	if _, err := execDB(db, "UPDATE accounts SET workspace_id = 'storeinspect' WHERE id = ?", accountIDs[0]); err != nil {
+	if _, err := execDB(db, "UPDATE accounts SET workspace_id = 'workspace-a' WHERE id = ?", accountIDs[0]); err != nil {
 		t.Fatalf("update account workspace: %v", err)
 	}
-	if _, err := execDB(db, "UPDATE campaigns SET workspace_id = 'storeinspect' WHERE id = ?", campaignID); err != nil {
+	if _, err := execDB(db, "UPDATE campaigns SET workspace_id = 'workspace-a' WHERE id = ?", campaignID); err != nil {
 		t.Fatalf("update campaign workspace: %v", err)
 	}
 	if _, err := execDB(db, `INSERT INTO scheduled_sends
@@ -581,7 +581,7 @@ func TestTickNotifiesCompletionBeforeNoActiveCampaignEarlyExit(t *testing.T) {
 		DB:                           db,
 		GWS:                          &MockGWS{},
 		DiscordNotifier:              notifier,
-		DiscordOperationalWorkspaces: []string{"storeinspect"},
+		DiscordOperationalWorkspaces: []string{"workspace-a"},
 		Now:                          now,
 		NoSleep:                      true,
 	})
@@ -599,10 +599,10 @@ func TestTickNotifiesCompletionBeforeNoActiveCampaignEarlyExit(t *testing.T) {
 func TestTickDryRunDefersOperationalCompletionNotification(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
 	now := time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC)
-	if _, err := execDB(db, "UPDATE accounts SET workspace_id = 'storeinspect' WHERE id = ?", accountIDs[0]); err != nil {
+	if _, err := execDB(db, "UPDATE accounts SET workspace_id = 'workspace-a' WHERE id = ?", accountIDs[0]); err != nil {
 		t.Fatalf("update account workspace: %v", err)
 	}
-	if _, err := execDB(db, "UPDATE campaigns SET workspace_id = 'storeinspect' WHERE id = ?", campaignID); err != nil {
+	if _, err := execDB(db, "UPDATE campaigns SET workspace_id = 'workspace-a' WHERE id = ?", campaignID); err != nil {
 		t.Fatalf("update campaign workspace: %v", err)
 	}
 	if _, err := execDB(db, `INSERT INTO scheduled_sends
@@ -616,7 +616,7 @@ func TestTickDryRunDefersOperationalCompletionNotification(t *testing.T) {
 		DB:                           db,
 		GWS:                          &MockGWS{},
 		DiscordNotifier:              notifier,
-		DiscordOperationalWorkspaces: []string{"storeinspect"},
+		DiscordOperationalWorkspaces: []string{"workspace-a"},
 		Now:                          now,
 		NoSleep:                      true,
 		DryRun:                       true,
@@ -642,7 +642,7 @@ func TestTickDryRunDefersOperationalCompletionNotification(t *testing.T) {
 func TestBuildDiscordWebhookPayloadForInboxReconciliationFailure(t *testing.T) {
 	payload := BuildDiscordWebhookPayload(DiscordNotificationEvent{
 		EventType:   DiscordEventInboxReconciliationFailed,
-		WorkspaceID: "storeinspect",
+		WorkspaceID: "workspace-a",
 		Timestamp:   "2026-08-13T03:00:00Z",
 		Snippet:     "provider reconciliation incomplete: 2 messages remain untracked",
 	})
@@ -650,7 +650,7 @@ func TestBuildDiscordWebhookPayloadForInboxReconciliationFailure(t *testing.T) {
 		t.Fatalf("expected one embed, got %+v", payload)
 	}
 	embed := payload.Embeds[0]
-	if embed.Title != "StoreInspect inbox reconciliation failed" {
+	if embed.Title != "workspace-a inbox reconciliation failed" {
 		t.Fatalf("unexpected title: %q", embed.Title)
 	}
 	if !strings.Contains(embed.Description, "2 messages remain untracked") || embed.Color != 0xef4444 {

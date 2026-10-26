@@ -175,7 +175,7 @@ func TestCLI_InboxReplyPreviewsByDefaultAndRequiresRecipientConfirmation(t *test
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content)
-		VALUES ('reply-test', 'completed', 'seq.yml', ?)`, "defaults:\n  from_name: Maya\nsteps:\n  - step: 1\n    subject: Hello\n    body: Initial"); err != nil {
+		VALUES ('reply-test', 'completed', 'seq.yml', ?)`, "defaults:\n  from_name: Morgan\nsteps:\n  - step: 1\n    subject: Hello\n    body: Initial"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO leads (email, domain) VALUES ('lead@example.com', 'example.com')`); err != nil {
@@ -204,7 +204,7 @@ func TestCLI_InboxReplyPreviewsByDefaultAndRequiresRecipientConfirmation(t *test
 	if code != 0 {
 		t.Fatalf("preview failed (exit %d): %s", code, out)
 	}
-	for _, expected := range []string{"PREVIEW — NOT SENT", "From: Maya <sender@example.com>", "To: lead@example.com", "Happy to send the details."} {
+	for _, expected := range []string{"PREVIEW — NOT SENT", "From: Morgan <sender@example.com>", "To: lead@example.com", "Happy to send the details."} {
 		if !strings.Contains(out, expected) {
 			t.Fatalf("preview missing %q:\n%s", expected, out)
 		}

@@ -24,6 +24,8 @@ memory/
 
 # Agent-local tooling
 .claude/skills/
+.claude/worktrees/
+ops/private/
 
 # Build artifacts
 /cold-cli

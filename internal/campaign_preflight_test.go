@@ -8,7 +8,7 @@ import (
 func TestPreflightCampaignLeadsBlocksPriorCampaignEmailAndDomain(t *testing.T) {
 	db := testDB(t)
 	if _, err := db.Exec(`INSERT INTO campaigns (workspace_id, name, status, sequence_file)
-		VALUES ('productlair', 'prior-campaign', 'completed', 'sequence.yml')`); err != nil {
+		VALUES ('workspace-b', 'prior-campaign', 'completed', 'sequence.yml')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO leads (email, domain, global_status)
@@ -27,7 +27,7 @@ func TestPreflightCampaignLeadsBlocksPriorCampaignEmailAndDomain(t *testing.T) {
 	}
 	result, err := PreflightCampaignLeads(CampaignPreflightConfig{
 		DB:           db,
-		WorkspaceID:  "storeinspect",
+		WorkspaceID:  "workspace-a",
 		HistoryScope: CampaignHistoryScopeAll,
 		CheckDomains: true,
 		Records:      records,
@@ -50,7 +50,7 @@ func TestPreflightCampaignLeadsBlocksPriorCampaignEmailAndDomain(t *testing.T) {
 	if result.Rows[2].Status != CampaignPreflightBlocked || !containsPreflightReason(result.Rows[2], "prior_domain_campaign") {
 		t.Fatalf("prior domain should be blocked: %+v", result.Rows[2])
 	}
-	if len(result.Rows[2].History) != 1 || result.Rows[2].History[0].WorkspaceID != "productlair" {
+	if len(result.Rows[2].History) != 1 || result.Rows[2].History[0].WorkspaceID != "workspace-b" {
 		t.Fatalf("expected cross-workspace history evidence: %+v", result.Rows[2].History)
 	}
 }
@@ -66,7 +66,7 @@ func TestPreflightCampaignLeadsBlocksInputDuplicatesButNotSharedFreeMailDomain(t
 		{Fields: map[string]string{"email": "second@gmail.com"}},
 	}
 	result, err := PreflightCampaignLeads(CampaignPreflightConfig{
-		DB: db, WorkspaceID: "storeinspect", HistoryScope: CampaignHistoryScopeAll,
+		DB: db, WorkspaceID: "workspace-a", HistoryScope: CampaignHistoryScopeAll,
 		CheckDomains: true, Records: records, SkipEmailValidation: true,
 	})
 	if err != nil {
@@ -97,7 +97,7 @@ func TestPreflightCampaignLeadsPreservesEmailManualReviewAndSuppression(t *testi
 		{Fields: map[string]string{"email": "blocked@example.net"}},
 	}
 	result, err := PreflightCampaignLeads(CampaignPreflightConfig{
-		DB: db, WorkspaceID: "storeinspect", HistoryScope: CampaignHistoryScopeAll,
+		DB: db, WorkspaceID: "workspace-a", HistoryScope: CampaignHistoryScopeAll,
 		CheckDomains: true, Records: records,
 		EmailVerifier: fakeRecipientVerifier{results: map[string]string{
 			"catch@example.com": RecipientStatusCatchAll,
@@ -120,7 +120,7 @@ func TestPreflightCampaignLeadsPreservesEmailManualReviewAndSuppression(t *testi
 	}
 
 	result, err = PreflightCampaignLeads(CampaignPreflightConfig{
-		DB: db, WorkspaceID: "storeinspect", HistoryScope: CampaignHistoryScopeAll,
+		DB: db, WorkspaceID: "workspace-a", HistoryScope: CampaignHistoryScopeAll,
 		CheckDomains: true,
 		Records:      []LeadRecord{{Fields: map[string]string{"email": "other@example.net"}}},
 		EmailVerifier: fakeRecipientVerifier{results: map[string]string{

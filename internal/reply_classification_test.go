@@ -9,22 +9,22 @@ import (
 func zendeskReplyFixture(comment string) GWSMessage {
 	return GWSMessage{
 		ID: "helpdesk-reply", ThreadID: "thread-helpdesk", InReplyTo: "sent-helpdesk",
-		From: "Example Support <support@example.com>", Subject: "[Example] Re: Publisher partnership",
-		Snippet: "Your request (431802) has been updated. To add additional comments, reply to this email.",
-		TextBody: "Your request (431802) has been updated. To add additional comments, reply to this email.\r\n" +
+		From: "Example Support <support@example.com>", Subject: "[Example] Re: Sample file",
+		Snippet: "Your request (1001) has been updated. To add additional comments, reply to this email.",
+		TextBody: "Your request (1001) has been updated. To add additional comments, reply to this email.\r\n" +
 			"----------------------------------------------\r\n\r\n" +
-			"Casey Morris, 14 Oct 2026, 14:26 BST\r\n\r\n" + comment +
+			"Taylor Example, 6 Jan 2026, 12:00 UTC\r\n\r\n" + comment +
 			"\r\n\r\n----------------------------------------------\r\n\r\n" +
-			"Anders, 12 Oct 2026, 09:15 BST\r\n\r\nOriginal message. To stop these emails, reply Unsubscribe.",
+			"Alex, 5 Jan 2026, 09:00 UTC\r\n\r\nOriginal message. To stop these emails, reply Unsubscribe.",
 		Headers: map[string]string{"Auto-Submitted": "auto-generated", "X-Mailer": "Zendesk Mailer"},
 	}
 }
 
 func TestClassifyInboundMessageHelpdeskAndQuotedHistory(t *testing.T) {
-	human := zendeskReplyFixture("Hey Anders,\r\nHere are our requirements: active niche blogs with identifiable authors.")
-	redirect := zendeskReplyFixture("Hi Anders,\r\nPlease email me over at link-outreach@example.com.\r\nThanks, Casey")
+	human := zendeskReplyFixture("Hey Alex,\r\nThe sample file needs a title and a short summary.")
+	redirect := zendeskReplyFixture("Hi Alex,\r\nPlease continue this conversation at team@example.com.\r\nThanks, Taylor")
 	ack := GWSMessage{
-		Subject: "[Request received]", TextBody: "Your request (26300) has been received and is being reviewed by our support staff.",
+		Subject: "[Request received]", TextBody: "Your request (1002) has been received and is being reviewed by our support staff.",
 		Headers: map[string]string{"Auto-Submitted": "auto-generated", "X-Mailer": "Zendesk Mailer"},
 	}
 	tests := []struct {
@@ -37,10 +37,10 @@ func TestClassifyInboundMessageHelpdeskAndQuotedHistory(t *testing.T) {
 		{"ticket acknowledgement", ack, inboundClassificationAutoReply},
 		{"automated comment", zendeskReplyFixture("We have received your request. We'll pick up your ticket as soon as possible."), inboundClassificationAutoReply},
 		{"unsubscribe in newest comment", zendeskReplyFixture("Please remove me from your list."), inboundClassificationUnsubscribe},
-		{"ordinary greeting", GWSMessage{Subject: "Re: Partnership", TextBody: "Thank you for contacting us. Yes, please send your sites."}, inboundClassificationReply},
-		{"support ticket mentioned", GWSMessage{Subject: "Re: Partnership", TextBody: "I reviewed your support ticket. Our budget is $300."}, inboundClassificationReply},
+		{"ordinary greeting", GWSMessage{Subject: "Re: Partnership", TextBody: "Thank you for contacting us. Yes, please attach the sample."}, inboundClassificationReply},
+		{"support ticket mentioned", GWSMessage{Subject: "Re: Partnership", TextBody: "I reviewed your support ticket. Please attach the sample."}, inboundClassificationReply},
 		{"quoted acknowledgement", GWSMessage{Subject: "Re: Partnership", TextBody: "Yes, please send details.\n\nOn Tue, Support wrote:\nThank you for contacting us. Your ticket has been submitted."}, inboundClassificationReply},
-		{"quoted unsubscribe footer", GWSMessage{Subject: "Re: Partnership", TextBody: "Yes, please send details.\n\nOn Tue, Anders wrote:\nTo stop these emails, reply Unsubscribe."}, inboundClassificationReply},
+		{"quoted unsubscribe footer", GWSMessage{Subject: "Re: Partnership", TextBody: "Yes, please send details.\n\nOn Tue, Alex wrote:\nTo stop these emails, reply Unsubscribe."}, inboundClassificationReply},
 		{"stale snippet", GWSMessage{Subject: "Re: Partnership", Snippet: "Your ticket has been submitted.", TextBody: "Yes, please send details."}, inboundClassificationReply},
 		{"html quoted acknowledgement", GWSMessage{Subject: "Re: Partnership", HTMLBody: "<p>Yes, please send details.</p><blockquote>Your ticket has been submitted.</blockquote>"}, inboundClassificationReply},
 		{"actual generated notification", GWSMessage{TextBody: "Your report is ready.", Headers: map[string]string{"Auto-Submitted": "auto-generated"}}, inboundClassificationAutoReply},
@@ -59,7 +59,7 @@ func TestClassifyInboundMessageHelpdeskAndQuotedHistory(t *testing.T) {
 
 	t.Run("provider marker alone does not prove human authorship", func(t *testing.T) {
 		msg := human
-		msg.TextBody = "Your request (431802) has been updated."
+		msg.TextBody = "Your request (1001) has been updated."
 		if got := classifyInboundMessage(msg); got != inboundClassificationAutoReply {
 			t.Fatalf("classification = %q, want auto_reply", got)
 		}
@@ -94,8 +94,8 @@ func TestProcessRepliesHelpdeskStopsFollowupsAndDeduplicates(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			msg := zendeskReplyFixture("Please send your sites and prices.")
-			msg.Date = time.Date(2026, 10, 14, 13, 26, 23, 0, time.UTC)
+			msg := zendeskReplyFixture("Please send the sample file.")
+			msg.Date = time.Date(2026, 1, 6, 12, 0, 0, 0, time.UTC)
 			account := Account{ID: 1, Email: "sender@x.com", Provider: provider, Status: "active"}
 			poll := func() (int, int, error) {
 				if provider == AccountProviderGWS {

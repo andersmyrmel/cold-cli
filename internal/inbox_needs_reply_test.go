@@ -13,7 +13,7 @@ func TestReviewNeedsReplyCandidatesReturnsProviderVerifiedLatestInbound(t *testi
 	gws.InboxMessages = provider
 
 	result, err := ReviewNeedsReplyCandidates(NeedsReplyCandidatesConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: now.AddDate(0, 0, -30),
+		DB: store.DB, WorkspaceID: "workspace-a", Since: now.AddDate(0, 0, -30),
 		Now: now, Limit: 20, IncludeThread: true, GWS: gws,
 	})
 	if err != nil {
@@ -48,7 +48,7 @@ func TestFindNeedsReplyCandidatesExcludesThreadAnsweredAfterInbound(t *testing.T
 		TextBody: "Here are the details", OccurredAt: now.AddDate(0, 0, -12),
 	})
 	result, err := FindNeedsReplyCandidates(FindNeedsReplyCandidatesConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: now.AddDate(0, 0, -30),
+		DB: store.DB, WorkspaceID: "workspace-a", Since: now.AddDate(0, 0, -30),
 		Now: now, Limit: 20,
 	})
 	if err != nil {
@@ -78,7 +78,7 @@ func TestFindNeedsReplyCandidatesIncludesConversationAcrossProviderThreadIDs(t *
 	})
 
 	result, err := FindNeedsReplyCandidates(FindNeedsReplyCandidatesConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: now.AddDate(0, 0, -30),
+		DB: store.DB, WorkspaceID: "workspace-a", Since: now.AddDate(0, 0, -30),
 		Now: now, Limit: 20, IncludeThread: true,
 	})
 	if err != nil {
@@ -102,7 +102,7 @@ func TestReviewNeedsReplyCandidatesFailsClosedWhenProviderHasUntrackedOutbound(t
 	gws.InboxMessages = followupProviderThread(now)
 
 	result, err := ReviewNeedsReplyCandidates(NeedsReplyCandidatesConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: now.AddDate(0, 0, -30),
+		DB: store.DB, WorkspaceID: "workspace-a", Since: now.AddDate(0, 0, -30),
 		Now: now, Limit: 20, GWS: gws,
 	})
 	if err == nil || !strings.Contains(err.Error(), "reconciliation required") {
@@ -113,7 +113,7 @@ func TestReviewNeedsReplyCandidatesFailsClosedWhenProviderHasUntrackedOutbound(t
 	}
 
 	result, err = ReviewNeedsReplyCandidates(NeedsReplyCandidatesConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: now.AddDate(0, 0, -30),
+		DB: store.DB, WorkspaceID: "workspace-a", Since: now.AddDate(0, 0, -30),
 		Now: now, Limit: 20, Reconcile: true, GWS: gws,
 	})
 	if err != nil {
