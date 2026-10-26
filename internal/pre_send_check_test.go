@@ -34,14 +34,14 @@ func TestSendCheckContactsIncludesCcAndPhoneAliases(t *testing.T) {
 		ToEmail:  "Doctor <DOCTOR@example.com>",
 		CcEmails: []string{"office@example.com", "doctor@example.com"},
 	}, map[string]string{
-		"phone":         "+47 900 00 000",
-		"phone_numbers": `["+4790000000","+4791111111"]`,
-		"mobile":        "+4792222222; +4793333333",
+		"phone":         "+1 202 555 0100",
+		"phone_numbers": `["+12025550100","+12025550101"]`,
+		"mobile":        "+12025550102; +12025550103",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"doctor@example.com", "office@example.com", "+47 900 00 000", "+4790000000", "+4791111111", "+4792222222", "+4793333333"}
+	want := []string{"doctor@example.com", "office@example.com", "+1 202 555 0100", "+12025550100", "+12025550101", "+12025550102", "+12025550103"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("contacts = %#v, want %#v", got, want)
 	}
@@ -91,8 +91,8 @@ func TestPreSendCheckRunsFreshForEveryDeliveryAndScopesWorkspace(t *testing.T) {
 	command := writeTestContactCheck(t, `cat >/dev/null
 if [ -f "$TEST_CONTACT_BLOCK_FLAG" ]; then exit 2; fi
 exit 0`)
-	configureTestContactCheck(t, "journalhjelp", command)
-	account := Account{Email: "sender@example.com", Provider: AccountProviderGWS, WorkspaceID: "journalhjelp"}
+	configureTestContactCheck(t, "workspace-a", command)
+	account := Account{Email: "sender@example.com", Provider: AccountProviderGWS, WorkspaceID: "workspace-a"}
 	params := EmailParams{FromEmail: account.Email, ToEmail: "a@example.com", Subject: "Hi", Body: "Hello"}
 	gws := &MockGWS{}
 	if _, _, err := sendRenderedEmail(TickConfig{GWS: gws}, account, params, nil); err != nil {
@@ -121,11 +121,11 @@ func TestTickPreSendCheckSkipsBothStepsAndFailsClosedOnErrors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db, campaignID, _, _ := setupTickTestDB(t)
-			configureTestContactCheck(t, "journalhjelp", writeTestContactCheck(t, tc.script))
-			if _, err := db.Exec("UPDATE accounts SET workspace_id = 'journalhjelp', provider = ?", AccountProviderSMTPIMAP); err != nil {
+			configureTestContactCheck(t, "workspace-a", writeTestContactCheck(t, tc.script))
+			if _, err := db.Exec("UPDATE accounts SET workspace_id = 'workspace-a', provider = ?", AccountProviderSMTPIMAP); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.Exec("UPDATE campaigns SET workspace_id = 'journalhjelp'"); err != nil {
+			if _, err := db.Exec("UPDATE campaigns SET workspace_id = 'workspace-a'"); err != nil {
 				t.Fatal(err)
 			}
 			now := time.Date(2026, 10, 15, 10, 0, 0, 0, time.UTC)
@@ -162,17 +162,17 @@ func TestManualReplyPreSendCheckIncludesChangedRecipientCcAndPhone(t *testing.T)
 	db, campaignID, _, _ := setupTickTestDB(t)
 	command := writeTestContactCheck(t, `contacts=$(cat)
 case "$contacts" in
-  *reply@example.com*office@example.com*+4790000000*) exit 2 ;;
+  *reply@example.com*office@example.com*+12025550100*) exit 2 ;;
   *) exit 1 ;;
 esac`)
-	configureTestContactCheck(t, "journalhjelp", command)
-	if _, err := db.Exec("UPDATE accounts SET workspace_id = 'journalhjelp', provider = ?", AccountProviderSMTPIMAP); err != nil {
+	configureTestContactCheck(t, "workspace-a", command)
+	if _, err := db.Exec("UPDATE accounts SET workspace_id = 'workspace-a', provider = ?", AccountProviderSMTPIMAP); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("UPDATE campaigns SET workspace_id = 'journalhjelp'"); err != nil {
+	if _, err := db.Exec("UPDATE campaigns SET workspace_id = 'workspace-a'"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`UPDATE leads SET custom_fields = '{"phone":"+4790000000"}' WHERE id = 1`); err != nil {
+	if _, err := db.Exec(`UPDATE leads SET custom_fields = '{"phone":"+12025550100"}' WHERE id = 1`); err != nil {
 		t.Fatal(err)
 	}
 	if err := insertEmailMessage(db, EmailMessage{
@@ -187,7 +187,7 @@ esac`)
 	}
 	smtp := &MockSMTPEmailSender{}
 	_, err := SendInboxReply(SendInboxReplyConfig{
-		DB: db, WorkspaceID: "journalhjelp", CampaignID: campaignID, LeadID: 1,
+		DB: db, WorkspaceID: "workspace-a", CampaignID: campaignID, LeadID: 1,
 		Body: "A reply", ReplyAll: true, SMTPSender: smtp,
 	})
 	if !errors.Is(err, ErrContactSuppressed) {
@@ -229,7 +229,7 @@ func TestPreSendCheckRejectsInvalidRuntimeConfig(t *testing.T) {
 	}
 	gws := &MockGWS{}
 	_, _, err := sendRenderedEmail(TickConfig{GWS: gws},
-		Account{WorkspaceID: "journalhjelp", Email: "sender@example.com", Provider: AccountProviderGWS},
+		Account{WorkspaceID: "workspace-a", Email: "sender@example.com", Provider: AccountProviderGWS},
 		EmailParams{FromEmail: "sender@example.com", ToEmail: "a@example.com", Subject: "Hi", Body: "Hello"}, nil)
 	if err == nil || len(gws.SentEmails) != 0 {
 		t.Fatalf("invalid runtime configuration did not block delivery: %v", err)

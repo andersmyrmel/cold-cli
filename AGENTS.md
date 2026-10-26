@@ -2,6 +2,13 @@
 
 Agent-first CLI cold email sequence engine in Go. See ARCHITECTURE.md for full design.
 
+## Public Repository Privacy
+
+- This repository is public. Keep private project names, sender domains, contact details, correspondence, campaign records, deployment details, and agent memory out of tracked files, comments, commit messages, and pull request text.
+- Use invented fixtures with reserved example domains such as `example.com` or `workspace-a.example`, generic workspace names, and synthetic message IDs, dates, and phone numbers. Rewrite message content as well as identities when reproducing a real issue.
+- Keep exact production repairs and installed configuration outside the repository. `ops/private/` is ignored for local operational files; publish only generic examples.
+- Before finishing, review the full diff for accidental cross-project or production data. Secret scanners do not detect all private information.
+
 ## Quick Reference
 
 - **Language:** Go

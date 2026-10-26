@@ -23,7 +23,7 @@ func seedStoredReplyThread(t *testing.T, provider string) (*MockGWS, *MockIMAPMe
 		workspace_id, email, provider, status,
 		smtp_host, smtp_port, smtp_username, smtp_password_ref, smtp_tls_mode,
 		imap_host, imap_port, imap_username, imap_password_ref, imap_tls_mode
-	) VALUES ('storeinspect', 'sender@example.com', ?, 'active',
+	) VALUES ('workspace-a', 'sender@example.com', ?, 'active',
 		'smtp.example.com', 587, 'sender@example.com', 'env:MAIL_PASSWORD', 'starttls',
 		'imap.example.com', 993, 'sender@example.com', 'env:MAIL_PASSWORD', 'ssl')`, provider)
 	if err != nil {
@@ -33,7 +33,7 @@ func seedStoredReplyThread(t *testing.T, provider string) (*MockGWS, *MockIMAPMe
 
 	result, err = db.Exec(`INSERT INTO campaigns (
 		workspace_id, name, status, sequence_file, sequence_content
-	) VALUES ('storeinspect', 'sync-test', 'active', 'sequence.yml', 'defaults:\n  from_name: Anders')`)
+	) VALUES ('workspace-a', 'sync-test', 'active', 'sequence.yml', 'defaults:\n  from_name: Alex')`)
 	if err != nil {
 		t.Fatalf("insert campaign: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestSyncEmailThreadGWSImportsExternallySentMessage(t *testing.T) {
 	}
 
 	result, err := SyncEmailThread(SyncEmailThreadConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", CampaignID: campaignID, LeadID: leadID, GWS: gws,
+		DB: store.DB, WorkspaceID: "workspace-a", CampaignID: campaignID, LeadID: leadID, GWS: gws,
 	})
 	if err != nil {
 		t.Fatalf("sync thread: %v", err)
@@ -156,7 +156,7 @@ func TestSyncEmailThreadSMTPImportsSentAndFiltersUnrelatedMessages(t *testing.T)
 	}
 
 	result, err := SyncEmailThread(SyncEmailThreadConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", CampaignID: campaignID, LeadID: leadID, IMAP: imap,
+		DB: store.DB, WorkspaceID: "workspace-a", CampaignID: campaignID, LeadID: leadID, IMAP: imap,
 	})
 	if err != nil {
 		t.Fatalf("sync thread: %v", err)
@@ -198,7 +198,7 @@ func TestSyncEmailThreadUpdatesExistingRawMIMEBody(t *testing.T) {
 	}}
 
 	result, err := SyncEmailThread(SyncEmailThreadConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", CampaignID: campaignID, LeadID: leadID, IMAP: imap,
+		DB: store.DB, WorkspaceID: "workspace-a", CampaignID: campaignID, LeadID: leadID, IMAP: imap,
 	})
 	if err != nil {
 		t.Fatalf("sync thread: %v", err)
@@ -223,7 +223,7 @@ func TestSendInboxReplyRefreshFailureBlocksDelivery(t *testing.T) {
 	gws.ThreadError = errors.New("gmail unavailable")
 
 	_, err := SendInboxReply(SendInboxReplyConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", CampaignID: campaignID, LeadID: leadID,
+		DB: store.DB, WorkspaceID: "workspace-a", CampaignID: campaignID, LeadID: leadID,
 		Body: "This must not send", RefreshThread: true, GWS: gws,
 	})
 	if err == nil || !strings.Contains(err.Error(), "refreshing thread") {
@@ -246,7 +246,7 @@ func TestSendInboxReplyRefreshBlocksNewlyDiscoveredUnsubscribe(t *testing.T) {
 	}
 
 	_, err := SendInboxReply(SendInboxReplyConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", CampaignID: campaignID, LeadID: leadID,
+		DB: store.DB, WorkspaceID: "workspace-a", CampaignID: campaignID, LeadID: leadID,
 		Body: "This must not send", RefreshThread: true, GWS: gws,
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsubscribe") {

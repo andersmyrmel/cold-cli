@@ -13,7 +13,7 @@ func TestReviewFollowupCandidatesFailsClosedWhenProviderHasUntrackedMessages(t *
 	gws.InboxMessages = followupProviderThread(now)
 
 	result, err := ReviewFollowupCandidates(FollowupCandidatesConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: now.AddDate(0, 0, -30),
+		DB: store.DB, WorkspaceID: "workspace-a", Since: now.AddDate(0, 0, -30),
 		Now: now, MinAge: 7 * 24 * time.Hour, MaxFollowups: 0, Limit: 20, GWS: gws,
 	})
 	if err == nil || !strings.Contains(err.Error(), "reconciliation required") {
@@ -40,7 +40,7 @@ func TestReviewFollowupCandidatesReconcilesThenReturnsVerifiedCandidate(t *testi
 	gws.InboxMessages = followupProviderThread(now)
 
 	result, err := ReviewFollowupCandidates(FollowupCandidatesConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: now.AddDate(0, 0, -30),
+		DB: store.DB, WorkspaceID: "workspace-a", Since: now.AddDate(0, 0, -30),
 		Now: now, MinAge: 7 * 24 * time.Hour, MaxFollowups: 0, Limit: 20,
 		Reconcile: true, IncludeThread: true, GWS: gws,
 	})
@@ -80,7 +80,7 @@ func TestReviewFollowupCandidatesBlocksOnProviderAccountError(t *testing.T) {
 	gws.ThreadError = errors.New("provider unavailable")
 
 	result, err := ReviewFollowupCandidates(FollowupCandidatesConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: now.AddDate(0, 0, -30),
+		DB: store.DB, WorkspaceID: "workspace-a", Since: now.AddDate(0, 0, -30),
 		Now: now, MinAge: 7 * 24 * time.Hour, GWS: gws,
 	})
 	if err == nil || !strings.Contains(err.Error(), "provider audit failed") {
@@ -110,7 +110,7 @@ func TestFindFollowupCandidatesExcludesPriorRevivalByDefault(t *testing.T) {
 	})
 
 	result, err := FindFollowupCandidates(FindFollowupCandidatesConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: now.AddDate(0, 0, -30),
+		DB: store.DB, WorkspaceID: "workspace-a", Since: now.AddDate(0, 0, -30),
 		Now: now, MinAge: 7 * 24 * time.Hour, MaxFollowups: 0, Limit: 20,
 	})
 	if err != nil {
@@ -121,7 +121,7 @@ func TestFindFollowupCandidatesExcludesPriorRevivalByDefault(t *testing.T) {
 	}
 
 	result, err = FindFollowupCandidates(FindFollowupCandidatesConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: now.AddDate(0, 0, -30),
+		DB: store.DB, WorkspaceID: "workspace-a", Since: now.AddDate(0, 0, -30),
 		Now: now, MinAge: 7 * 24 * time.Hour, MaxFollowups: 1, Limit: 20,
 	})
 	if err != nil {
@@ -144,7 +144,7 @@ func TestFindFollowupCandidatesCountsConversationAcrossProviderThreadIDs(t *test
 	})
 
 	result, err := FindFollowupCandidates(FindFollowupCandidatesConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: now.AddDate(0, 0, -30),
+		DB: store.DB, WorkspaceID: "workspace-a", Since: now.AddDate(0, 0, -30),
 		Now: now, MinAge: 7 * 24 * time.Hour, MaxFollowups: 0, Limit: 20,
 		IncludeThread: true,
 	})
@@ -180,7 +180,7 @@ func TestFindFollowupCandidatesExcludesSuppressedLead(t *testing.T) {
 	}
 
 	result, err := FindFollowupCandidates(FindFollowupCandidatesConfig{
-		DB: store.DB, WorkspaceID: "storeinspect", Since: now.AddDate(0, 0, -30),
+		DB: store.DB, WorkspaceID: "workspace-a", Since: now.AddDate(0, 0, -30),
 		Now: now, MinAge: 7 * 24 * time.Hour, MaxFollowups: 0, Limit: 20,
 	})
 	if err != nil {

@@ -150,11 +150,11 @@ func TestBuildEmailForSend_SenderTemplateFields(t *testing.T) {
 		"first_name": "John",
 	}
 
-	p := BuildEmailForSend(seq, 1, 0, lead, "nora@usestoreinspect.com")
-	if p.FromName != "Nora" {
-		t.Errorf("expected sender-derived from name Nora, got %q", p.FromName)
+	p := BuildEmailForSend(seq, 1, 0, lead, "sam@example.com")
+	if p.FromName != "Sam" {
+		t.Errorf("expected sender-derived from name Sam, got %q", p.FromName)
 	}
-	if p.Body != "Hello from Nora at nora@usestoreinspect.com" {
+	if p.Body != "Hello from Sam at sam@example.com" {
 		t.Errorf("expected sender fields in body, got %q", p.Body)
 	}
 	if len(p.StrippedVars) != 0 {
@@ -175,7 +175,7 @@ func TestBuildEmailForSend_LeadFieldsOverrideSenderFields(t *testing.T) {
 		"sender_name": "Account Team",
 	}
 
-	p := BuildEmailForSend(seq, 1, 0, lead, "maya@withstoreinspect.com")
+	p := BuildEmailForSend(seq, 1, 0, lead, "morgan@example.com")
 	if p.FromName != "Account Team" {
 		t.Errorf("expected lead sender_name to preserve existing custom-field behavior, got %q", p.FromName)
 	}

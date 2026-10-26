@@ -185,7 +185,7 @@ steps:
 		t.Fatalf("linking source account: %v", err)
 	}
 
-	leadsCSV := "email,first_name,company\ncloned@example.com,Clara,CloneCo\n"
+	leadsCSV := "email,first_name,company\ncloned@example.com,Charlie,CloneCo\n"
 	result, err := CloneCampaign(db, CloneCampaignOpts{
 		SourceName:  "pg-clone-source",
 		NewName:     "pg-clone-copy",

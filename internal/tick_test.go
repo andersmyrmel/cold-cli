@@ -250,10 +250,10 @@ func TestTick_PersistsOutboundEmailMessageSnapshot(t *testing.T) {
 func TestTick_CompletesCampaignAfterFinalSend(t *testing.T) {
 	db, campaignID, accountIDs, leadIDs := setupTickTestDB(t)
 	now := time.Now().UTC()
-	if _, err := db.Exec("UPDATE accounts SET workspace_id = 'storeinspect' WHERE id = ?", accountIDs[0]); err != nil {
+	if _, err := db.Exec("UPDATE accounts SET workspace_id = 'workspace-a' WHERE id = ?", accountIDs[0]); err != nil {
 		t.Fatalf("updating account workspace: %v", err)
 	}
-	if _, err := db.Exec("UPDATE campaigns SET workspace_id = 'storeinspect' WHERE id = ?", campaignID); err != nil {
+	if _, err := db.Exec("UPDATE campaigns SET workspace_id = 'workspace-a' WHERE id = ?", campaignID); err != nil {
 		t.Fatalf("updating campaign workspace: %v", err)
 	}
 
@@ -266,7 +266,7 @@ func TestTick_CompletesCampaignAfterFinalSend(t *testing.T) {
 		Now:                          now,
 		NoSleep:                      true,
 		DiscordNotifier:              notifier,
-		DiscordOperationalWorkspaces: []string{"storeinspect"},
+		DiscordOperationalWorkspaces: []string{"workspace-a"},
 	})
 	if err != nil {
 		t.Fatalf("tick error: %v", err)

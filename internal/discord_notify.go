@@ -299,9 +299,6 @@ func discordWorkspaceLabel(workspace string) string {
 	if workspace == "" {
 		return "Cold email"
 	}
-	if strings.EqualFold(workspace, "storeinspect") {
-		return "StoreInspect"
-	}
 	return workspace
 }
 

@@ -1,0 +1,4 @@
+# Replace /path/to paths and workspace-a before installing this example.
+*/10 * * * * /usr/bin/nice -n 10 /usr/bin/ionice -c2 -n7 /path/to/cold-cli --env-file /path/to/runner.env tick >> /path/to/cron.log 2>&1
+0 2 * * * /usr/bin/nice -n 10 /usr/bin/ionice -c2 -n7 /path/to/cold-cli --env-file /path/to/runner.env --workspace workspace-a inbox reconcile --since 30d --lock-wait 10m --notify-errors >> /path/to/reconcile.log 2>&1
+0 3 * * 0 /usr/bin/nice -n 10 /usr/bin/ionice -c2 -n7 /path/to/cold-cli --env-file /path/to/runner.env --workspace workspace-a inbox reconcile --since 120d --lock-wait 10m --notify-errors >> /path/to/reconcile.log 2>&1
