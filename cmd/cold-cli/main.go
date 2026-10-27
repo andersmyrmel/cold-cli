@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/mail"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,19 +58,35 @@ func configuredGWSClient(store *internal.Store) *internal.GWSCLI {
 	return internal.ConfiguredGWSClient(store.DB)
 }
 
-func configuredDiscordNotifierFromEnv() internal.DiscordNotifier {
+func configuredDiscordNotifierFromEnv() (internal.DiscordNotifier, error) {
 	if !envFlagEnabled("COLD_CLI_DISCORD_NOTIFY", true) {
-		return nil
+		return nil, nil
+	}
+	var workspaceWebhooks map[string]string
+	if raw, configured := os.LookupEnv("COLD_CLI_DISCORD_WEBHOOKS"); configured {
+		invalidConfig := fmt.Errorf("COLD_CLI_DISCORD_WEBHOOKS must be a JSON object mapping workspace IDs to non-empty HTTP(S) webhook URLs")
+		if err := json.Unmarshal([]byte(raw), &workspaceWebhooks); err != nil || workspaceWebhooks == nil {
+			return nil, invalidConfig
+		}
+		for workspace, webhook := range workspaceWebhooks {
+			parsed, err := url.ParseRequestURI(webhook)
+			if strings.TrimSpace(workspace) == "" || workspace != internal.NormalizeWorkspaceID(workspace) ||
+				workspace == "*" || workspace == "all" || strings.TrimSpace(webhook) == "" ||
+				err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+				return nil, invalidConfig
+			}
+		}
 	}
 	webhookURL := strings.TrimSpace(os.Getenv("DISCORD_WEBHOOK_URL"))
-	if webhookURL == "" {
-		return nil
+	if webhookURL == "" && workspaceWebhooks == nil {
+		return nil, nil
 	}
 	return internal.DiscordWebhookNotifier{
-		WebhookURL: webhookURL,
-		Username:   os.Getenv("DISCORD_WEBHOOK_USERNAME"),
-		AvatarURL:  os.Getenv("DISCORD_WEBHOOK_AVATAR_URL"),
-	}
+		WebhookURL:           webhookURL,
+		WorkspaceWebhookURLs: workspaceWebhooks,
+		Username:             os.Getenv("DISCORD_WEBHOOK_USERNAME"),
+		AvatarURL:            os.Getenv("DISCORD_WEBHOOK_AVATAR_URL"),
+	}, nil
 }
 
 func configuredDiscordProvidersFromEnv() []string {
@@ -1845,6 +1863,10 @@ var tickCmd = &cobra.Command{
 			}
 		}
 
+		discordNotifier, err := configuredDiscordNotifierFromEnv()
+		if err != nil {
+			return err
+		}
 		result, err := internal.Tick(internal.TickConfig{
 			DB:                           db,
 			GWS:                          gwsCLI,
@@ -1853,7 +1875,7 @@ var tickCmd = &cobra.Command{
 			Timezone:                     tz,
 			UnsubscribeHeader:            unsubHeader,
 			UnsubscribeSubject:           unsubSubject,
-			DiscordNotifier:              configuredDiscordNotifierFromEnv(),
+			DiscordNotifier:              discordNotifier,
 			DiscordProviders:             configuredDiscordProvidersFromEnv(),
 			DiscordOperationalWorkspaces: configuredDiscordOperationalWorkspacesFromEnv(),
 		})
@@ -2218,19 +2240,26 @@ func acquireTickLockWithWait(store *internal.Store, wait time.Duration) (interna
 }
 
 func notifyInboxReconciliationFailure(reconcileErr error) {
-	notifier := configuredDiscordNotifierFromEnv()
-	if notifier == nil || reconcileErr == nil {
+	if reconcileErr == nil {
+		return
+	}
+	notifier, err := configuredDiscordNotifierFromEnv()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: inbox reconciliation alert failed: %v\n", err)
+		return
+	}
+	if notifier == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	err := notifier.NotifyDiscord(ctx, internal.DiscordNotificationEvent{
+	err = notifier.NotifyDiscord(ctx, internal.DiscordNotificationEvent{
 		EventType:   internal.DiscordEventInboxReconciliationFailed,
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 		WorkspaceID: currentWorkspaceID(),
 		Snippet:     reconcileErr.Error(),
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, internal.ErrDiscordWorkspaceUnconfigured) {
 		fmt.Fprintf(os.Stderr, "warning: inbox reconciliation alert failed: %v\n", err)
 	}
 }

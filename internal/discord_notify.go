@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,9 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrDiscordWorkspaceUnconfigured means routing deliberately skipped an alert.
+var ErrDiscordWorkspaceUnconfigured = errors.New("no Discord webhook configured for workspace")
 
 const (
 	discordNotifyLastEventIDKey = "discord_notify_last_event_id"
@@ -78,9 +82,11 @@ type DiscordNotificationEvent struct {
 // DiscordWebhookNotifier posts cold-cli notifications to a Discord webhook URL.
 type DiscordWebhookNotifier struct {
 	WebhookURL string
-	Username   string
-	AvatarURL  string
-	HTTPClient *http.Client
+	// A non-nil map enables explicit routing with no shared-webhook fallback.
+	WorkspaceWebhookURLs map[string]string
+	Username             string
+	AvatarURL            string
+	HTTPClient           *http.Client
 }
 
 type discordWebhookPayload struct {
@@ -110,6 +116,12 @@ type discordEmbedField struct {
 
 func (n DiscordWebhookNotifier) NotifyDiscord(ctx context.Context, event DiscordNotificationEvent) error {
 	webhookURL := strings.TrimSpace(n.WebhookURL)
+	if n.WorkspaceWebhookURLs != nil {
+		webhookURL = strings.TrimSpace(n.WorkspaceWebhookURLs[event.WorkspaceID])
+		if webhookURL == "" {
+			return ErrDiscordWorkspaceUnconfigured
+		}
+	}
 	if webhookURL == "" {
 		return fmt.Errorf("discord webhook URL is required")
 	}
@@ -183,6 +195,9 @@ func BuildDiscordWebhookPayload(event DiscordNotificationEvent) discordWebhookPa
 		{Name: "Lead", Value: discordFieldValue(leadLabel(event)), Inline: false},
 		{Name: "From", Value: discordFieldValue(event.FromEmail), Inline: true},
 		{Name: "Subject", Value: discordFieldValue(event.Subject), Inline: false},
+	}
+	if event.WorkspaceID != "" {
+		fields = append(fields, discordEmbedField{Name: "Workspace", Value: discordFieldValue(event.WorkspaceID), Inline: true})
 	}
 	if event.Recovered {
 		fields = append(fields, discordEmbedField{
@@ -340,13 +355,16 @@ func ProcessDiscordNotifications(ctx context.Context, db *sql.DB, notifier Disco
 
 	notified := 0
 	for _, event := range events {
-		if err := notifier.NotifyDiscord(ctx, event); err != nil {
+		err := notifier.NotifyDiscord(ctx, event)
+		if err != nil && !errors.Is(err, ErrDiscordWorkspaceUnconfigured) {
 			return notified, err
 		}
 		if err := setKVInt64(db, discordNotifyLastEventIDKey, event.EventID); err != nil {
 			return notified, err
 		}
-		notified++
+		if err == nil {
+			notified++
+		}
 	}
 
 	return notified, nil
@@ -451,7 +469,9 @@ func processDiscordCampaignCompletions(ctx context.Context, db *sql.DB, notifier
 			SkippedCount:      stats.Skipped,
 			CancelledCount:    stats.Cancelled,
 		}
-		if err := notifier.NotifyDiscord(ctx, event); err != nil {
+		if err := notifier.NotifyDiscord(ctx, event); errors.Is(err, ErrDiscordWorkspaceUnconfigured) {
+			continue
+		} else if err != nil {
 			return notified, err
 		}
 		if err := markDiscordCampaignCompletionNotified(db, campaign, idleAccounts, now); err != nil {
@@ -668,7 +688,9 @@ func processDiscordIdleAccounts(ctx context.Context, db *sql.DB, notifier Discor
 			IdleSince:    account.IdleSince,
 			Reminder:     account.LastNotifiedAt.Valid,
 		}
-		if err := notifier.NotifyDiscord(ctx, event); err != nil {
+		if err := notifier.NotifyDiscord(ctx, event); errors.Is(err, ErrDiscordWorkspaceUnconfigured) {
+			continue
+		} else if err != nil {
 			return notified, err
 		}
 		if _, err := execDB(db, `UPDATE accounts SET idle_notified_at = ?
@@ -753,6 +775,8 @@ func listDiscordNotificationEvents(db *sql.DB, afterEventID int64, limit int, pr
 			e.timestamp,
 			e.metadata,
 			e.message_id,
+			c.id,
+			c.workspace_id,
 			c.name,
 			l.email,
 			l.company,
@@ -761,6 +785,9 @@ func listDiscordNotificationEvents(db *sql.DB, afterEventID int64, limit int, pr
 				SELECT em.from_email
 				FROM email_messages em
 				WHERE em.message_id = e.message_id
+					AND em.campaign_id = e.campaign_id
+					AND em.account_id = e.account_id
+					AND em.lead_id = e.lead_id
 					AND em.type = e.type
 					AND em.direction = 'inbound'
 				ORDER BY em.id ASC
@@ -770,6 +797,9 @@ func listDiscordNotificationEvents(db *sql.DB, afterEventID int64, limit int, pr
 				SELECT em.subject
 				FROM email_messages em
 				WHERE em.message_id = e.message_id
+					AND em.campaign_id = e.campaign_id
+					AND em.account_id = e.account_id
+					AND em.lead_id = e.lead_id
 					AND em.type = e.type
 					AND em.direction = 'inbound'
 				ORDER BY em.id ASC
@@ -783,6 +813,9 @@ func listDiscordNotificationEvents(db *sql.DB, afterEventID int64, limit int, pr
 				END
 				FROM email_messages em
 				WHERE em.message_id = e.message_id
+					AND em.campaign_id = e.campaign_id
+					AND em.account_id = e.account_id
+					AND em.lead_id = e.lead_id
 					AND em.type = e.type
 					AND em.direction = 'inbound'
 				ORDER BY em.id ASC
@@ -824,6 +857,8 @@ func listDiscordNotificationEvents(db *sql.DB, afterEventID int64, limit int, pr
 			&event.Timestamp,
 			&metadata,
 			&event.MessageID,
+			&event.CampaignID,
+			&event.WorkspaceID,
 			&event.CampaignName,
 			&event.LeadEmail,
 			&event.LeadCompany,

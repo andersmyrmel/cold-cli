@@ -313,12 +313,28 @@ export COLD_CLI_DISCORD_WORKSPACES='workspace-a'
 cold-cli tick
 ```
 
+For a runner serving multiple workspaces, configure an explicit webhook for each
+workspace that should receive alerts:
+
+```bash
+export COLD_CLI_DISCORD_WEBHOOKS='{"workspace-a":"https://discord.com/api/webhooks/...","workspace-b":"https://discord.com/api/webhooks/..."}'
+```
+
+This routes reply, unsubscribe, campaign-finished, sender-idle, and reconciliation
+failure alerts by workspace. When this map is configured, unmapped workspaces are
+skipped; `DISCORD_WEBHOOK_URL` is never used as a fallback. Use lowercase workspace
+IDs as keys. An empty object disables all destinations; invalid routing
+configuration stops `tick` before polling or sending. Skipped reply/unsubscribe
+events advance the notification cursor and are not replayed if a route is added
+later. Without this map, the legacy shared webhook receives replies from all
+workspaces.
+
 Notes:
 
-- The webhook URL is a secret. Store it in your local/production env file, not in git.
+- Webhook URLs are secrets. Store them in your local/production env file, not in git.
 - Set `COLD_CLI_DISCORD_NOTIFY=0` to temporarily disable notifications while keeping the webhook configured.
 - By default, Discord only alerts on SMTP/IMAP account replies because Gmail/GWS accounts already have Gmail notifications. Set `COLD_CLI_DISCORD_PROVIDERS=all` to notify for every provider, or a comma-separated list such as `smtp_imap,gws`.
-- Set `COLD_CLI_DISCORD_WORKSPACES` to a comma-separated workspace list to enable operational alerts for those workspaces. `all` or `*` enables them globally. Leaving it unset disables only campaign-finished and sender-idle alerts; reply alerts are unaffected.
+- Set `COLD_CLI_DISCORD_WORKSPACES` to a comma-separated workspace list to enable operational alerts for those workspaces. `all` or `*` enables them globally. Leaving it unset disables only campaign-finished and sender-idle alerts. This setting does not filter replies; use `COLD_CLI_DISCORD_WEBHOOKS` to scope their destinations.
 - Set `DISCORD_WEBHOOK_USERNAME` and `DISCORD_WEBHOOK_AVATAR_URL` to override the Discord webhook's default display name and icon.
 - The first enabled run initializes the notification cursor before polling inboxes, so old historical replies are not dumped into Discord. Replies discovered during that same tick still notify.
 - Alerts include campaign, inbox, lead, sender, subject, and a short snippet. Full message bodies are not sent.
