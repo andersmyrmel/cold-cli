@@ -263,6 +263,15 @@ scheduled lead's remaining campaign steps. Errors and timeouts block delivery;
 they do not fall back to the local blacklist. Workspaces without a configured
 checker retain their existing behavior. Previews and dry runs never send.
 
+For a legal check rather than a list, [Precleared](https://precleared.dev)'s
+`precleared check --stdin` (npm package `precleared`) follows the same
+contract: it exits `0` when a cold email to every address is lawful and `2`
+when one needs consent or must not be emailed, under UK PECR, US CAN-SPAM,
+Canada's CASL and five more countries' rules. It skips phone numbers, reuses
+definite answers for 30 days so follow-ups don't spend checks, and can log the
+reason for each hold. See its
+[cold-cli setup](https://github.com/gabrielaoimevbore-beep/precleared-js#in-cold-cli).
+
 ### Workspaces
 
 `cold-cli` is the source of truth for account and campaign ownership. Accounts
