@@ -287,6 +287,96 @@ func TestListThreadMessagesSearchesArchiveAndSkipsDrafts(t *testing.T) {
 	}
 }
 
+// complexSearchIMAPClient rejects searches with more header terms than the
+// server allows, the way some IMAP servers answer "Search criteria too complex".
+type complexSearchIMAPClient struct {
+	*fakeMailboxIMAPClient
+	maxHeaderTerms int
+	searches       int
+}
+
+func countIMAPHeaderTerms(criteria *imap.SearchCriteria) int {
+	if criteria == nil {
+		return 0
+	}
+	count := len(criteria.Header)
+	for _, pair := range criteria.Or {
+		count += countIMAPHeaderTerms(pair[0]) + countIMAPHeaderTerms(pair[1])
+	}
+	for _, not := range criteria.Not {
+		count += countIMAPHeaderTerms(not)
+	}
+	return count
+}
+
+func (f *complexSearchIMAPClient) UidSearch(criteria *imap.SearchCriteria) ([]uint32, error) {
+	f.searches++
+	if countIMAPHeaderTerms(criteria) > f.maxHeaderTerms {
+		return nil, fmt.Errorf("Search criteria too complex")
+	}
+	return f.fakeMailboxIMAPClient.UidSearch(criteria)
+}
+
+func TestListThreadMessagesSplitsLongThreadSearches(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"Message-ID: <reply-11@example.net>",
+		"From: lead@example.net",
+		"To: sender@example.com",
+		"References: <root@example.com>",
+		"Date: Thu, 15 Oct 2026 14:20:00 +0000",
+		"", "Sounds good, thanks.",
+	}, "\r\n"))
+	fake := &complexSearchIMAPClient{
+		fakeMailboxIMAPClient: &fakeMailboxIMAPClient{
+			mailboxes: []*imap.MailboxInfo{{Name: "INBOX"}, {Name: "Archive"}},
+			messages:  map[string][]byte{"Archive": raw},
+		},
+		maxHeaderTerms: 30,
+	}
+	var ids []string
+	for i := 1; i <= 11; i++ {
+		ids = append(ids, fmt.Sprintf("<message-%d@example.com>", i))
+	}
+	transport := NewIMAPTransport(staticSecretResolver{"env:MAIL_PASSWORD": "secret"})
+	transport.openIMAPClient = func(Account, string) (imapClient, error) { return fake, nil }
+	messages, err := transport.ListThreadMessages(Account{
+		Email: "sender@example.com", Provider: AccountProviderSMTPIMAP,
+		IMAPPasswordRef: "env:MAIL_PASSWORD",
+	}, time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC), ids)
+	if err != nil {
+		t.Fatalf("ListThreadMessages error on an 11-message thread: %v", err)
+	}
+	if len(messages) != 1 || messages[0].ID != "<reply-11@example.net>" {
+		t.Fatalf("expected the archived reply once, got %+v", messages)
+	}
+}
+
+func TestIMAPThreadSearchBatchesKeepEveryMessageID(t *testing.T) {
+	since := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	ids := []string{"<a@example.com>", "<b@example.com>", "<A@example.com>", "not-an-rfc-id"}
+	for i := 1; i <= 9; i++ {
+		ids = append(ids, fmt.Sprintf("<m-%d@example.com>", i))
+	}
+	batches := imapThreadSearchBatches(since, ids)
+	total := 0
+	for _, batch := range batches {
+		if batch.Since.IsZero() {
+			t.Fatal("every batch needs the since bound")
+		}
+		terms := countIMAPHeaderTerms(batch)
+		if terms > imapThreadSearchMaxIDs*3 {
+			t.Fatalf("batch has %d header terms, limit is %d", terms, imapThreadSearchMaxIDs*3)
+		}
+		total += terms
+	}
+	if total != 11*3 {
+		t.Fatalf("expected 11 unique IDs x 3 headers = 33 terms across batches, got %d", total)
+	}
+	if got := imapThreadSearchBatches(since, []string{"not-an-rfc-id"}); len(got) != 1 || countIMAPHeaderTerms(got[0]) != 0 {
+		t.Fatalf("no valid IDs should keep the single since-only search, got %+v", got)
+	}
+}
+
 func TestListAuditMessageHeadersScansArchiveWithoutBodies(t *testing.T) {
 	raw := []byte(strings.Join([]string{
 		"Message-ID: <reply@example.net>",

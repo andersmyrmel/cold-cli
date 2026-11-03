@@ -424,11 +424,20 @@ func (t *IMAPTransport) listMailboxMessages(client imapClient, account Account, 
 		return nil, fmt.Errorf("selecting IMAP mailbox %s: %w", mailbox, err)
 	}
 
-	criteria := imapThreadSearchCriteria(since, messageIDs)
-
-	uids, err := client.UidSearch(criteria)
-	if err != nil {
-		return nil, fmt.Errorf("searching IMAP mailbox %s: %w", mailbox, err)
+	var uids []uint32
+	seenUIDs := map[uint32]struct{}{}
+	for _, criteria := range imapThreadSearchBatches(since, messageIDs) {
+		found, err := client.UidSearch(criteria)
+		if err != nil {
+			return nil, fmt.Errorf("searching IMAP mailbox %s: %w", mailbox, err)
+		}
+		for _, uid := range found {
+			if _, ok := seenUIDs[uid]; ok {
+				continue
+			}
+			seenUIDs[uid] = struct{}{}
+			uids = append(uids, uid)
+		}
 	}
 	if len(uids) == 0 {
 		return nil, nil
@@ -505,6 +514,40 @@ func (t *IMAPTransport) listMailboxMessageHeaders(client imapClient, account Acc
 		}
 	}
 	return messages, nil
+}
+
+// imapThreadSearchMaxIDs caps the message IDs in one thread search. Each ID adds
+// three header terms, and servers reject long OR chains as "Search criteria too
+// complex" (one rejected 33 terms while accepting 27).
+const imapThreadSearchMaxIDs = 4
+
+// imapThreadSearchBatches splits a thread search into searches of at most
+// imapThreadSearchMaxIDs unique message IDs. Without any valid ID it returns
+// the single since-only search.
+func imapThreadSearchBatches(since time.Time, messageIDs []string) []*imap.SearchCriteria {
+	var unique []string
+	seen := map[string]struct{}{}
+	for _, messageID := range messageIDs {
+		messageID = normalizeMessageID(messageID)
+		if !looksLikeMessageID(messageID) {
+			continue
+		}
+		key := strings.ToLower(messageID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, messageID)
+	}
+	if len(unique) == 0 {
+		return []*imap.SearchCriteria{imapThreadSearchCriteria(since, nil)}
+	}
+	var batches []*imap.SearchCriteria
+	for start := 0; start < len(unique); start += imapThreadSearchMaxIDs {
+		end := min(start+imapThreadSearchMaxIDs, len(unique))
+		batches = append(batches, imapThreadSearchCriteria(since, unique[start:end]))
+	}
+	return batches
 }
 
 func imapThreadSearchCriteria(since time.Time, messageIDs []string) *imap.SearchCriteria {
