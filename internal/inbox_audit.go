@@ -60,6 +60,7 @@ type InboxAuditResult struct {
 }
 
 type InboxReconcileResult struct {
+	Completed    bool              `json:"completed"`
 	WorkspaceID  string            `json:"workspace_id"`
 	Since        time.Time         `json:"since"`
 	Discovered   int               `json:"discovered"`
@@ -107,6 +108,7 @@ func ReconcileInboxHistory(cfg AuditInboxHistoryConfig) (*InboxReconcileResult, 
 	if verification.Missing != 0 {
 		return result, fmt.Errorf("provider reconciliation incomplete: %d messages remain untracked", verification.Missing)
 	}
+	result.Completed = true
 	return result, nil
 }
 
@@ -509,7 +511,7 @@ func imapAuditRetryWait(err error) (time.Duration, bool) {
 		return 0, false
 	}
 	message := strings.ToLower(err.Error())
-	for _, transient := range []string{"i/o timeout", "connection closed", "backend server temporarily unavailable"} {
+	for _, transient := range []string{"i/o timeout", "connection closed", "backend server temporarily unavailable", "message body temporarily unavailable"} {
 		if strings.Contains(message, transient) {
 			return 3 * time.Second, true
 		}

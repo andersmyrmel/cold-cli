@@ -507,6 +507,11 @@ reconciliation write. `--notify-errors` sends a Discord operational alert when
 the provider audit cannot reach a verified clean state. A practical hosted
 schedule is a nightly 30-day pass plus a weekly 120-day pass:
 
+The JSON result reports `completed: true` only after the verification pass
+succeeds. Failed runs print `Reconciliation failed` with partial counts and
+exit non-zero; zero counts alone do not establish a clean state. Temporary
+IMAP message-body failures use the existing bounded retry policy.
+
 ```cron
 0 2 * * * /usr/bin/nice -n 10 /usr/bin/ionice -c2 -n7 /path/to/cold-cli --env-file /path/to/runner.env --workspace workspace-a inbox reconcile --since 30d --lock-wait 10m --notify-errors >> /path/to/reconcile.log 2>&1
 0 3 * * 0 /usr/bin/nice -n 10 /usr/bin/ionice -c2 -n7 /path/to/cold-cli --env-file /path/to/runner.env --workspace workspace-a inbox reconcile --since 120d --lock-wait 10m --notify-errors >> /path/to/reconcile.log 2>&1

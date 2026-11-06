@@ -2210,14 +2210,22 @@ non-zero if any account fails or any provider message remains untracked.
 				return err
 			}
 		} else if result != nil {
-			fmt.Printf("Reconciled workspace %s since %s: discovered %d, applied %d, remaining %d\n",
-				result.WorkspaceID, result.Since.Format(time.RFC3339), result.Discovered, result.Applied, result.Remaining)
+			fmt.Println(reconciliationSummary(result, reconcileErr))
 		}
 		if reconcileErr != nil && notifyErrors {
 			notifyInboxReconciliationFailure(reconcileErr)
 		}
 		return reconcileErr
 	},
+}
+
+func reconciliationSummary(result *internal.InboxReconcileResult, err error) string {
+	status := "Reconciliation failed for"
+	if err == nil && result.Completed {
+		status = "Reconciled"
+	}
+	return fmt.Sprintf("%s workspace %s since %s: discovered %d, applied %d, remaining %d",
+		status, result.WorkspaceID, result.Since.Format(time.RFC3339), result.Discovered, result.Applied, result.Remaining)
 }
 
 func acquireTickLockWithWait(store *internal.Store, wait time.Duration) (internal.TickLock, error) {
