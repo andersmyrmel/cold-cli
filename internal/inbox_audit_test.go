@@ -8,8 +8,9 @@ import (
 )
 
 type auditThreadIMAPMock struct {
-	messages []GWSMessage
-	calls    [][]string
+	messages          []GWSMessage
+	calls             [][]string
+	temporaryFailures int
 }
 
 func (m *auditThreadIMAPMock) ListMessages(Account, time.Time, bool) ([]GWSMessage, error) {
@@ -18,6 +19,10 @@ func (m *auditThreadIMAPMock) ListMessages(Account, time.Time, bool) ([]GWSMessa
 
 func (m *auditThreadIMAPMock) ListThreadMessages(_ Account, _ time.Time, anchors []string) ([]GWSMessage, error) {
 	m.calls = append(m.calls, append([]string(nil), anchors...))
+	if m.temporaryFailures > 0 {
+		m.temporaryFailures--
+		return nil, fmt.Errorf("Message body temporarily unavailable, please retry")
+	}
 	var matched []GWSMessage
 	for _, msg := range m.messages {
 		for _, anchor := range anchors {
@@ -142,6 +147,9 @@ func TestAuditInboxHistorySearchesIMAPFromCampaignAnchors(t *testing.T) {
 }
 
 func TestIMAPAuditRetryWait(t *testing.T) {
+	if wait, ok := imapAuditRetryWait(fmt.Errorf("fetching IMAP headers: Message body temporarily unavailable, please retry")); !ok || wait != 3*time.Second {
+		t.Fatalf("temporary message-body failure must be retryable: %s, %t", wait, ok)
+	}
 	if wait, ok := imapAuditRetryWait(fmt.Errorf("search rate limit exceeded: please wait 12s")); !ok || wait != 13*time.Second {
 		t.Fatalf("unexpected rate retry: %s, %t", wait, ok)
 	}
@@ -150,5 +158,31 @@ func TestIMAPAuditRetryWait(t *testing.T) {
 	}
 	if _, ok := imapAuditRetryWait(fmt.Errorf("authentication failed")); ok {
 		t.Fatal("authentication errors must not be retried")
+	}
+}
+
+func TestAuditInboxHistoryRetriesTemporaryMessageBodyFailure(t *testing.T) {
+	_, _, store, _, _ := seedStoredReplyThread(t, AccountProviderSMTPIMAP)
+	imap := &auditThreadIMAPMock{temporaryFailures: 1}
+	result, err := AuditInboxHistory(AuditInboxHistoryConfig{
+		DB: store.DB, WorkspaceID: "workspace-a", Since: time.Now().AddDate(0, 0, -30), IMAP: imap,
+	})
+	if err != nil || result == nil || len(imap.calls) < 2 || imap.temporaryFailures != 0 {
+		t.Fatalf("temporary header failure did not recover: result=%+v calls=%d err=%v", result, len(imap.calls), err)
+	}
+}
+
+func TestReconcileInboxHistoryMarksCompletionOnlyAfterVerification(t *testing.T) {
+	gws, _, store, _, _ := seedStoredReplyThread(t, AccountProviderGWS)
+	cfg := AuditInboxHistoryConfig{DB: store.DB, WorkspaceID: "workspace-a", Since: time.Now().AddDate(0, 0, -30), GWS: gws}
+	gws.ThreadError = fmt.Errorf("provider unavailable")
+	failed, err := ReconcileInboxHistory(cfg)
+	if err == nil || failed == nil || failed.Completed {
+		t.Fatalf("provider failure must not report completion: result=%+v err=%v", failed, err)
+	}
+	gws.ThreadError = nil
+	completed, err := ReconcileInboxHistory(cfg)
+	if err != nil || !completed.Completed || completed.Verification == nil || completed.Remaining != 0 {
+		t.Fatalf("successful verification must report completion: result=%+v err=%v", completed, err)
 	}
 }
